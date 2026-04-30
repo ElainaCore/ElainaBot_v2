@@ -1,0 +1,8 @@
+{
+  "name": "频道图床",
+  "description": "通过QQ频道API上传图片获取URL, 提供图床功能",
+  "version": "1.0.0",
+  "author": "",
+  "github": "",
+  "releases": ""
+}

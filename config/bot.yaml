@@ -1,0 +1,56 @@
+# ===== 机器人配置 =====
+# 支持多机器人，每个机器人独立配置
+# 修改后自动热加载，无需重启
+# 未指定的字段使用程序内置默认值
+
+bots:
+  - appid: ""                          # QQ开发者平台 APPID
+    secret: ""                         # QQ开发者平台 密钥
+    robot_qq: ""                       # 机器人QQ号
+    owner_ids:                         # 主人 OpenID 列表
+      - "1"
+
+
+    # WebSocket 连接配置
+    websocket:
+      enabled: true                   # 是否启用 WS 连接
+      custom_url: ""                   # 自定义 WS 地址(留空则自动获取网关)
+      reconnect_interval: 5            # 重连间隔(秒)
+      max_reconnects: -1               # 最大重连次数(-1 无限)
+      log_level: "INFO"
+
+    # 消息处理 (不写则使用内置默认值)
+    message:
+      use_markdown: true               # 使用原生 Markdown 格式发送消息
+      markdown_suffix: ""              # Markdown 消息全局后缀
+      button_enter_to_send: false      # 按钮自动发送转换为回调
+      send_default_response: false     # 无匹配命令时发送默认回复
+      default_response_excluded_regex: []  # 排除默认回复的正则列表
+
+    # 用户ID模式
+    identity:
+      use_union_id_for_group: false    # 群聊/私聊使用 union_openid
+      use_union_id_for_channel: false  # 频道使用 union_openid
+
+    # 欢迎消息
+    welcome:
+      group_welcome: false             # 入群欢迎
+      new_user_welcome: false          # 新用户首次交互欢迎
+      friend_add_message: false        # 添加好友自动消息
+
+    # 维护模式
+    maintenance:
+      enabled: false
+
+    # 黑名单
+    blacklist:
+      user_enabled: false              # 用户黑名单开关
+      group_enabled: false             # 群黑名单开关
+      user_list: []                    # 用户黑名单列表 (OpenID)
+      group_list: []                   # 群黑名单列表 (群 OpenID)
+  # 添加更多机器人只需复制上方配置块:
+  # - name: "第二个机器人"
+  #   appid: "xxx"
+  #   secret: "yyy"
+  #   message:
+  #     use_markdown: false

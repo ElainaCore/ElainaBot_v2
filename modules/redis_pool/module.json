@@ -1,0 +1,8 @@
+{
+  "name": "Redis连接池",
+  "description": "异步 Redis 客户端 (redis.asyncio), 提供常用键/Hash/List/Set/ZSet 操作",
+  "version": "1.0.0",
+  "author": "",
+  "github": "",
+  "releases": ""
+}

@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="64" y2="64" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#6366f1"/>
+      <stop offset="50%" stop-color="#8b5cf6"/>
+      <stop offset="100%" stop-color="#a78bfa"/>
+    </linearGradient>
+    <linearGradient id="star" x1="20" y1="8" x2="44" y2="28" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#fbbf24"/>
+      <stop offset="100%" stop-color="#f59e0b"/>
+    </linearGradient>
+  </defs>
+  <!-- 圆形底 -->
+  <circle cx="32" cy="32" r="30" fill="url(#bg)"/>
+  <!-- 魔法帽轮廓 -->
+  <path d="M18 46 L32 14 L46 46 Z" fill="#fff" opacity="0.95"/>
+  <!-- 帽子内三角装饰 -->
+  <path d="M24 42 L32 22 L40 42 Z" fill="url(#bg)" opacity="0.6"/>
+  <!-- 帽檐 -->
+  <ellipse cx="32" cy="46" rx="18" ry="4" fill="#fff" opacity="0.9"/>
+  <!-- 小星星 -->
+  <path d="M44 16 l1.5 3 3.5.5-2.5 2.5.5 3.5-3-1.5-3 1.5.5-3.5-2.5-2.5 3.5-.5z" fill="url(#star)"/>
+  <path d="M14 24 l1 2 2.5.3-1.8 1.8.4 2.5-2.1-1.1-2.1 1.1.4-2.5-1.8-1.8 2.5-.3z" fill="url(#star)" opacity="0.7"/>
+  <path d="M48 30 l.8 1.6 1.8.2-1.3 1.3.3 1.8-1.6-.8-1.6.8.3-1.8-1.3-1.3 1.8-.2z" fill="url(#star)" opacity="0.5"/>
+</svg>

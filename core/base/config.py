@@ -1,0 +1,297 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""配置管理器"""
+
+import os
+import time
+import copy
+import logging
+import threading
+
+try:
+    import yaml
+except ImportError:
+    raise ImportError("需要安装 pyyaml: pip install pyyaml")
+
+logger = logging.getLogger('ElainaBot.config')
+
+_CHECK_INTERVAL = 5.0
+_MISSING = object()
+
+# 机器人设置内置默认值 (bot.yaml 中未配置时使用)
+_BOT_DEFAULTS = {
+    'message.use_markdown': True,
+    'message.markdown_suffix': '',
+    'message.button_enter_to_send': False,
+    'message.send_default_response': False,
+    'message.default_response_excluded_regex': [],
+    'identity.use_union_id_for_group': False,
+    'identity.use_union_id_for_channel': False,
+    'welcome.group_welcome': False,
+    'welcome.new_user_welcome': False,
+    'welcome.friend_add_message': False,
+    'maintenance.enabled': False,
+    'blacklist.user_enabled': False,
+    'blacklist.group_enabled': False,
+    'blacklist.user_list': [],
+    'blacklist.group_list': [],
+}
+
+
+class ConfigManager:
+    """YAML 配置管理器 (单例)
+
+    - 惰性热加载: 每次 get() 自动检测文件 mtime
+    - 变更回调: on_change(filename, callback)
+    - 缺失补全: ensure(filename, defaults)
+    - 线程安全
+    """
+
+    _instance = None
+    _lock = threading.Lock()
+
+    def __new__(cls, *args, **kwargs):
+        with cls._lock:
+            if cls._instance is None:
+                cls._instance = super().__new__(cls)
+                cls._instance._ready = False
+            return cls._instance
+
+    # ------ 初始化 ------
+
+    def init(self, config_dir):
+        if self._ready:
+            return
+        self._config_dir = os.path.abspath(config_dir)
+        self._cache = {}           # {name: parsed_dict}
+        self._mtimes = {}          # {name: float}
+        self._last_check = {}      # {name: float} 限频
+        self._callbacks = {}       # {name: [callable]}
+        self._bot_cfg_map = {}     # {appid_str: bot_dict} 加速查找
+        self._bot_setting_cache = {} # {(appid, key): value} 设置值缓存
+        self._path_cache = {}       # {name: filepath} 解析路径缓存
+        self._rw_lock = threading.RLock()
+        self._ready = True
+        logger.info(f"配置目录: {self._config_dir}")
+
+    @property
+    def config_dir(self):
+        return self._config_dir
+
+    # ------ 读取 ------
+
+    def get(self, name, key=None, default=None):
+        """获取配置值
+
+        Args:
+            name:    配置文件名(不含 .yaml), 如 'settings', 'bot', 'extension/redis'
+            key:     点号分隔路径, 如 'server.port', None 返回整个 dict
+            default: 默认值
+        """
+        self._maybe_reload(name)
+        with self._rw_lock:
+            data = self._cache.get(name, {})
+        if key is None:
+            return data
+        return self._deep_get(data, key, default)
+
+    def get_bot_configs(self):
+        """获取所有机器人配置列表"""
+        return self.get('bot', 'bots') or []
+
+    def get_bot_config(self, appid):
+        """按 appid 获取单个机器人配置 (带缓存)"""
+        key = str(appid)
+        # 缓存命中
+        if key in self._bot_cfg_map:
+            return self._bot_cfg_map[key]
+        # 遍历查找并缓存
+        for bot in self.get_bot_configs():
+            aid = str(bot.get('appid', ''))
+            self._bot_cfg_map[aid] = bot
+        return self._bot_cfg_map.get(key)
+
+    def get_bot_setting(self, appid, key, default=None):
+        """获取某个机器人的设置值 (bot 配置 > 内置默认值 > default 参数)"""
+        cache_key = (str(appid), key)
+        cached = self._bot_setting_cache.get(cache_key, _MISSING)
+        if cached is not _MISSING:
+            return cached
+        bot_cfg = self.get_bot_config(appid)
+        val = self._deep_get(bot_cfg, key) if bot_cfg else None
+        if val is not None:
+            self._bot_setting_cache[cache_key] = val
+            return val
+        return _BOT_DEFAULTS.get(key, default)
+
+    # ------ 热加载 ------
+
+    def _resolve_path(self, name):
+        """解析配置文件名 -> 绝对路径 (带缓存)"""
+        cached = self._path_cache.get(name)
+        if cached:
+            return cached
+        base = os.path.join(self._config_dir, name)
+        for ext in ('.yaml', '.yml', ''):
+            p = base + ext
+            if os.path.isfile(p):
+                break
+        else:
+            p = base + '.yaml'
+        self._path_cache[name] = p
+        return p
+
+    def _maybe_reload(self, name):
+        now = time.monotonic()
+        last = self._last_check.get(name, 0)
+        if now - last < _CHECK_INTERVAL:
+            return
+        self._last_check[name] = now
+
+        filepath = self._resolve_path(name)
+        try:
+            mtime = os.path.getmtime(filepath)
+        except OSError:
+            return
+
+        old_mtime = self._mtimes.get(name)
+        if old_mtime is not None and mtime <= old_mtime:
+            return
+
+        # 需要加载
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                data = yaml.safe_load(f) or {}
+        except Exception as e:
+            logger.error(f"解析配置失败 [{name}]: {e}")
+            return
+
+        with self._rw_lock:
+            self._cache[name] = data
+            self._mtimes[name] = mtime
+
+        # bot 配置变更时清除缓存
+        if name == 'bot':
+            self._bot_cfg_map.clear()
+            self._bot_setting_cache.clear()
+
+        if old_mtime is not None:
+            logger.info(f"配置热加载: {name}")
+            self._fire_callbacks(name, data)
+
+    def _fire_callbacks(self, name, data):
+        for cb in self._callbacks.get(name, []):
+            try:
+                cb(data)
+            except Exception as e:
+                logger.warning(f"配置回调异常 [{name}]: {e}")
+
+    # ------ 回调注册 ------
+
+    def on_change(self, name, callback):
+        """注册配置变更回调: callback(new_data_dict)"""
+        self._callbacks.setdefault(name, []).append(callback)
+
+    def off_change(self, name, callback=None):
+        """移除回调, callback=None 移除该文件所有回调"""
+        if callback is None:
+            self._callbacks.pop(name, None)
+            return
+        cbs = self._callbacks.get(name)
+        if cbs:
+            self._callbacks[name] = [c for c in cbs if c is not callback]
+
+    # ------ 写入 / 补全 ------
+
+    def set_value(self, name, key, value):
+        """设置配置值并写入文件"""
+        self._maybe_reload(name)
+        with self._rw_lock:
+            data = self._cache.get(name, {})
+            self._deep_set(data, key, value)
+            self._cache[name] = data
+        self._write_file(name, data)
+
+    def ensure(self, name, defaults):
+        """确保配置文件存在且不缺项, 缺失项用 defaults 补全"""
+        filepath = self._resolve_path(name)
+        if not os.path.isfile(filepath):
+            os.makedirs(os.path.dirname(filepath), exist_ok=True)
+            self._write_file(name, defaults)
+            with self._rw_lock:
+                self._cache[name] = copy.deepcopy(defaults)
+                self._mtimes[name] = time.time()
+            logger.info(f"配置创建: {name}")
+            return True
+        self._maybe_reload(name)
+        with self._rw_lock:
+            current = self._cache.get(name, {})
+        changed = self._merge_defaults(current, defaults)
+        if not changed:
+            return False
+        self._write_file(name, current)
+        with self._rw_lock:
+            self._cache[name] = current
+        logger.info(f"配置补全: {name} (新增 {changed} 项)")
+        return True
+
+    def _write_file(self, name, data):
+        filepath = self._resolve_path(name)
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+        tmp = filepath + '.tmp'
+        try:
+            with open(tmp, 'w', encoding='utf-8') as f:
+                yaml.dump(data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+            os.replace(tmp, filepath)
+            self._mtimes[name] = os.path.getmtime(filepath)
+        except Exception as e:
+            logger.error(f"写入配置失败 [{name}]: {e}")
+            try: os.remove(tmp)
+            except OSError: pass
+
+    # ------ 工具方法 ------
+
+    @staticmethod
+    def _deep_get(data, key, default=None):
+        try:
+            for k in key.split('.'):
+                data = data[k]
+            return data if data is not None else default
+        except (KeyError, TypeError):
+            return default
+
+    @staticmethod
+    def _deep_set(data, key, value):
+        *path, leaf = key.split('.')
+        for k in path:
+            sub = data.get(k)
+            if not isinstance(sub, dict):
+                sub = data[k] = {}
+            data = sub
+        data[leaf] = value
+
+    @staticmethod
+    def _merge_defaults(current, defaults, _prefix=''):
+        """递归合并, 返回新增项数"""
+        added = 0
+        for k, v in defaults.items():
+            if k not in current:
+                current[k] = copy.deepcopy(v)
+                added += 1
+            elif isinstance(v, dict) and isinstance(current[k], dict):
+                added += ConfigManager._merge_defaults(current[k], v, f"{_prefix}{k}.")
+        return added
+
+    def reload_all(self):
+        """强制重新加载所有已缓存的配置"""
+        with self._rw_lock:
+            names = list(self._cache.keys())
+            self._mtimes.clear()
+            self._last_check.clear()
+        for name in names:
+            self._maybe_reload(name)
+        logger.info(f"全部配置已重新加载 ({len(names)} 个)")
+
+
+# ===== 全局单例 =====
+cfg = ConfigManager()

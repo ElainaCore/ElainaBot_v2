@@ -1,0 +1,107 @@
+# ===== 系统消息模板 =====
+# 修改后自动热加载，无需重启
+#
+# 变量: {user_id} {user_count} {reason} {error_code} {error_message} {appid} {group_id}
+#
+# 每个模板支持 appid 字段:
+#   - 不写 appid:     所有机器人共用此模板
+#   - 指定 appid:     仅该机器人使用此模板, 其余机器人使用通用模板
+#   - 同名模板多个:   用列表形式, 按 appid 匹配
+#
+# 示例 (按 appid 区分):
+#   welcome:
+#     - appid: "102134274"
+#       content: "伊蕾娜专属欢迎！"
+#     - content: "通用欢迎消息"          # 无 appid 作为兜底
+#
+# 格式说明:
+#   纯文本:  welcome: "你好"
+#   带按钮:
+#     welcome:
+#       content: "你好"
+#       buttons:                # 按钮行列表, 每个 - 代表一行, 行内为按钮列表
+#         - - {text: "菜单", data: "/菜单", enter: true, style: 1}
+#           - {text: "帮助", data: "/帮助", enter: true, style: 0}
+#         - - {text: "邀请进群", link: "https://...", style: 1}
+#   MD/文本分离:
+#     welcome:
+#       markdown: "**你好**"    # Markdown 模式用此内容
+#       text: "你好"            # 非 Markdown 模式用此内容
+#       buttons: ...
+#
+# 按钮字段:
+#   text     - 按钮文字
+#   data     - 回调数据(type=2)
+#   link     - 链接跳转(自动 type=0)
+#   enter    - 自动发送 (true/false)
+#   reply    - 引用回复 (true/false)
+#   style    - 样式 (0=灰色, 1=蓝色)
+#   admin    - 仅管理员可点 (true)
+#   list     - 限定可点击的用户ID列表
+
+# ===== 群欢迎(机器人被邀请入群) =====
+welcome:
+  markdown: "感谢邀请我进群，发送菜单查看全部帮助。"
+  # buttons:
+  #   - - {text: "菜单", data: "/菜单", enter: true, style: 1}
+  #     - {text: "娱乐菜单", data: "/娱乐菜单", enter: true, style: 1}
+
+# ===== 新用户首次交互 =====
+user_welcome:
+  markdown: |
+    ![头像 #200px #200px](https://q.qlogo.cn/qqapp/{appid}/{user_id}/640)
+    欢迎<@{user_id}>！您是第{user_count}位用户！  
+    
+    > 可以把机器人邀请到任意群使用哦！
+  # buttons:
+  #   - - {text: "菜单", data: "菜单", enter: true, style: 1}
+  #     - {text: "娱乐菜单", data: "/娱乐菜单", enter: true, style: 1}
+
+# ===== 添加好友 =====
+friend_add:
+  markdown: |
+    ![头像 #360px #360px](https://q.qlogo.cn/qqapp/{appid}/{user_id}/640)
+    欢迎<@{user_id}>！感谢您添加我为好友！  
+    
+    > 您可以直接在这里与我对话，也可以邀请我到您的群聊中使用更多功能！
+    > 私聊支持的功能相对较少，更多精彩功能请在群聊中体验~
+  # buttons:
+  #   - - {text: "菜单", data: "菜单", enter: true, style: 1}
+  #   - - {text: "邀请进群", link: "https://...", style: 1}
+
+# ===== 群聊专用命令 =====
+group_only:
+  markdown: "<@{user_id}> 该指令仅在群聊中可用，请在群聊中使用"
+
+# ===== 无匹配命令 =====
+default:
+  markdown: "<@{user_id}> 指令错误或不存在，请检查您的输入"
+
+# ===== 仅主人 =====
+owner_only:
+  markdown: "<@{user_id}> 暂无权限，你无法操作此命令"
+
+# ===== 维护模式 =====
+maintenance:
+  markdown: |
+    系统正在维护中，请稍后再试...
+    > 当前功能暂时不可用，维护完成后将自动恢复
+
+# ===== 黑名单 =====
+blacklist:
+  markdown: |
+    <@{user_id}> 您已被列入黑名单，无法使用任何指令
+    > 原因：{reason}
+
+# ===== 群黑名单 =====
+group_blacklist:
+  markdown: |
+    该群组已被列入黑名单，机器人已停止服务
+    > 如有疑问，请联系管理员
+
+# ===== API 错误 =====
+api_error:
+  markdown: |
+    消息发送失败
+    > code:{error_code}
+    > {error_message}

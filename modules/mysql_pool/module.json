@@ -1,0 +1,8 @@
+{
+  "name": "MySQL连接池",
+  "description": "异步 MySQL 连接池 (aiomysql), 提供 execute/query/upsert 等便捷方法",
+  "version": "1.0.0",
+  "author": "",
+  "github": "",
+  "releases": ""
+}

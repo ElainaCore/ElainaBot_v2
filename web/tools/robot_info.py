@@ -1,0 +1,101 @@
+"""机器人信息查询 (aiohttp 版)"""
+
+import ssl
+import urllib.parse
+import aiohttp as _aiohttp
+from aiohttp import web
+
+_SSL_CTX = ssl.create_default_context()
+_SSL_CTX.check_hostname = False
+_SSL_CTX.verify_mode = ssl.CERT_NONE
+
+_API_URL = "https://qun.qq.com/qunpro/robot/proxy/domain/qun.qq.com/cgi-bin/group_pro/robot/manager/share_info?bkn=508459323&robot_appid={}"
+_QR_API = "https://api.2dcode.biz/v1/create-qr-code?data={}"
+_SHARE_URL = "https://qun.qq.com/qunpro/robot/qunshare?robot_uin={}"
+_CHANNEL_URL = "https://qun.qq.com/qunpro/robot/share?robot_appid={}"
+_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Linux; Android 15; wv) AppleWebKit/537.36 Chrome/135.0 Mobile Safari/537.36 QQ/9.1.75',
+    'qname-service': '976321:131072', 'qname-space': 'Production'
+}
+
+_bot_manager = None
+
+
+def set_context(bot_manager):
+    global _bot_manager
+    _bot_manager = bot_manager
+
+
+async def handle_get_robot_info(request: web.Request):
+    appid = request.query.get('appid', '')
+    if not appid and _bot_manager:
+        appid = next(iter(_bot_manager._bots), '')
+
+    bot = _bot_manager._bots.get(appid) if _bot_manager else None
+    robot_qq = getattr(bot, 'robot_qq', '') if bot else ''
+    share_url = _SHARE_URL.format(robot_qq)
+
+    ws_connected = False
+    conn_type = 'WebSocket'
+    if bot and bot.ws_client:
+        ws_connected = getattr(bot.ws_client, '_connected', False)
+
+    try:
+        async with _aiohttp.ClientSession() as session:
+            async with session.get(_API_URL.format(appid), headers=_HEADERS, ssl=_SSL_CTX, timeout=_aiohttp.ClientTimeout(total=10)) as resp:
+                api_resp = await resp.json()
+
+        if api_resp.get('retcode') != 0:
+            raise Exception(api_resp.get('msg', 'API 错误'))
+
+        robot = api_resp.get('data', {}).get('robot_data', {})
+        commands = api_resp.get('data', {}).get('commands', [])
+        avatar = robot.get('robot_avatar', '')
+        if avatar and 'myqcloud.com' in avatar:
+            avatar += ('&' if '?' in avatar else '?') + 'imageMogr2/format/png'
+
+        return web.json_response({
+            'success': True, 'qq': robot.get('robot_uin', robot_qq),
+            'name': robot.get('robot_name', '未知机器人'),
+            'description': robot.get('robot_desc', '暂无描述'),
+            'avatar': avatar, 'appid': robot.get('appid', appid),
+            'developer': robot.get('create_name', '未知'),
+            'link': share_url,
+            'status': '正常' if robot.get('robot_offline', 1) == 0 else '离线',
+            'connection_type': conn_type,
+            'connection_status': '已连接' if ws_connected else ('等待接收中' if conn_type == 'Webhook' else '未连接'),
+            'data_source': 'api',
+            'is_banned': robot.get('robot_ban', False),
+            'commands_count': len(commands),
+            'qr_code_api': '/api/robot/qrcode?url=' + urllib.parse.quote(share_url, safe=''),
+            'channel_link': _CHANNEL_URL.format(appid),
+            'channel_qr_code_api': '/api/robot/qrcode?url=' + urllib.parse.quote(_CHANNEL_URL.format(appid), safe=''),
+        })
+    except Exception as e:
+        channel_url = _CHANNEL_URL.format(appid)
+        return web.json_response({
+            'success': False, 'error': str(e), 'qq': robot_qq,
+            'name': '加载失败', 'appid': appid,
+            'link': share_url,
+            'connection_type': conn_type,
+            'connection_status': '已连接' if ws_connected else ('等待接收中' if conn_type == 'Webhook' else '未连接'),
+            'data_source': 'fallback',
+            'qr_code_api': '/api/robot/qrcode?url=' + urllib.parse.quote(share_url, safe=''),
+            'channel_link': channel_url,
+            'channel_qr_code_api': '/api/robot/qrcode?url=' + urllib.parse.quote(channel_url, safe=''),
+        })
+
+
+async def handle_get_robot_qrcode(request: web.Request):
+    url = request.query.get('url', '')
+    if not url:
+        return web.json_response({'success': False, 'error': '缺少 URL'}, status=400)
+    try:
+        qr_url = _QR_API.format(urllib.parse.quote(url, safe=''))
+        async with _aiohttp.ClientSession() as session:
+            async with session.get(qr_url, ssl=_SSL_CTX, timeout=_aiohttp.ClientTimeout(total=10)) as resp:
+                data = await resp.read()
+                return web.Response(body=data, content_type='image/png',
+                                    headers={'Cache-Control': 'public, max-age=3600'})
+    except Exception as e:
+        return web.json_response({'success': False, 'error': str(e)}, status=500)

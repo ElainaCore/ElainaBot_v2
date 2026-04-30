@@ -1,0 +1,31 @@
+# ===== 框架全局设置 =====
+# 修改后自动热加载，无需重启
+
+# HTTP 服务器
+server:
+  host: "0.0.0.0"
+  port: 5200
+
+# 注: message/identity/welcome/maintenance/blacklist 已移至 bot.yaml (每个机器人可独立配置)
+
+# Web 面板
+web:
+  access_token: "admin"                         # URL 参数验证令牌
+  admin_password: "admin"                       # 管理员密码
+  framework_name: "Elaina"                 # 框架名称
+  favicon_url: ""                          # 网页图标 URL
+  pc_title_suffix: "仪表盘"
+  login_title_suffix: "面板"
+  theme_gradient: "linear-gradient(135deg, #5865f2, #7289da)"
+
+logging:
+  dir: "log"                                 # 日志根目录(相对框架目录)
+  insert_interval: 2                         # 批量写入间隔(秒), 0=立即写入
+  batch_size: 0                              # 单次最大写入条数, 0=不限
+  retention_days: 5                          # 按日期目录保留天数, 0=永久
+  wal_mode: true                             # SQLite WAL模式(推荐开启)
+
+# 依赖管理
+pip:
+  auto_install: true                         # 自动安装模块/插件的 requirements.txt 依赖
+  mirror: ""                                 # pip 镜像源 (留空用默认, 示例: https://pypi.tuna.tsinghua.edu.cn/simple)
