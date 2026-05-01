@@ -148,6 +148,65 @@ def _on_load():
 
 **插件开发者** 请前往 [Elaina-plugins](https://github.com/ElainaCore/Elaina-plugins) 提交 PR，将你的插件加入市场。
 
+## 🐳 Docker 一键部署
+
+### 环境要求
+
+- [Docker](https://docs.docker.com/get-docker/) 20.10+
+- [Docker Compose](https://docs.docker.com/compose/install/) v2+
+
+### 快速启动
+
+**1. 克隆仓库**
+
+```bash
+git clone https://github.com/ElainaCore/ElainaBot_v2.git
+cd ElainaBot_v2
+```
+
+**2. 构建并启动**
+
+```bash
+docker compose up -d --build
+```
+
+**3. 访问 Web 面板完成配置**
+
+```
+http://localhost:5200/web/?token=admin
+```
+
+在面板中填写机器人的 `APPID` 和 `Secret` 后即可正常运行。
+
+### 常用命令
+
+```bash
+# 查看实时日志
+docker compose logs -f
+
+# 停止
+docker compose down
+
+# 重启
+docker compose restart
+
+# 更新代码后重新构建
+docker compose up -d --build
+```
+
+### 数据持久化说明
+
+以下目录已通过 Volume 挂载到宿主机，容器删除后数据不会丢失：
+
+| 目录 | 说明 |
+|------|------|
+| `./config/` | 机器人配置文件 |
+| `./plugins/` | 已安装的插件 |
+| `./modules/` | 模块文件 |
+| `./log/` | 运行日志 |
+
+---
+
 ## 📄 License
 
 MIT License

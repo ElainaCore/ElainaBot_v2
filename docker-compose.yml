@@ -1,0 +1,20 @@
+version: "3.8"
+
+services:
+  elainabot:
+    build: .
+    container_name: elainabot_v2
+    restart: unless-stopped
+    ports:
+      - "5200:5200"       # Web 管理面板
+    volumes:
+      # 持久化配置、插件、模块、日志数据
+      - ./config:/app/config
+      - ./plugins:/app/plugins
+      - ./modules:/app/modules
+      - ./log:/app/log
+    environment:
+      # 时区设置（可改成你当地时区）
+      - TZ=Asia/Shanghai
+    tty: true
+    stdin_open: true
