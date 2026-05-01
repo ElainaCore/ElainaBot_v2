@@ -191,13 +191,13 @@ class BotManager:
 
         # 3. 校验机器人配置
         bot_configs = cfg.get_bot_configs()
+        valid_bots = []
+        if bot_configs:
+            valid_bots = [b for b in bot_configs if b.get('appid') and b.get('secret')]
         if not bot_configs:
-            log.error("未配置任何机器人, 请编辑 config/bot.yaml")
-            return
-        valid_bots = [b for b in bot_configs if b.get('appid') and b.get('secret')]
-        if not valid_bots:
-            log.error("所有机器人配置均缺少 appid 或 secret")
-            return
+            log.warning("未配置任何机器人, 请通过 Web 面板填写配置")
+        elif not valid_bots:
+            log.warning("所有机器人配置均缺少 appid 或 secret, 请通过 Web 面板填写配置")
 
         # 4. 初始化模块管理器
         modules_dir = os.path.join(self._base_dir, 'modules')
@@ -232,8 +232,7 @@ class BotManager:
         cfg.on_change('bot', self._on_bot_config_change)
 
         if not self._bots:
-            log.error("没有成功启动的机器人")
-            return
+            log.warning("没有成功启动的机器人, 请通过 Web 面板填写机器人配置")
 
         # 8. 启动 DAU 统计服务
         self._dau_service = DAUService(log_base)

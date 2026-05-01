@@ -1,0 +1,36 @@
+# ElainaBot Docker 部署 - 忽略不需要打包进镜像的文件
+
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# 虚拟环境
+venv/
+.venv/
+env/
+
+# 日志（运行时产生，挂载卷解决）
+log/
+
+# 本地 IDE 配置
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Git
+.git/
+.gitignore
+
+# Docker 自身
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# 数据库文件（运行时产生）
+*.db
+*.sqlite
+*.sqlite3
