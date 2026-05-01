@@ -209,6 +209,7 @@ class BotManager:
         plugins_dir = os.path.join(self._base_dir, 'plugins')
         self._plugin_manager = PluginManager(plugins_dir)
         await self._plugin_manager.load_all()
+        self._plugin_manager.start_watcher()
 
         # 6. 启动通用日志服务 (框架+错误, 不分机器人)
         log_base = os.path.join(self._base_dir, 'data', cfg.get('settings', 'logging.dir', 'log'))
@@ -374,6 +375,8 @@ class BotManager:
     async def shutdown(self):
         """优雅关闭"""
         log.info("正在关闭...")
+        if self._plugin_manager:
+            self._plugin_manager.stop_watcher()
         if self._dau_service:
             await self._dau_service.stop()
         for bot in self._bots.values():

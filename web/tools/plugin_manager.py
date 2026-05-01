@@ -252,6 +252,8 @@ async def handle_toggle_plugin(request: web.Request):
         if os.path.exists(new_abs):
             return web.json_response({'success': False, 'message': '禁用文件已存在'}, status=409)
         os.rename(abs_path, new_abs)
+        # 触发运行时热重载
+        await _try_reload_plugin(abs_path, plugins_dir)
         return web.json_response({'success': True, 'message': '插件已禁用', 'new_path': new_abs.replace('\\', '/')})
     else:
         if not abs_path.endswith('.py.ban'):
@@ -260,7 +262,27 @@ async def handle_toggle_plugin(request: web.Request):
         if os.path.exists(new_abs):
             return web.json_response({'success': False, 'message': '启用文件已存在'}, status=409)
         os.rename(abs_path, new_abs)
+        # 触发运行时热重载
+        await _try_reload_plugin(new_abs, plugins_dir)
         return web.json_response({'success': True, 'message': '插件已启用', 'new_path': new_abs.replace('\\', '/')})
+
+
+async def _try_reload_plugin(file_path, plugins_dir):
+    """根据文件路径推导插件名并触发运行时热重载"""
+    if not _bot_manager:
+        return
+    pm = getattr(_bot_manager, '_plugin_manager', None) or getattr(_bot_manager, 'plugin_manager', None)
+    if not pm:
+        return
+    # 从文件路径推导插件目录名: plugins/<name>/xxx.py → name
+    try:
+        rel = os.path.relpath(file_path, plugins_dir)
+        plugin_name = rel.split(os.sep)[0]
+        if plugin_name and plugin_name in pm.plugins:
+            await pm.reload(plugin_name)
+            log.info(f"插件文件变更触发热重载: {plugin_name}")
+    except Exception as e:
+        log.warning(f"自动热重载失败: {e}")
 
 
 # ==================== 热重载 ====================
@@ -437,11 +459,20 @@ def _scan_modules():
 
     # 运行时模块状态
     runtime = {}
+    persist_map = {}
     if _bot_manager:
         mm = getattr(_bot_manager, 'module_manager', None)
         if mm:
             for m in mm.list_modules():
                 runtime[m['name']] = m
+    # 直接读取持久化开关文件 (不依赖运行时)
+    enabled_file = os.path.join(modules_dir, 'modules_enabled.json')
+    if os.path.isfile(enabled_file):
+        try:
+            with open(enabled_file, 'r', encoding='utf-8') as f:
+                persist_map = json.load(f) or {}
+        except Exception:
+            pass
 
     for name in sorted(os.listdir(modules_dir)):
         mod_dir = os.path.join(modules_dir, name)
@@ -475,6 +506,7 @@ def _scan_modules():
             'version': meta.get('version') or rt.get('version', '1.0.0'),
             'author': meta.get('author') or rt.get('author', ''),
             'enabled': rt.get('enabled', False),
+            'persist_enabled': rt.get('persist_enabled', persist_map.get(name, False)),
             'error': rt.get('error'),
             'last_modified': mtime,
             'config_files': config_files,
@@ -688,10 +720,14 @@ async def handle_module_toggle(request: web.Request):
             ok = await mm.enable(name)
         else:
             ok = await mm.disable(name)
+            if not ok:
+                # 模块未运行但需要持久化关闭状态
+                mm.set_module_enabled_persist(name, False)
+                return web.json_response({'success': True, 'message': f'模块 {name} 已关闭'})
         if ok:
-            return web.json_response({'success': True, 'message': f'模块 {name} 已{action}'})
+            return web.json_response({'success': True, 'message': f'模块 {name} 已{"开启" if action == "enable" else "关闭"}'})
         else:
-            return web.json_response({'success': False, 'message': f'操作失败'})
+            return web.json_response({'success': False, 'message': '操作失败'})
     except Exception as e:
         return web.json_response({'success': False, 'message': str(e)}, status=500)
 

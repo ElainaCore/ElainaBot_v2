@@ -228,6 +228,8 @@ class ModuleManager:
             self._dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'modules')
         self._modules = {}    # {name: ModuleInfo}
         self._lock = asyncio.Lock()
+        self._enabled_file = os.path.join(self._dir, 'modules_enabled.json')
+        self._enabled_map = self._load_enabled_map()  # {name: bool}
 
     # ==================== 发现 ====================
 
@@ -253,14 +255,49 @@ class ModuleManager:
         log.info(f"发现 {len(self._modules)} 个模块: "
                  f"{', '.join(f'{n}@{m.version}' for n, m in self._modules.items())}")
 
+    # ==================== 持久化开关 ====================
+
+    def _load_enabled_map(self):
+        """读取 modules_enabled.json, 不存在则返回空 dict"""
+        if not os.path.isfile(self._enabled_file):
+            return {}
+        try:
+            with open(self._enabled_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
+    def _save_enabled_map(self):
+        """保存 modules_enabled.json"""
+        os.makedirs(os.path.dirname(self._enabled_file), exist_ok=True)
+        try:
+            with open(self._enabled_file, 'w', encoding='utf-8') as f:
+                json.dump(self._enabled_map, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            log.warning(f"保存模块开关状态失败: {e}")
+
+    def is_module_enabled_persist(self, name):
+        """查询模块是否在持久化配置中标记为启用 (默认 False)"""
+        return self._enabled_map.get(name, False)
+
+    def set_module_enabled_persist(self, name, enabled):
+        """设置模块持久化开关状态"""
+        self._enabled_map[name] = bool(enabled)
+        self._save_enabled_map()
+
     # ==================== 自动启动 ====================
 
     async def start_enabled(self):
-        """启动所有发现的模块"""
-        tasks = [self._install_requirements(n, i.module_dir) for n, i in self._modules.items()]
+        """启动持久化配置中标记为启用的模块"""
+        to_start = [n for n in self._modules if self.is_module_enabled_persist(n)]
+        if not to_start:
+            log.info("无已启用模块, 跳过启动")
+            return
+        tasks = [self._install_requirements(n, self._modules[n].module_dir) for n in to_start]
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
-        for name in self._modules:
+        for name in to_start:
             try:
                 await self.enable(name, _skip_deps=True)
             except Exception as e:
@@ -268,7 +305,7 @@ class ModuleManager:
 
     # ==================== 启用/禁用 ====================
 
-    async def enable(self, name, _skip_deps=False):
+    async def enable(self, name, _skip_deps=False, _persist=True):
         """启用模块"""
         async with self._lock:
             info = self._modules.get(name)
@@ -288,17 +325,21 @@ class ModuleManager:
                 result = await _await_if_coro(setup_fn(ctx)) if setup_fn else None
                 info.instance = result if result is not None else True
                 info.error = None
+                if _persist:
+                    self.set_module_enabled_persist(name, True)
                 return True
             except Exception as e:
                 info.error = str(e)
                 report_error(EXTENSION, name, e)
                 return False
 
-    async def disable(self, name):
-        """禁用模块 (运行时生效, 重启后重新启用)"""
+    async def disable(self, name, _persist=True):
+        """禁用模块"""
         async with self._lock:
             info = self._modules.get(name)
             if not info or info.instance is None:
+                if _persist:
+                    self.set_module_enabled_persist(name, False)
                 return False
             try:
                 teardown_fn = getattr(info.module, 'teardown', None)
@@ -310,6 +351,8 @@ class ModuleManager:
             info.instance = None
             info.ctx = None
             sys.modules.pop(f"modules.{name}", None)
+            if _persist:
+                self.set_module_enabled_persist(name, False)
             get_logger(EXTENSION, info.display_name).info("❌ 已禁用")
             return True
 
@@ -339,7 +382,9 @@ class ModuleManager:
         return [{'name': i.name, 'display_name': i.display_name,
                  'description': i.description, 'version': i.version,
                  'author': i.author, 'github': i.github, 'releases': i.releases,
-                 'enabled': i.instance is not None, 'error': i.error}
+                 'enabled': i.instance is not None,
+                 'persist_enabled': self.is_module_enabled_persist(i.name),
+                 'error': i.error}
                 for i in self._modules.values()]
 
     # ==================== 内部 ====================

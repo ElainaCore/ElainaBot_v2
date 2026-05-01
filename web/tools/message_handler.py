@@ -82,7 +82,7 @@ def _query_messages(date=None, limit=500, appid_filter='', days=1):
                 results.extend(rows)
             except Exception:
                 pass
-    results.sort(key=lambda r: r.get('id', 0))
+    results.sort(key=lambda r: (r.get('_date', ''), r.get('id', 0)))
     return results
 
 
@@ -214,12 +214,14 @@ async def handle_get_chat_history(request: web.Request):
                 'source': 'web_panel' if plugin_name == 'WebPanel' else '',
             })
 
-    # 取最近一条非 bot 消息的 message_id 用于发送回复
+    # 取最近一条非 bot 消息的 message_id 用于发送回复 (仅当天, 避免过期)
     last_msg_id = ''
+    today_str = _date.today().strftime('%Y-%m-%d')
     for r in reversed(rows):
+        if r.get('_date', '') != today_str:
+            continue
         mid = r.get('message_id', '')
         if mid and r.get('type') != 'plugin':
-            # 确认属于当前聊天
             uid = r.get('user_id', '')
             gid = r.get('group_id', '')
             if (chat_type == 'group' and gid == chat_id) or \

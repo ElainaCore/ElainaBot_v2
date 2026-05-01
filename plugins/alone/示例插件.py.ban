@@ -1,0 +1,168 @@
+"""
+示例插件 — 开发者参考
+重命名为 .py 即可启用, 展示 ElainaBot_V2 插件开发的常用 API
+
+功能一览:
+  - handler 装饰器 (正则匹配、权限控制、冷却、场景限制)
+  - on_load / on_unload 生命周期
+  - interceptor 消息拦截器
+  - 多种消息发送 (文本/图片/语音/视频/文件/ark卡片)
+  - 撤回、主动消息、面板推送
+"""
+
+import os
+import asyncio
+from core.plugin.decorators import handler, on_load, on_unload, interceptor
+from core.base.logger import get_logger, PLUGIN
+
+log = get_logger(PLUGIN, "示例插件")
+
+
+# ==================== 生命周期 ====================
+
+@on_load
+def _loaded():
+    log.info("示例插件已加载")
+
+
+@on_unload
+def _unloaded():
+    log.info("示例插件已卸载")
+
+
+# ==================== 基础消息 ====================
+
+@handler(r'^ping$', name='ping', desc='最简示例: 收到 ping 回复 pong')
+async def ping(event, match):
+    await event.reply("pong")
+
+
+@handler(r'^echo\s+(.+)$', name='echo', desc='复读: echo <内容>', priority=10)
+async def echo(event, match):
+    await event.reply(match.group(1))
+
+
+# ==================== 权限与场景 ====================
+
+@handler(r'^仅主人$', name='仅主人', desc='owner_only 示例', owner_only=True)
+async def owner_demo(event, match):
+    await event.reply("你是主人, 命令已执行")
+
+
+@handler(r'^仅群聊$', name='仅群聊', desc='group_only 示例', group_only=True)
+async def group_demo(event, match):
+    await event.reply(f"当前群: {event.group_id}")
+
+
+@handler(r'^仅私聊$', name='仅私聊', desc='direct_only 示例', direct_only=True)
+async def direct_demo(event, match):
+    await event.reply(f"当前用户: {event.user_id}")
+
+
+@handler(r'^冷却测试$', name='冷却测试', desc='10秒冷却示例', cooldown=10)
+async def cooldown_demo(event, match):
+    await event.reply("命令已执行, 10秒内不可重复触发")
+
+
+# ==================== 媒体发送 ====================
+
+@handler(r'^示例图片$', name='示例图片', desc='发送网络图片', owner_only=True)
+async def demo_image(event, match):
+    await event.reply_image(
+        "https://i0.hdslb.com/bfs/openplatform/559162218f455ea859c783dceeda65cb1c724f4c.png",
+        "网络图片示例")
+
+
+@handler(r'^示例本地图片$', name='示例本地图片', desc='发送本地图片', owner_only=True)
+async def demo_local_image(event, match):
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "1.png")
+    if not os.path.exists(path):
+        return await event.reply(f"文件不存在: {path}")
+    with open(path, 'rb') as f:
+        await event.reply_image(f.read(), "本地图片示例")
+
+
+@handler(r'^示例语音$', name='示例语音', desc='发送语音', owner_only=True)
+async def demo_voice(event, match):
+    await event.reply_voice("https://act-upload.mihoyo.com/sr-wiki/2025/06/03/160045374/"
+                            "420e9ac5c0c9d2b2c44b91f453b65061_2267222992827173477.wav")
+
+
+@handler(r'^示例视频$', name='示例视频', desc='发送视频', owner_only=True)
+async def demo_video(event, match):
+    await event.reply_video("https://www.w3schools.com/html/mov_bbb.mp4")
+
+
+@handler(r'^示例文件$', name='示例文件', desc='发送临时文件', owner_only=True)
+async def demo_file(event, match):
+    import tempfile
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False, encoding='utf-8') as f:
+        f.write("ElainaBot 测试文件")
+        path = f.name
+    try:
+        await event.reply_file(path, "临时文件示例", file_name="test.txt")
+    finally:
+        os.remove(path) if os.path.exists(path) else None
+
+
+# ==================== 撤回 ====================
+
+@handler(r'^撤回测试$', name='撤回测试', desc='发送后3秒撤回', owner_only=True)
+async def demo_recall(event, match):
+    data = await event.reply("3秒后撤回...")
+    if data:
+        await asyncio.sleep(3)
+        await event.recall()
+
+
+@handler(r'^自动撤回$', name='自动撤回', desc='auto_delete_time 示例', owner_only=True)
+async def demo_auto_recall(event, match):
+    await event.reply("5秒后自动撤回", auto_delete_time=5)
+
+
+# ==================== Ark 卡片 ====================
+
+@handler(r'^示例ark$', name='示例ark', desc='ark23 列表卡片', owner_only=True)
+async def demo_ark(event, match):
+    await event.reply_ark(23, (
+        "列表卡片标题", "ElainaBot",
+        [["功能1: 图片"], ["功能2: 语音"], ["功能3: 视频"]]))
+
+
+# ==================== 主动消息 ====================
+
+@handler(r'^主动测试$', name='主动测试', desc='3秒后发送主动消息', owner_only=True)
+async def demo_proactive(event, match):
+    target = event.group_id if event.is_group else event.user_id
+    await event.reply(f"3秒后向 {target} 发送主动消息...")
+    await asyncio.sleep(3)
+    send = event.send_to_group if event.is_group else event.send_to_user
+    await send(target, "这是一条主动消息")
+
+
+# ==================== 拦截器 ====================
+# 返回 True 则阻止后续所有 handler 处理该消息
+
+@interceptor(priority=999)
+async def demo_interceptor(event):
+    if event.content and event.content.strip() == "拦截我":
+        await event.reply("消息已被拦截器拦截, 后续 handler 不会执行")
+        return True
+    return False
+
+
+# ==================== Web 面板交互 ====================
+
+@handler(r'^面板推送$', name='面板推送', desc='向 Web 面板推送日志', owner_only=True)
+async def demo_panel_push(event, match):
+    try:
+        import web.ws as ws
+        from datetime import datetime
+        ws.push_log('framework', {
+            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'content': f'插件推送测试 (用户: {event.user_id})',
+            'source': 'plugin.alone.example', 'level': 'INFO',
+        })
+        await event.reply("已推送到面板日志页")
+    except Exception as e:
+        await event.reply(f"推送失败: {e}")

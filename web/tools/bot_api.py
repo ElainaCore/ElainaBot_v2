@@ -3,6 +3,7 @@
 import json
 import gzip
 import re
+import socket
 import aiohttp
 from datetime import datetime
 
@@ -66,7 +67,8 @@ class QQBotAPI:
                 headers["Cookie"] = self._build_cookie(uin, quid, ticket)
             if extra_headers:
                 headers.update(extra_headers)
-            async with aiohttp.ClientSession(timeout=_TIMEOUT) as session:
+            conn = aiohttp.TCPConnector(family=socket.AF_INET, ssl=False)
+            async with aiohttp.ClientSession(timeout=_TIMEOUT, connector=conn) as session:
                 if method == 'GET':
                     async with session.get(url, headers=headers) as resp:
                         raw = await resp.read()
@@ -225,6 +227,57 @@ class QQBotAPI:
         resp = await self._request("POST", "https://q.qq.com/qrcode/get",
                                    uin, uid, ticket, {"qrcode": qrcode})
         return {"code": 0} if resp.get('code') == 0 else {"code": -1, "msg": "未授权"}
+
+    # ── 模板二维码 / 提审 / 删除 ──
+
+    async def create_template_qr(self, uin="", quid="", ticket=""):
+        resp = await self._request("POST", "https://q.qq.com/qrcode/create",
+                                   uin, quid, ticket, {"type": 40, "miniAppId": ""},
+                                   {**_QQ_HEADERS, "Referer": "https://q.qq.com/qqbot/"})
+        if resp.get("code") == 500:
+            return {"code": 500, "msg": resp.get("msg")}
+        return resp
+
+    async def preview_template(self, bot_appid="", template_data=None, uin="", uid="", ticket=""):
+        if not bot_appid or not template_data:
+            return {"retcode": 400, "msg": "参数不完整"}
+        resp = await self._request("POST", "https://bot.q.qq.com/cgi-bin/msg_tpl/preview",
+                                   uin, uid, ticket, {"bot_appid": bot_appid, "info": template_data}, _BOT_HEADERS)
+        if resp.get("code") == 500:
+            return {"retcode": 500, "msg": resp.get("msg")}
+        return resp
+
+    async def submit_template(self, bot_appid="", template_data=None, qrcode="", uin="", uid="", ticket=""):
+        if not all([bot_appid, template_data, qrcode]):
+            return {"retcode": 400, "msg": "参数不完整"}
+        resp = await self._request("POST", "https://bot.q.qq.com/cgi-bin/msg_tpl/create",
+                                   uin, uid, ticket,
+                                   {"bot_appid": bot_appid, "info": template_data, "qrcode": qrcode}, _BOT_HEADERS)
+        if resp.get("code") == 500:
+            return {"retcode": 500, "msg": resp.get("msg")}
+        return resp
+
+    async def audit_templates(self, bot_appid="", tpl_ids=None, qrcode="", uin="", uid="", ticket=""):
+        if not all([bot_appid, tpl_ids, qrcode]):
+            return {"retcode": 400, "msg": "参数不完整"}
+        resp = await self._request("POST", "https://bot.q.qq.com/cgi-bin/msg_tpl/audit",
+                                   uin, uid, ticket,
+                                   {"bot_appid": int(bot_appid) if isinstance(bot_appid, str) else bot_appid,
+                                    "tpl_id": tpl_ids, "qrcode": qrcode}, _BOT_HEADERS)
+        if resp.get("code") == 500:
+            return {"retcode": 500, "msg": resp.get("msg")}
+        return resp
+
+    async def delete_templates(self, bot_appid="", tpl_ids=None, qrcode="", uin="", uid="", ticket=""):
+        if not all([bot_appid, tpl_ids, qrcode]):
+            return {"retcode": 400, "msg": "参数不完整"}
+        resp = await self._request("POST", "https://bot.q.qq.com/cgi-bin/msg_tpl/delete",
+                                   uin, uid, ticket,
+                                   {"bot_appid": int(bot_appid) if isinstance(bot_appid, str) else bot_appid,
+                                    "tpl_id": tpl_ids, "qrcode": qrcode}, _BOT_HEADERS)
+        if resp.get("code") == 500:
+            return {"retcode": 500, "msg": resp.get("msg")}
+        return resp
 
 
 _api = None

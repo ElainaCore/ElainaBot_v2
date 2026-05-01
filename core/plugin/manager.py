@@ -72,6 +72,9 @@ class PluginManager:
         self._plugin_bots = {}           # {key: [appid, ...]} 机器人绑定
         self._lock = asyncio.Lock()
         self._base_dir = os.path.dirname(self._dir)  # 项目根目录
+        self._file_mtimes = {}           # {file_path: mtime} 文件修改时间跟踪
+        self._watcher_task = None        # 文件监视 asyncio.Task
+        self._watcher_running = False
         self._load_blacklists()
         self._load_plugin_bots()
 
@@ -113,6 +116,7 @@ class PluginManager:
                 report_error(PLUGIN, name, e)
 
         self._rebuild_handler_list()
+        self._snapshot_all_mtimes()
         log.info(f"插件加载完成: {loaded}/{len(dirs)} 个 (大型 {large_count}), "
                  f"共 {self.handler_count} 个处理器")
 
@@ -219,11 +223,92 @@ class PluginManager:
         else:
             await self.load(name)
         self._rebuild_handler_list()
+        # 更新该插件的 mtime 快照
+        pdir = os.path.join(self._dir, name)
+        if os.path.isdir(pdir):
+            for root, _, files in os.walk(pdir):
+                for f in files:
+                    if f.endswith('.py') and not f.startswith('_'):
+                        fp = os.path.join(root, f)
+                        try:
+                            self._file_mtimes[fp] = os.path.getmtime(fp)
+                        except OSError:
+                            pass
         info = self._plugins.get(name)
         count = len(info.handlers) if info else 0
         t = f'{info.load_time:.2f}s' if info else '?'
         log.info(f"🔄 插件热重载: {name} ({count} 个处理器, {t})")
         return True
+
+    # ==================== 文件监视 (代码变更自动热重载) ====================
+
+    def _snapshot_all_mtimes(self):
+        """扫描所有插件目录, 记录 .py 文件 mtime"""
+        self._file_mtimes.clear()
+        for name in self._plugins:
+            pdir = os.path.join(self._dir, name)
+            if not os.path.isdir(pdir):
+                continue
+            for root, _, files in os.walk(pdir):
+                for f in files:
+                    if f.endswith('.py') and not f.startswith('_'):
+                        fp = os.path.join(root, f)
+                        try:
+                            self._file_mtimes[fp] = os.path.getmtime(fp)
+                        except OSError:
+                            pass
+
+    async def _watcher_loop(self):
+        """每 2 秒对比 mtime, 变更则热重载"""
+        while self._watcher_running:
+            try:
+                await asyncio.sleep(2)
+                changed = set()
+                # 已跟踪文件: 修改 / 删除
+                for fp, old_mt in list(self._file_mtimes.items()):
+                    try:
+                        cur = os.path.getmtime(fp)
+                        if cur != old_mt:
+                            changed.add(os.path.relpath(fp, self._dir).split(os.sep)[0])
+                    except OSError:
+                        changed.add(os.path.relpath(fp, self._dir).split(os.sep)[0])
+                        self._file_mtimes.pop(fp, None)
+                # 新增文件
+                for name in list(self._plugins):
+                    pdir = os.path.join(self._dir, name)
+                    if not os.path.isdir(pdir):
+                        continue
+                    for root, _, files in os.walk(pdir):
+                        for f in files:
+                            if f.endswith('.py') and not f.startswith('_'):
+                                if os.path.join(root, f) not in self._file_mtimes:
+                                    changed.add(name)
+                # 重载
+                for name in changed:
+                    if name in self._plugins:
+                        try:
+                            await self.reload(name)
+                        except Exception as e:
+                            report_error(PLUGIN, name, e)
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                pass
+
+    def start_watcher(self):
+        """启动文件监视"""
+        if self._watcher_task and not self._watcher_task.done():
+            return
+        self._watcher_running = True
+        self._watcher_task = asyncio.ensure_future(self._watcher_loop())
+        log.info("📡 插件文件监视已启动")
+
+    def stop_watcher(self):
+        """停止文件监视"""
+        self._watcher_running = False
+        if self._watcher_task and not self._watcher_task.done():
+            self._watcher_task.cancel()
+            self._watcher_task = None
 
     async def unload(self, name):
         """卸载插件"""
