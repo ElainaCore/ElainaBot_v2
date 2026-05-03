@@ -16,8 +16,6 @@ from core.base.logger import get_logger, PLUGIN
 # 导入 app 子模块, 触发 @handler / 侧边栏页面等注册
 from plugins.system.app import basic      # noqa: F401
 from plugins.system.app import admin      # noqa: F401
-from plugins.system.app import examples   # noqa: F401
-from plugins.system.app import web_pages  # noqa: F401
 
 log = get_logger(PLUGIN, "系统管理")
 

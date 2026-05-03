@@ -1,168 +1,283 @@
-"""
-示例插件 — 开发者参考
-重命名为 .py 即可启用, 展示 ElainaBot_V2 插件开发的常用 API
-
-功能一览:
-  - handler 装饰器 (正则匹配、权限控制、冷却、场景限制)
-  - on_load / on_unload 生命周期
-  - interceptor 消息拦截器
-  - 多种消息发送 (文本/图片/语音/视频/文件/ark卡片)
-  - 撤回、主动消息、面板推送
-"""
+"""示例功能: 媒体发送、ark卡片、markdown、撤回、主动消息、按钮等 (仅主人可用)"""
 
 import os
 import asyncio
-from core.plugin.decorators import handler, on_load, on_unload, interceptor
-from core.base.logger import get_logger, PLUGIN
-
-log = get_logger(PLUGIN, "示例插件")
+from core.plugin.decorators import handler, on_unload
+from core.plugin.web_pages import register_page, unregister_page
 
 
-# ==================== 生命周期 ====================
+# ==================== 媒体发送示例 ====================
 
-@on_load
-def _loaded():
-    log.info("示例插件已加载")
-
-
-@on_unload
-def _unloaded():
-    log.info("示例插件已卸载")
-
-
-# ==================== 基础消息 ====================
-
-@handler(r'^ping$', name='ping', desc='最简示例: 收到 ping 回复 pong')
-async def ping(event, match):
-    await event.reply("pong")
-
-
-@handler(r'^echo\s+(.+)$', name='echo', desc='复读: echo <内容>', priority=10)
-async def echo(event, match):
-    await event.reply(match.group(1))
-
-
-# ==================== 权限与场景 ====================
-
-@handler(r'^仅主人$', name='仅主人', desc='owner_only 示例', owner_only=True)
-async def owner_demo(event, match):
-    await event.reply("你是主人, 命令已执行")
-
-
-@handler(r'^仅群聊$', name='仅群聊', desc='group_only 示例', group_only=True)
-async def group_demo(event, match):
-    await event.reply(f"当前群: {event.group_id}")
-
-
-@handler(r'^仅私聊$', name='仅私聊', desc='direct_only 示例', direct_only=True)
-async def direct_demo(event, match):
-    await event.reply(f"当前用户: {event.user_id}")
-
-
-@handler(r'^冷却测试$', name='冷却测试', desc='10秒冷却示例', cooldown=10)
-async def cooldown_demo(event, match):
-    await event.reply("命令已执行, 10秒内不可重复触发")
-
-
-# ==================== 媒体发送 ====================
-
-@handler(r'^示例图片$', name='示例图片', desc='发送网络图片', owner_only=True)
-async def demo_image(event, match):
+@handler(r'^图片$', name='图片', desc='发送网络图片示例', owner_only=True)
+async def send_image(event, match):
     await event.reply_image(
         "https://i0.hdslb.com/bfs/openplatform/559162218f455ea859c783dceeda65cb1c724f4c.png",
-        "网络图片示例")
+        "reply_image 方法发送")
 
 
-@handler(r'^示例本地图片$', name='示例本地图片', desc='发送本地图片', owner_only=True)
-async def demo_local_image(event, match):
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "1.png")
+@handler(r'^本地图片$', name='本地图片', desc='发送本地图片示例', owner_only=True)
+async def send_local_image(event, match):
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "1.png")
     if not os.path.exists(path):
-        return await event.reply(f"文件不存在: {path}")
-    with open(path, 'rb') as f:
-        await event.reply_image(f.read(), "本地图片示例")
+        return await event.reply(f"❌ 图片不存在: {path}")
+    try:
+        with open(path, 'rb') as f:
+            data = f.read()
+        await event.reply_image(data, f"📸 本地图片 ({len(data)/1024/1024:.2f}MB)")
+    except Exception as ex:
+        await event.reply(f"❌ 读取失败: {ex}")
 
 
-@handler(r'^示例语音$', name='示例语音', desc='发送语音', owner_only=True)
-async def demo_voice(event, match):
-    await event.reply_voice("https://act-upload.mihoyo.com/sr-wiki/2025/06/03/160045374/"
-                            "420e9ac5c0c9d2b2c44b91f453b65061_2267222992827173477.wav")
+@handler(r'^语音$', name='语音', desc='发送语音示例', owner_only=True)
+async def send_voice(event, match):
+    await event.reply_voice(
+        "https://act-upload.mihoyo.com/sr-wiki/2025/06/03/160045374/420e9ac5c0c9d2b2c44b91f453b65061_2267222992827173477.wav")
 
 
-@handler(r'^示例视频$', name='示例视频', desc='发送视频', owner_only=True)
-async def demo_video(event, match):
-    await event.reply_video("https://www.w3schools.com/html/mov_bbb.mp4")
+@handler(r'^视频$', name='视频', desc='发送视频示例', owner_only=True)
+async def send_video(event, match):
+    await event.reply_video("https://i.elaina.vin/1.mp4")
 
 
-@handler(r'^示例文件$', name='示例文件', desc='发送临时文件', owner_only=True)
-async def demo_file(event, match):
+@handler(r'^文件$', name='文件', desc='发送文件示例', owner_only=True)
+async def send_file(event, match):
     import tempfile
     with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False, encoding='utf-8') as f:
-        f.write("ElainaBot 测试文件")
-        path = f.name
+        f.write("ElainaBot测试文件\n这是一个自动生成的文本文件示例")
+        temp_path = f.name
     try:
-        await event.reply_file(path, "临时文件示例", file_name="test.txt")
+        await event.reply_file(temp_path, "📄 自动生成的测试文件", file_name="elainabot_test.txt")
     finally:
-        os.remove(path) if os.path.exists(path) else None
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
 
 
-# ==================== 撤回 ====================
+# ==================== 撤回示例 ====================
 
 @handler(r'^撤回测试$', name='撤回测试', desc='发送后3秒撤回', owner_only=True)
-async def demo_recall(event, match):
-    data = await event.reply("3秒后撤回...")
+async def test_recall(event, match):
+    data = await event.reply("⏰ 3秒后撤回...")
     if data:
         await asyncio.sleep(3)
         await event.recall()
 
 
-@handler(r'^自动撤回$', name='自动撤回', desc='auto_delete_time 示例', owner_only=True)
-async def demo_auto_recall(event, match):
-    await event.reply("5秒后自动撤回", auto_delete_time=5)
+@handler(r'^自动撤回$', name='自动撤回', desc='使用 auto_delete_time 自动撤回', owner_only=True)
+async def test_auto_recall(event, match):
+    await event.reply("⏰ 5秒后自动撤回", auto_delete_time=5)
+    await event.reply_image(
+        "https://i0.hdslb.com/bfs/openplatform/559162218f455ea859c783dceeda65cb1c724f4c.png",
+        "🖼️ 10秒后撤回", auto_delete_time=10)
 
 
-# ==================== Ark 卡片 ====================
+# ==================== Ark 卡片示例 ====================
 
-@handler(r'^示例ark$', name='示例ark', desc='ark23 列表卡片', owner_only=True)
-async def demo_ark(event, match):
+@handler(r'^ark23$', name='ark23', desc='ark23列表卡片示例', owner_only=True)
+async def send_ark23(event, match):
     await event.reply_ark(23, (
-        "列表卡片标题", "ElainaBot",
-        [["功能1: 图片"], ["功能2: 语音"], ["功能3: 视频"]]))
+        "列表卡片示例", "ElainaBot",
+        [['功能1: 图片'], ['功能2: 语音'], ['功能3: 视频', 'https://i.elaina.vin/api/']]))
 
 
-# ==================== 主动消息 ====================
+@handler(r'^ark24$', name='ark24', desc='ark24文本+图片卡片示例', owner_only=True)
+async def send_ark24(event, match):
+    await event.reply_ark(24, (
+        "功能强大的QQ机器人", "机器人信息", "ElainaBot", "支持插件化开发",
+        "https://gchat.qpic.cn/qmeetpic/0/0-0-52C851D5FB926BC645528EB4AB462B3D/0",
+        "https://i.elaina.vin/api/", "QQ Bot"))
+
+
+@handler(r'^ark37$', name='ark37', desc='ark37图文卡片示例', owner_only=True)
+async def send_ark37(event, match):
+    await event.reply_ark(37, (
+        "系统通知", "状态更新", "新功能上线",
+        "https://gchat.qpic.cn/qmeetpic/0/0-0-52C851D5FB926BC645528EB4AB462B3D/0",
+        "https://i.elaina.vin/api/"))
+
+
+# ==================== 按钮示例 ====================
+
+@handler(r'^按钮$', name='按钮示例', desc='发送带按钮的消息', owner_only=True)
+async def send_buttons(event, match):
+    buttons = [
+        # 第一行: 回调按钮 + 输入框按钮
+        [
+            {'text': '点我回调', 'data': 'callback_1', 'type': 1},
+            {'text': '输入框', 'data': '/帮助', 'type': 2},
+        ],
+        # 第二行: 链接按钮
+        [
+            {'text': '打开链接', 'link': 'https://i.elaina.vin/'},
+        ],
+    ]
+    await event.reply("📌 按钮功能演示", buttons=buttons)
+
+
+# ==================== 召回功能 ====================
+
+@handler(r'^指定召回\s+(\S+)$', name='指定召回', desc='向指定用户发送召回消息', owner_only=True)
+async def wakeup_user(event, match):
+    uid = match.group(1)
+    ok, r = await event.send_wakeup(uid, "📢 召回消息测试")
+    if ok:
+        await event.reply(f"✅ 召回成功 {uid[:8]}**** ID:{r}")
+    else:
+        await event.reply(f"❌ {r}")
+
+
+@handler(r'^强制召回\s+(\S+)$', name='强制召回', desc='强制向指定用户发送召回消息', owner_only=True)
+async def force_wakeup_user(event, match):
+    uid = match.group(1)
+    ok, r = await event.sender.force_wakeup(uid, "📢 强制召回测试")
+    if ok:
+        await event.reply(f"✅ 强制召回成功 {uid[:8]}**** ID:{r}")
+    else:
+        await event.reply(f"❌ {r}")
+
+
+# ==================== 主动消息示例 ====================
 
 @handler(r'^主动测试$', name='主动测试', desc='3秒后发送主动消息', owner_only=True)
-async def demo_proactive(event, match):
-    target = event.group_id if event.is_group else event.user_id
-    await event.reply(f"3秒后向 {target} 发送主动消息...")
+async def test_active_message(event, match):
+    target_id = event.group_id if event.is_group else event.user_id
+    target_type = "群" if event.is_group else "用户"
+    await event.reply(f"✅ 检测到{target_type}消息\nID: {target_id}\n\n⏰ 3秒后将发送主动消息...")
+
     await asyncio.sleep(3)
-    send = event.send_to_group if event.is_group else event.send_to_user
-    await send(target, "这是一条主动消息")
+    if event.is_group:
+        await event.send_to_group(event.group_id, "🎉 主动群消息（通过event发送）")
+    else:
+        await event.send_to_user(event.user_id, "🎉 主动私聊消息（通过event发送）")
 
 
-# ==================== 拦截器 ====================
-# 返回 True 则阻止后续所有 handler 处理该消息
+@handler(r'^主动私聊\s+(\S+)\s+(.+)$', name='主动私聊', desc='向指定用户发送主动消息', owner_only=True)
+async def test_send_to_user(event, match):
+    uid, content = match.group(1), match.group(2)
+    ok, data, _ = await event.send_to_user(uid, content)
+    if ok:
+        await event.reply(f"✅ 已发送主动私聊消息\n目标: {uid[:8]}****")
+    else:
+        await event.reply(f"❌ 发送失败: {data.get('message', '未知错误')}")
 
-@interceptor(priority=999)
-async def demo_interceptor(event):
-    if event.content and event.content.strip() == "拦截我":
-        await event.reply("消息已被拦截器拦截, 后续 handler 不会执行")
-        return True
-    return False
+
+@handler(r'^主动群发\s+(\S+)\s+(.+)$', name='主动群发', desc='向指定群发送主动消息', owner_only=True)
+async def test_send_to_group(event, match):
+    gid, content = match.group(1), match.group(2)
+    ok, data, _ = await event.send_to_group(gid, content)
+    if ok:
+        await event.reply(f"✅ 已发送主动群消息\n目标群: {gid[:8]}****")
+    else:
+        await event.reply(f"❌ 发送失败: {data.get('message', '未知错误')}")
 
 
-# ==================== Web 面板交互 ====================
+@handler(r'^主动图片$', name='主动图片', desc='向当前会话主动发送图片', owner_only=True)
+async def test_send_image_proactive(event, match):
+    target_id = event.group_id if event.is_group else event.user_id
+    if event.is_group:
+        await event.reply_image(
+            "https://i0.hdslb.com/bfs/openplatform/559162218f455ea859c783dceeda65cb1c724f4c.png",
+            "📸 主动图片", target_group_id=target_id)
+    else:
+        await event.reply_image(
+            "https://i0.hdslb.com/bfs/openplatform/559162218f455ea859c783dceeda65cb1c724f4c.png",
+            "📸 主动图片", target_user_id=target_id)
 
-@handler(r'^面板推送$', name='面板推送', desc='向 Web 面板推送日志', owner_only=True)
-async def demo_panel_push(event, match):
+
+# ==================== Web 面板页面示例 ====================
+
+register_page(
+    key='examples-page',
+    label='示例页面',
+    source='plugin',
+    source_name='alone',
+    html='''<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+         background: #0f0f23; color: #e0e0e0; padding: 32px; }
+  .card { background: #1a1a2e; border: 1px solid #2a2a3e; border-radius: 12px;
+          padding: 24px; max-width: 600px; margin: 0 auto; }
+  h1 { font-size: 20px; margin-bottom: 8px; color: #7c8aff; }
+  p { font-size: 14px; color: #aaa; line-height: 1.6; margin-bottom: 12px; }
+  .info { background: #16213e; border-radius: 8px; padding: 16px; margin-top: 16px;
+          font-size: 13px; line-height: 1.8; }
+  .info code { background: #2a2a3e; padding: 2px 6px; border-radius: 4px; color: #7c8aff; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px;
+           background: rgba(124,138,255,.15); color: #7c8aff; margin-left: 6px; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>自定义侧边栏页面 <span class="badge">示例</span></h1>
+    <p>这是 <code>plugins/alone/examples.py</code> 自动注册的面板页面。</p>
+    <p>模块 import 时注册, 插件卸载时自动注销。</p>
+    <div class="info">
+      <strong>使用方法:</strong><br>
+      1. 导入: <code>from core.plugin.web_pages import register_page</code><br>
+      2. 注册: <code>register_page(key, label, html=...)</code><br>
+      3. 注销: <code>unregister_page(key)</code><br><br>
+      <strong>参数:</strong><br>
+      - <code>key</code> — 页面唯一标识 (URL 路径)<br>
+      - <code>label</code> — 侧边栏显示名称<br>
+      - <code>html</code> — HTML 内容字符串<br>
+      - <code>html_file</code> — 或指定 HTML 文件路径<br>
+      - <code>source</code> — 来源类型 (plugin / module)
+    </div>
+  </div>
+</body>
+</html>''',
+)
+
+
+@on_unload
+def _unload_web_pages():
+    unregister_page('examples-page')
+
+
+# ==================== Web 面板示例 ====================
+
+@handler(r'^面板推送$', name='面板推送', desc='向 Web 面板推送一条自定义日志', owner_only=True)
+async def push_to_panel(event, match):
     try:
         import web.ws as ws
         from datetime import datetime
-        ws.push_log('framework', {
+        entry = {
             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            'content': f'插件推送测试 (用户: {event.user_id})',
-            'source': 'plugin.alone.example', 'level': 'INFO',
-        })
-        await event.reply("已推送到面板日志页")
+            'content': f'来自插件的推送测试 (用户: {event.user_id})',
+            'source': 'plugin.examples',
+            'level': 'INFO',
+        }
+        ws.push_log('framework', entry)
+        await event.reply("✅ 已推送日志到 Web 面板\n请在面板「日志」页查看")
     except Exception as e:
-        await event.reply(f"推送失败: {e}")
+        await event.reply(f"❌ 推送失败: {e}")
+
+
+@handler(r'^面板状态$', name='面板状态', desc='查看 Web 面板运行状态', owner_only=True)
+async def panel_status(event, match):
+    try:
+        import web.ws as ws
+        from core.base.config import cfg
+        port = cfg.get('settings', 'server.port', 5200)
+        client_count = len(ws._clients) if hasattr(ws, '_clients') else '未知'
+        await event.reply(
+            f"📊 Web 面板状态\n"
+            f"端口: {port}\n"
+            f"WebSocket 连接数: {client_count}\n"
+            f"面板路径: /web/")
+    except Exception as e:
+        await event.reply(f"❌ 获取状态失败: {e}")
+
+
+@handler(r'^面板广播\s+(.+)$', name='面板广播', desc='向所有面板客户端广播消息', owner_only=True)
+async def panel_broadcast(event, match):
+    content = match.group(1)
+    try:
+        import web.ws as ws
+        ws.broadcast({'type': 'notification', 'message': content})
+        await event.reply(f"✅ 已广播到所有面板客户端: {content}")
+    except Exception as e:
+        await event.reply(f"❌ 广播失败: {e}")
