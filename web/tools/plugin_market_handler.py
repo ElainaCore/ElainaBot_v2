@@ -16,11 +16,11 @@ log = logging.getLogger('ElainaBot.web.market')
 # ==================== GitHub 插件库配置 ====================
 PLUGIN_REPO = 'ElainaCore/Elaina-plugins'
 _PLUGIN_JSON_RAW = f'https://raw.githubusercontent.com/{PLUGIN_REPO}/main/plugins.json'
-_FALLBACK_MIRRORS = [
-    f'https://ghproxy.cc/{_PLUGIN_JSON_RAW}',
-    f'https://gh-proxy.com/{_PLUGIN_JSON_RAW}',
-    f'https://gh.llkk.cc/{_PLUGIN_JSON_RAW}',
-    f'https://gh.idayer.com/{_PLUGIN_JSON_RAW}',
+_FALLBACK_MIRROR_PREFIXES = [
+    'https://ghproxy.cc/',
+    'https://gh-proxy.com/',
+    'https://gh.llkk.cc/',
+    'https://gh.idayer.com/',
 ]
 
 _base_dir = ''
@@ -45,7 +45,7 @@ def _ranked_mirror_urls(raw_url):
     if cached:
         urls = [_build_mirror_url(raw_url, m['mirror'] if isinstance(m, dict) else m) for m in cached]
     else:
-        urls = list(_FALLBACK_MIRRORS)
+        urls = [_build_mirror_url(raw_url, p) for p in _FALLBACK_MIRROR_PREFIXES]
     if raw_url not in urls:
         urls.append(raw_url)
     return urls
