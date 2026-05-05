@@ -206,21 +206,18 @@ class DAUService:
         finally:
             conn.close()
 
+    _EMPTY_LIFECYCLE = {
+        'group_join_count': 0, 'group_leave_count': 0,
+        'friend_add_count': 0, 'friend_remove_count': 0,
+    }
+
     def _compute_lifecycle_stats(self, appid, date_str):
-        lc_db = self._lifecycle_db_path(appid, date_str)
-        empty = {
-            'group_join_count': 0, 'group_leave_count': 0,
-            'friend_add_count': 0, 'friend_remove_count': 0,
-        }
-        if not os.path.isfile(lc_db):
-            return empty
+        conn = self._open_ro(self._lifecycle_db_path(appid, date_str))
+        if not conn:
+            return dict(self._EMPTY_LIFECYCLE)
         try:
-            conn = sqlite3.connect(f"file:{lc_db}?mode=ro", uri=True, timeout=10)
-            conn.row_factory = sqlite3.Row
-            cur = conn.cursor()
-            cur.execute("SELECT type, COUNT(*) AS c FROM log GROUP BY type")
+            cur = conn.execute("SELECT type, COUNT(*) AS c FROM log GROUP BY type")
             counts = {row['type']: row['c'] for row in cur.fetchall()}
-            conn.close()
             return {
                 'group_join_count': counts.get('group_add', 0),
                 'group_leave_count': counts.get('group_del', 0),
@@ -229,7 +226,9 @@ class DAUService:
             }
         except Exception as e:
             log.debug(f"[{appid}] 读取 lifecycle 统计失败: {e}")
-            return empty
+            return dict(self._EMPTY_LIFECYCLE)
+        finally:
+            conn.close()
 
     def _save_dau(self, appid, date_str, msg_stats, event_stats):
         dau_path = self._dau_db_path(appid)

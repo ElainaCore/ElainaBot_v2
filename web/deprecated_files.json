@@ -1,0 +1,5 @@
+[
+  "core/bot.py",
+  "core/bot_instance.py",
+  "core/event_handler.py"
+]

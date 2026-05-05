@@ -235,17 +235,9 @@ class PluginManager:
         else:
             await self.load(name)
         self._rebuild_handler_list()
-        # 更新该插件的 mtime 快照
         pdir = os.path.join(self._dir, name)
         if os.path.isdir(pdir):
-            for root, _, files in os.walk(pdir):
-                for f in files:
-                    if f.endswith('.py') and not f.startswith('_'):
-                        fp = os.path.join(root, f)
-                        try:
-                            self._file_mtimes[fp] = os.path.getmtime(fp)
-                        except OSError:
-                            pass
+            self._scan_plugin_mtimes(pdir)
         info = self._plugins.get(name)
         count = len(info.handlers) if info else 0
         t = f'{info.load_time:.2f}s' if info else '?'
@@ -254,9 +246,39 @@ class PluginManager:
 
     # ==================== 文件监视 (代码变更自动热重载) ====================
 
+    def _scan_plugin_mtimes(self, pdir):
+        """记录单个插件目录下 .py 文件 mtime"""
+        for root, _, files in os.walk(pdir):
+            for f in files:
+                if f.endswith('.py') and not f.startswith('_'):
+                    fp = os.path.join(root, f)
+                    try:
+                        self._file_mtimes[fp] = os.path.getmtime(fp)
+                    except OSError:
+                        pass
+
+    def _plugin_of(self, filepath):
+        """文件路径 → 所属插件名"""
+        return os.path.relpath(filepath, self._dir).split(os.sep)[0]
+
     def _snapshot_all_mtimes(self):
         """扫描所有插件目录, 记录 .py 文件 mtime"""
         self._file_mtimes.clear()
+        for name in self._plugins:
+            pdir = os.path.join(self._dir, name)
+            if os.path.isdir(pdir):
+                self._scan_plugin_mtimes(pdir)
+
+    def _detect_changed_plugins(self):
+        """检测文件变更, 返回需要热重载的插件名集合"""
+        changed = set()
+        for fp, old_mt in list(self._file_mtimes.items()):
+            try:
+                if os.path.getmtime(fp) != old_mt:
+                    changed.add(self._plugin_of(fp))
+            except OSError:
+                changed.add(self._plugin_of(fp))
+                self._file_mtimes.pop(fp, None)
         for name in self._plugins:
             pdir = os.path.join(self._dir, name)
             if not os.path.isdir(pdir):
@@ -264,44 +286,22 @@ class PluginManager:
             for root, _, files in os.walk(pdir):
                 for f in files:
                     if f.endswith('.py') and not f.startswith('_'):
-                        fp = os.path.join(root, f)
-                        try:
-                            self._file_mtimes[fp] = os.path.getmtime(fp)
-                        except OSError:
-                            pass
+                        if os.path.join(root, f) not in self._file_mtimes:
+                            changed.add(name)
+        return changed
 
     async def _watcher_loop(self):
         """每 2 秒对比 mtime, 变更则热重载"""
         while self._watcher_running:
             try:
                 await asyncio.sleep(2)
-                changed = set()
-                # 已跟踪文件: 修改 / 删除
-                for fp, old_mt in list(self._file_mtimes.items()):
-                    try:
-                        cur = os.path.getmtime(fp)
-                        if cur != old_mt:
-                            changed.add(os.path.relpath(fp, self._dir).split(os.sep)[0])
-                    except OSError:
-                        changed.add(os.path.relpath(fp, self._dir).split(os.sep)[0])
-                        self._file_mtimes.pop(fp, None)
-                # 新增文件
-                for name in list(self._plugins):
-                    pdir = os.path.join(self._dir, name)
-                    if not os.path.isdir(pdir):
+                for name in self._detect_changed_plugins():
+                    if name not in self._plugins:
                         continue
-                    for root, _, files in os.walk(pdir):
-                        for f in files:
-                            if f.endswith('.py') and not f.startswith('_'):
-                                if os.path.join(root, f) not in self._file_mtimes:
-                                    changed.add(name)
-                # 重载
-                for name in changed:
-                    if name in self._plugins:
-                        try:
-                            await self.reload(name)
-                        except Exception as e:
-                            report_error(PLUGIN, name, e)
+                    try:
+                        await self.reload(name)
+                    except Exception as e:
+                        report_error(PLUGIN, name, e)
             except asyncio.CancelledError:
                 break
             except Exception:
@@ -365,29 +365,24 @@ class PluginManager:
         """动态导入插件目录 (预注册包层级, 兼容 Python 3.9+)"""
         plugins_dir = os.path.dirname(plugin_dir)
         mod_name = f"plugins.{name}"
-        # 注册 plugins 父包
         parent = cls._register_pkg('plugins', plugins_dir)
-        # 注册子目录包 (如 plugins.system.app)
-        for sub in os.listdir(plugin_dir):
-            sub_path = os.path.join(plugin_dir, sub)
-            if os.path.isdir(sub_path) and not sub.startswith(('_', '.')):
-                sub_mod = cls._register_pkg(f'{mod_name}.{sub}', sub_path)
-                # 预设属性, 让 import 链可达
-                setattr(sys.modules.get(mod_name, parent), sub, sub_mod)
-        # 导入入口文件
+        sub_dirs = [(s, os.path.join(plugin_dir, s))
+                    for s in os.listdir(plugin_dir)
+                    if os.path.isdir(os.path.join(plugin_dir, s))
+                    and not s.startswith(('_', '.'))]
+        for sub, sub_path in sub_dirs:
+            sub_mod = cls._register_pkg(f'{mod_name}.{sub}', sub_path)
+            setattr(sys.modules.get(mod_name, parent), sub, sub_mod)
         spec = importlib.util.spec_from_file_location(
             mod_name, entry_path,
             submodule_search_locations=[plugin_dir])
         module = importlib.util.module_from_spec(spec)
         sys.modules[mod_name] = module
         setattr(parent, name, module)
-        # 重新绑定子包属性到真正的 module
-        for sub in os.listdir(plugin_dir):
-            sub_path = os.path.join(plugin_dir, sub)
-            if os.path.isdir(sub_path) and not sub.startswith(('_', '.')):
-                sub_mod = sys.modules.get(f'{mod_name}.{sub}')
-                if sub_mod:
-                    setattr(module, sub, sub_mod)
+        for sub, _ in sub_dirs:
+            sub_mod = sys.modules.get(f'{mod_name}.{sub}')
+            if sub_mod:
+                setattr(module, sub, sub_mod)
         spec.loader.exec_module(module)
         return module
 
@@ -584,7 +579,7 @@ class PluginManager:
         """获取当前 bot 的 log_service"""
         if self._bot_manager_ref is None:
             try:
-                from core.bot import _bot_manager_ref
+                from core.bot.manager import _bot_manager_ref
                 PluginManager._bot_manager_ref = _bot_manager_ref
             except Exception:
                 return None

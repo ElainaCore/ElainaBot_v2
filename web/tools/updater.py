@@ -432,7 +432,7 @@ class FrameworkUpdater:
             log.error(f"备份失败: {e}")
             return None
 
-    # ==================== 覆盖文件 ====================
+    # ==================== 覆盖文件 ==
 
     def _should_skip(self, path):
         path = path.replace('\\', '/')
@@ -541,7 +541,7 @@ class FrameworkUpdater:
     def _trigger_restart():
         """更新后重启: Windows 用外部脚本, Linux/Docker 走内部重启 + os.execv"""
         try:
-            from core.bot import _bot_manager_ref
+            from core.bot.manager import _bot_manager_ref
             if _bot_manager_ref:
                 log.info("更新完成, 触发重启...")
                 _bot_manager_ref._restart_requested = True

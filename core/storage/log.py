@@ -495,7 +495,7 @@ class LogService(_BaseLogService, ShareMixin, WakeupMixin):
             await loop.run_in_executor(None, self._flush_data_queue_sync, ops)
 
     def _flush_data_queue_sync(self, ops):
-        conn = self._get_conn(self._resolve_db_path('data'), 'data')
+        conn = self._data_conn
         try:
             for sql, params in ops:
                 conn.execute(sql, params)
@@ -507,15 +507,18 @@ class LogService(_BaseLogService, ShareMixin, WakeupMixin):
             except Exception:
                 pass
 
+    @property
+    def _data_conn(self):
+        return self._get_conn(self._resolve_db_path('data'), 'data')
+
     async def db_execute(self, sql, params=()):
         """执行写操作, 返回 lastrowid"""
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._db_execute_sync, sql, params)
 
     def _db_execute_sync(self, sql, params):
-        conn = self._get_conn(self._resolve_db_path('data'), 'data')
-        cursor = conn.execute(sql, params)
-        conn.commit()
+        cursor = self._data_conn.execute(sql, params)
+        self._data_conn.commit()
         return cursor.lastrowid
 
     async def db_execute_many(self, sql, params_list):
@@ -523,24 +526,22 @@ class LogService(_BaseLogService, ShareMixin, WakeupMixin):
         return await loop.run_in_executor(None, self._db_execute_many_sync, sql, params_list)
 
     def _db_execute_many_sync(self, sql, params_list):
-        conn = self._get_conn(self._resolve_db_path('data'), 'data')
-        conn.executemany(sql, params_list)
-        conn.commit()
+        self._data_conn.executemany(sql, params_list)
+        self._data_conn.commit()
 
     async def db_execute_script(self, script):
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._db_execute_script_sync, script)
 
     def _db_execute_script_sync(self, script):
-        conn = self._get_conn(self._resolve_db_path('data'), 'data')
-        conn.executescript(script)
+        self._data_conn.executescript(script)
 
     async def db_fetch_one(self, sql, params=()):
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._db_fetch_one_sync, sql, params)
 
     def _db_fetch_one_sync(self, sql, params):
-        conn = self._get_conn(self._resolve_db_path('data'), 'data')
+        conn = self._data_conn
         conn.row_factory = sqlite3.Row
         row = conn.execute(sql, params).fetchone()
         return dict(row) if row else None
@@ -550,7 +551,7 @@ class LogService(_BaseLogService, ShareMixin, WakeupMixin):
         return await loop.run_in_executor(None, self._db_fetch_all_sync, sql, params)
 
     def _db_fetch_all_sync(self, sql, params):
-        conn = self._get_conn(self._resolve_db_path('data'), 'data')
+        conn = self._data_conn
         conn.row_factory = sqlite3.Row
         return [dict(r) for r in conn.execute(sql, params).fetchall()]
 

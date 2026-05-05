@@ -161,7 +161,8 @@ class MessageSender:
                                       **kwargs)
 
         success, data = await self._send_with_error_handling(endpoint, payload, event, content)
-        self._maybe_auto_recall(event, data, auto_delete_time) if success else None
+        if success:
+            self._maybe_auto_recall(event, data, auto_delete_time)
         return data
 
     # ==================== 媒体回复 ====================
@@ -224,7 +225,8 @@ class MessageSender:
         if not endpoint:
             return None
         success, data = await self._send_with_error_handling(endpoint, payload, event, content)
-        self._maybe_auto_recall(event, data, auto_delete_time) if success else None
+        if success:
+            self._maybe_auto_recall(event, data, auto_delete_time)
         return data
 
     # ==================== 主动推送 ====================
@@ -476,7 +478,8 @@ class MessageSender:
             return None
 
         success, data = await self._send_with_error_handling(endpoint, payload, event, content)
-        self._maybe_auto_recall(event, data, auto_delete_time) if success else None
+        if success:
+            self._maybe_auto_recall(event, data, auto_delete_time)
         return data
 
     # ==================== 错误处理 ====================
@@ -500,7 +503,7 @@ class MessageSender:
                 return False, None
             report_error_raw(
                 FRAMEWORK, '消息发送',
-                content=getattr(event, 'content', '')[:2000] if hasattr(event, 'content') else '',
+                content=(getattr(event, 'content', '') or '')[:2000],
                 tb=json.dumps(data, ensure_ascii=False, default=str)[:2000] if data else '',
                 context=json.dumps(payload, ensure_ascii=False, default=str)[:2000],
                 appid=self._appid,
