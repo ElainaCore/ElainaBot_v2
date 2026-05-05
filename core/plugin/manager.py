@@ -476,14 +476,12 @@ class PluginManager:
         content = event.content or ''
         user_id = event.user_id or ''
         appid = event.appid or self._appid
+        et = event.event_type
 
-        # 注入 sender 到 event, 插件通过 event.reply() 等方法发送
+        # 注入 sender 到 event
         event._sender = sender
 
-        # 提前获取 log_service (避免在循环里重复查找)
-        log_service = self._get_log_service(event)
-
-        # 黑名单
+        # 黑名单 (纯内存查找, 无 IO)
         bl_type = self._check_blacklist(event)
         if bl_type == 'user':
             await event.reply(template_name='blacklist',
@@ -498,103 +496,85 @@ class PluginManager:
             await event.reply(template_name='maintenance')
             return True
 
-        # 拦截器 (sync 在线程池, 不阻塞事件循环)
-        loop = asyncio.get_running_loop()
-        for ic in self._all_interceptors:
-            try:
-                if ic['is_coro']:
-                    result = await ic['func'](event)
-                else:
-                    result = await loop.run_in_executor(None, ic['func'], event)
-                if result is True:
-                    return True
-            except Exception as e:
-                report_error(PLUGIN, ic.get('_plugin', '?'), e)
+        # 拦截器
+        if self._all_interceptors:
+            loop = asyncio.get_running_loop()
+            for ic in self._all_interceptors:
+                try:
+                    if ic['is_coro']:
+                        result = await ic['func'](event)
+                    else:
+                        result = await loop.run_in_executor(None, ic['func'], event)
+                    if result is True:
+                        return True
+                except Exception as e:
+                    report_error(PLUGIN, ic.get('_plugin', '?'), e)
+
+        # 延迟获取 log_service (仅匹配到 handler 才需要)
+        log_service = None
 
         # 匹配处理器 (支持 / 前缀自动去除)
-        # 如果消息以 / 开头, 先去掉 / 尝试匹配, 匹配不到再用原内容匹配
-        contents_to_try = [content]
-        if content.startswith('/') and len(content) > 1:
-            contents_to_try = [content[1:], content]
+        contents_to_try = (content[1:], content) if content[:1] == '/' and len(content) > 1 else (content,)
 
-        matched = False
         for try_content in contents_to_try:
-            result = await self._try_match_handlers(
-                try_content, event, sender, user_id, appid, log_service)
-            if result is not None:
-                matched = True
-                return result
-            # result=None 表示无匹配, 继续下一个 content
+            for h in self._all_handlers:
+                if not self._check_bot_binding(h, appid):
+                    continue
+                if h['event_types'] and et not in h['event_types']:
+                    continue
+                if h['group_only'] and not event.is_group:
+                    continue
+                if h['direct_only'] and not event.is_direct:
+                    continue
+                if h['channel_only'] and not event.is_channel:
+                    continue
+                match = h['compiled'].search(try_content)
+                if not match:
+                    continue
+
+                # 权限检查
+                if h['owner_only'] and not self._is_owner(event):
+                    await event.reply(template_name='owner_only',
+                                      template_vars={'user_id': user_id})
+                    return True
+
+                # 惰性获取 log_service
+                if log_service is None:
+                    log_service = self._get_log_service(event)
+
+                plugin_name = h['name'] or h.get('_plugin', '')
+                sender._reply_log_cb = _make_reply_log_cb(plugin_name, log_service)
+                sender._reply_plugin_name = plugin_name or ''
+
+                err_ctx = {'handler': h['name'], 'user_id': user_id,
+                           'group_id': event.group_id or '',
+                           'event_type': et, 'content': content[:200]}
+                try:
+                    if h['is_coro']:
+                        await asyncio.wait_for(h['func'](event, match), timeout=30)
+                    else:
+                        loop = asyncio.get_running_loop()
+                        await asyncio.wait_for(
+                            loop.run_in_executor(None, h['func'], event, match), timeout=30)
+                except asyncio.TimeoutError:
+                    report_error(PLUGIN, plugin_name or '?',
+                                 f"处理器 [{h['name']}] 超时(30s)", context=err_ctx)
+                except Exception as e:
+                    report_error(PLUGIN, plugin_name or '?', e, context=err_ctx)
+                finally:
+                    sender._reply_log_cb = None
+                    sender._reply_plugin_name = ''
+                return True
 
         # 无匹配 -> 默认回复
-        if not matched and event.event_type in ('GROUP_AT_MESSAGE_CREATE', 'C2C_MESSAGE_CREATE'):
+        if et in ('GROUP_AT_MESSAGE_CREATE', 'C2C_MESSAGE_CREATE'):
             if cfg.get_bot_setting(appid, 'message.send_default_response', True):
                 excluded = cfg.get_bot_setting(appid, 'message.default_response_excluded_regex', []) or []
                 if not any(re.search(p, content) for p in excluded if p):
                     await event.reply(template_name='default',
                                       template_vars={'user_id': user_id})
 
-        return matched
-
-    # ==================== 处理器匹配 ====================
-
-    async def _try_match_handlers(self, content, event, sender, user_id, appid, log_service):
-        """尝试匹配处理器, 返回 True(匹配) / None(无)"""
-        for h in self._all_handlers:
-            # 机器人绑定过滤
-            if not self._check_bot_binding(h, appid):
-                continue
-            # 事件类型过滤
-            if h['event_types'] and event.event_type not in h['event_types']:
-                continue
-            # 场景过滤
-            if h['group_only'] and not event.is_group:
-                continue
-            if h['direct_only'] and not event.is_direct:
-                continue
-            if h['channel_only'] and not event.is_channel:
-                continue
-
-            # 正则匹配
-            match = h['compiled'].search(content)
-            if not match:
-                continue
-
-            # 权限检查
-            if h['owner_only'] and not self._is_owner(event):
-                await event.reply(template_name='owner_only',
-                                  template_vars={'user_id': user_id})
-                return True
-
-            # 注入回复日志回调 (记录 handler name 到 message.db)
-            plugin_name = h['name'] or h.get('_plugin', '')
-
-            sender._reply_log_cb = _make_reply_log_cb(plugin_name, log_service)
-            sender._reply_plugin_name = plugin_name or ''
-
-            # 执行 (async: wait_for + timeout; sync: 线程池隔离, 不阻塞事件循环)
-            err_ctx = {'handler': h['name'], 'user_id': user_id,
-                       'group_id': event.group_id or '',
-                       'event_type': event.event_type, 'content': content[:200]}
-            try:
-                if h['is_coro']:
-                    await asyncio.wait_for(h['func'](event, match), timeout=30)
-                else:
-                    loop = asyncio.get_running_loop()
-                    await asyncio.wait_for(
-                        loop.run_in_executor(None, h['func'], event, match), timeout=30)
-            except asyncio.TimeoutError:
-                report_error(PLUGIN, plugin_name or '?',
-                             f"处理器 [{h['name']}] 超时(30s)", context=err_ctx)
-            except Exception as e:
-                report_error(PLUGIN, plugin_name or '?', e, context=err_ctx)
-            finally:
-                sender._reply_log_cb = None
-                sender._reply_plugin_name = ''
-
-            return True  # 第一个匹配的处理器处理后结束
-
-        return None  # 无匹配
+        return False
 
     # ==================== 日志服务 ====================
 

@@ -13,6 +13,7 @@
 
 import os
 import json
+import time
 import random
 import asyncio
 import hashlib
@@ -74,7 +75,10 @@ class MessageSender:
     async def _ensure_client(self):
         if self._client is None or self._client.closed:
             timeout = aiohttp.ClientTimeout(total=30)
-            conn = aiohttp.TCPConnector(ssl=self._ssl_ctx)
+            conn = aiohttp.TCPConnector(
+                ssl=self._ssl_ctx, limit=50, limit_per_host=10,
+                use_dns_cache=True, ttl_dns_cache=600,
+                keepalive_timeout=30)
             self._client = aiohttp.ClientSession(
                 base_url=self._base_url, timeout=timeout, connector=conn)
         return self._client
@@ -94,8 +98,12 @@ class MessageSender:
             if 'json' in kwargs:
                 headers.setdefault('Content-Type', 'application/json')
             try:
+                _t = time.time()
                 async with client.request(method, endpoint, headers=headers, **kwargs) as resp:
                     body = await resp.read()
+                    _dt = time.time() - _t
+                    if _dt > 1:
+                        log.warning(f"[{self._appid}] API 慢请求 {_dt*1000:.0f}ms {method} {endpoint}")
                     if resp.status >= 400:
                         try:
                             err = json.loads(body)
@@ -103,7 +111,7 @@ class MessageSender:
                             err = {'message': body.decode(errors='replace'), 'code': resp.status}
                         if err.get('code') == _TOKEN_EXPIRED_CODE and attempt == 0:
                             await self._token_mgr.refresh_token()
-                            await asyncio.sleep(1)
+                            await asyncio.sleep(0.1)
                             continue
                         return False, err
                     if body:

@@ -141,6 +141,32 @@ class BotInstance:
 # 用户缓存 TTL (秒)
 _USER_CACHE_TTL = 3600  # 1小时
 
+# ==================== 事件去重缓存 ====================
+_DEDUP_TTL = 300  # 5 分钟
+
+
+class _EventDedup:
+    """轻量 TTL 去重: 记录已处理的 message_id / event_id, 5 分钟过期"""
+    __slots__ = ('_seen', '_next_purge')
+
+    def __init__(self):
+        self._seen = {}       # {id_str: expire_ts}
+        self._next_purge = 0  # 下次清理时间戳
+
+    def is_dup(self, *ids) -> bool:
+        now = time.time()
+        if now > self._next_purge:
+            cutoff = now
+            self._seen = {k: v for k, v in self._seen.items() if v > cutoff}
+            self._next_purge = now + 60
+        for eid in ids:
+            if not eid:
+                continue
+            if eid in self._seen:
+                return True
+            self._seen[eid] = now + _DEDUP_TTL
+        return False
+
 
 class BotManager:
     """多机器人管理器 + HTTP 服务器"""
@@ -156,6 +182,7 @@ class BotManager:
         self._web_log_cb = None     # web.ws.push_log 回调 (由 web/setup.py 注入)
         self._known_users = {}      # {uid: expire_timestamp} 已知用户缓存
         self._cache_clean_ts = 0    # 上次清理缓存的时间
+        self._dedup = {}            # {appid: _EventDedup} 每个 bot 独立去重
         self._group_users_cache = {}  # {group_id: (expire_ts, set(uid...))} 群用户缓存
         self._log_base = ''         # data/log 路径 (供热重载复用)
         self._media_dir = ''        # data/media 路径 (供热重载复用)
@@ -386,7 +413,10 @@ class BotManager:
         if hasattr(self, '_shared_log') and self._shared_log:
             await self._shared_log.shutdown()
         if self._runner:
-            await self._runner.cleanup()
+            try:
+                await asyncio.wait_for(self._runner.cleanup(), timeout=5)
+            except asyncio.TimeoutError:
+                log.warning("HTTP 服务器关闭超时, 强制继续")
         log.info("已关闭")
 
     # ==================== HTTP 服务器 ====================
@@ -490,6 +520,16 @@ class BotManager:
 
         et = event.event_type
 
+        # 0. 事件去重 (按 bot 配置开关)
+        if cfg.get_bot_setting(appid, 'dedup.enabled', False):
+            dedup = self._dedup.get(appid)
+            if dedup is None:
+                dedup = _EventDedup()
+                self._dedup[appid] = dedup
+            if dedup.is_dup(event.message_id, event.event_id):
+                log.debug(f"[去重] 跳过重复事件 msg={event.message_id} evt={event.event_id}")
+                return
+
         # 1. union_id 交换 (按机器人配置)
         if event.user_id and event.union_openid:
             should_swap_group = cfg.get_bot_setting(appid, 'identity.use_union_id_for_group', False)
@@ -506,52 +546,38 @@ class BotManager:
             await lifecycle_handler(self, bot, event)
             return
 
-        # 3. 记录消息日志 + 推送到面板
-        if et in MESSAGE_TYPES:
+        _t0 = time.time()
+        is_msg = et in MESSAGE_TYPES
+
+        # 3. 日志 + 用户记录 (异步, 不阻塞插件分发)
+        if is_msg:
+            raw_json = json.dumps(event.raw, ensure_ascii=False)
             log_entry = {
-                'type': et,
-                'message_id': event.message_id or '',
-                'user_id': event.user_id or '',
-                'group_id': event.group_id or '',
-                'content': event.content or '',
-                'raw_message': json.dumps(event.raw, ensure_ascii=False),
+                'type': et, 'message_id': event.message_id or '',
+                'user_id': event.user_id or '', 'group_id': event.group_id or '',
+                'content': event.content or '', 'raw_message': raw_json,
             }
-            await bot.log_service.add('message', log_entry)
+            bot.log_service.add_sync('message', log_entry)
             self._push_web_log('message', {
-                'appid': appid, 'bot_name': bot.name,
+                **log_entry, 'appid': appid, 'bot_name': bot.name,
                 'bot_qq': getattr(bot, 'robot_qq', '') or '',
-                'event_type': et, 'user_id': event.user_id or '',
-                'group_id': event.group_id or '',
-                'content': event.content or '',
-                'raw_message': json.dumps(event.raw, ensure_ascii=False),
-                'direction': 'receive',
+                'event_type': et, 'direction': 'receive',
             })
+            if event.user_id:
+                asyncio.create_task(self._track_user(bot, event, appid))
 
-        # 4. 用户/群组记录 + 插件分发 (并行执行)
-        user_task = None
-        if event.user_id and et in MESSAGE_TYPES:
-            user_task = asyncio.create_task(
-                self._track_user(bot, event, appid))
-
-        # 5. 分发到插件系统 (与用户记录并行)
+        # 4. 分发到插件系统 (关键路径, 最先执行)
         if self._plugin_manager:
             try:
                 await self._plugin_manager.dispatch(event, bot.sender)
+                _dt = time.time() - _t0
+                if _dt > 1:
+                    log.warning(f"[性能] 事件处理耗时 {_dt*1000:.0f}ms "
+                                f"content={event.content[:50] if event.content else ''}")
             except Exception as e:
                 report_error(FRAMEWORK, "事件分发", e,
                              context={'appid': appid, 'event_type': et,
                                       'user_id': event.user_id})
-                self._push_web_log('error', {
-                    'appid': appid, 'source': '事件分发',
-                    'content': str(e), 'event_type': et,
-                })
-
-        # 等待用户记录完成 (不影响插件响应速度)
-        if user_task:
-            try:
-                await user_task
-            except Exception:
-                pass
 
     # ==================== 生命周期事件处理 ====================
 
@@ -626,41 +652,45 @@ class BotManager:
         # 定期清理过期缓存 (每10分钟)
         if now - self._cache_clean_ts > 600:
             self._cache_clean_ts = now
-            expired = [k for k, v in self._known_users.items() if v < now]
-            for k in expired:
-                del self._known_users[k]
+            cutoff = now
+            self._known_users = {k: v for k, v in self._known_users.items() if v > cutoff}
 
-        # 检查缓存判断是否新用户
-        is_new_user = uid not in self._known_users
+        # 已知用户: 只更新昵称 + 群组, 跳过 DB 查询
+        if uid in self._known_users:
+            if username:
+                bot.log_service.db_queue(
+                    "INSERT INTO users (user_id, name) VALUES (?, ?) "
+                    "ON CONFLICT(user_id) DO UPDATE SET name=?",
+                    (uid, username, username))
+            if event.is_direct:
+                try: await bot.log_service.wakeup_update(uid)
+                except Exception: pass
+            if gid and gid != 'c2c':
+                await self._add_user_to_group(bot, gid, uid)
+            return
 
-        if is_new_user:
-            # 查库确认
-            existing = await bot.log_service.db_fetch_one(
-                "SELECT user_id FROM users WHERE user_id=?", (uid,))
-            if existing:
-                is_new_user = False
-            else:
-                await bot.log_service.db_execute(
-                    "INSERT OR IGNORE INTO users (user_id) VALUES (?)", (uid,))
+        # 新用户判定
+        is_new_user = True
+        existing = await bot.log_service.db_fetch_one(
+            "SELECT user_id FROM users WHERE user_id=?", (uid,))
+        if existing:
+            is_new_user = False
+        else:
+            bot.log_service.db_queue(
+                "INSERT OR IGNORE INTO users (user_id) VALUES (?)", (uid,))
 
-        # 写入缓存
         self._known_users[uid] = now + _USER_CACHE_TTL
 
-        # 更新昵称
         if username:
-            await bot.log_service.db_execute(
+            bot.log_service.db_queue(
                 "INSERT INTO users (user_id, name) VALUES (?, ?) "
                 "ON CONFLICT(user_id) DO UPDATE SET name=?",
                 (uid, username, username))
 
-        # 私聊活跃记录 (唤醒系统)
         if event.is_direct:
-            try:
-                await bot.log_service.wakeup_update(uid)
-            except Exception:
-                pass
+            try: await bot.log_service.wakeup_update(uid)
+            except Exception: pass
 
-        # 群组记录
         if gid and gid != 'c2c':
             await self._add_user_to_group(bot, gid, uid)
 

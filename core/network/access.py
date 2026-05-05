@@ -74,7 +74,8 @@ class TokenManager:
     async def _ensure_client(self):
         if self._client is None or self._client.closed:
             timeout = aiohttp.ClientTimeout(total=10)
-            conn = aiohttp.TCPConnector(ssl=self._ssl_ctx)
+            conn = aiohttp.TCPConnector(
+                ssl=self._ssl_ctx, use_dns_cache=True, ttl_dns_cache=600)
             self._client = aiohttp.ClientSession(timeout=timeout, connector=conn)
         return self._client
 
