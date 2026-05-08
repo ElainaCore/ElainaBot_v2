@@ -150,6 +150,8 @@ def _on_load():
 
 ## 🐳 Docker 一键部署
 
+[![Docker Hub](https://img.shields.io/badge/Docker%20Hub-elainabot%2Felainabot-blue?logo=docker)](https://hub.docker.com/r/elainabot/elainabot)
+
 ### 环境要求
 
 - [Docker](https://docs.docker.com/get-docker/) 20.10+
