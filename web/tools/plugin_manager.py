@@ -2,6 +2,7 @@
 
 import os
 import re
+import ast
 import json
 import logging
 import traceback
@@ -29,6 +30,13 @@ def _plugins_dir():
     return os.path.join(_base_dir, 'plugins')
 
 
+def _get_pm():
+    """获取 PluginManager 实例 (无则返回 None)"""
+    if not _bot_manager:
+        return None
+    return getattr(_bot_manager, '_plugin_manager', None) or getattr(_bot_manager, 'plugin_manager', None)
+
+
 def _validate_path(path, plugins_dir):
     abs_p = os.path.abspath(path)
     return abs_p.startswith(os.path.abspath(plugins_dir)), abs_p
@@ -38,9 +46,7 @@ def _validate_path(path, plugins_dir):
 
 def _get_plugin_info():
     """从 PluginManager 获取已加载插件的注册命令和描述 (直接调用 PM 方法)"""
-    if not _bot_manager:
-        return {}
-    pm = getattr(_bot_manager, '_plugin_manager', None) or getattr(_bot_manager, 'plugin_manager', None)
+    pm = _get_pm()
     if not pm or not hasattr(pm, 'get_web_plugin_info'):
         return {}
     try:
@@ -130,33 +136,32 @@ def _scan_py_files(dir_path, prefix=''):
     """扫描目录中的 .py / .py.ban 文件, prefix 用于子目录显示"""
     files = []
     for fname in sorted(os.listdir(dir_path)):
+        if fname.startswith('_'):
+            continue
+        if fname.endswith('.py'):
+            enabled = True
+        elif fname.endswith('.py.ban'):
+            enabled = False
+        else:
+            continue
         fpath = os.path.join(dir_path, fname)
         if not os.path.isfile(fpath):
             continue
         display = f'{prefix}{fname}' if prefix else fname
-        if fname.endswith('.py') and not fname.startswith('_'):
-            size = os.path.getsize(fpath)
-            mtime = datetime.fromtimestamp(os.path.getmtime(fpath)).strftime('%Y-%m-%d %H:%M:%S')
-            files.append({
-                'name': display, 'path': fpath.replace('\\', '/'),
-                'enabled': True, 'size': size, 'last_modified': mtime,
-            })
-        elif fname.endswith('.py.ban') and not fname.startswith('_'):
-            size = os.path.getsize(fpath)
-            mtime = datetime.fromtimestamp(os.path.getmtime(fpath)).strftime('%Y-%m-%d %H:%M:%S')
-            files.append({
-                'name': display[:-4] if display.endswith('.ban') else display,
-                'path': fpath.replace('\\', '/'),
-                'enabled': False, 'size': size, 'last_modified': mtime,
-            })
+        if not enabled and display.endswith('.ban'):
+            display = display[:-4]
+        stat = os.stat(fpath)
+        files.append({
+            'name': display, 'path': fpath.replace('\\', '/'),
+            'enabled': enabled, 'size': stat.st_size,
+            'last_modified': datetime.fromtimestamp(stat.st_mtime).strftime('%Y-%m-%d %H:%M:%S'),
+        })
     return files
 
 
 def _get_plugin_bots_map():
     """从 PluginManager 获取插件机器人绑定配置"""
-    if not _bot_manager:
-        return {}
-    pm = getattr(_bot_manager, '_plugin_manager', None) or getattr(_bot_manager, 'plugin_manager', None)
+    pm = _get_pm()
     if not pm or not hasattr(pm, 'get_plugin_bots'):
         return {}
     try:
@@ -245,22 +250,34 @@ async def handle_toggle_plugin(request: web.Request):
     if not valid:
         return web.json_response({'success': False, 'message': '无效路径'}, status=403)
 
-    if action == 'disable':
-        if not abs_path.endswith('.py'):
-            return web.json_response({'success': False, 'message': '只能禁用 .py'}, status=400)
-        new_abs = abs_path + '.ban'
-        if os.path.exists(new_abs):
-            return web.json_response({'success': False, 'message': '禁用文件已存在'}, status=409)
-        os.rename(abs_path, new_abs)
-        return web.json_response({'success': True, 'message': '插件已禁用', 'new_path': new_abs.replace('\\', '/')})
-    else:
-        if not abs_path.endswith('.py.ban'):
-            return web.json_response({'success': False, 'message': '只能启用 .py.ban'}, status=400)
-        new_abs = abs_path[:-4]
-        if os.path.exists(new_abs):
-            return web.json_response({'success': False, 'message': '启用文件已存在'}, status=409)
-        os.rename(abs_path, new_abs)
-        return web.json_response({'success': True, 'message': '插件已启用', 'new_path': new_abs.replace('\\', '/')})
+    # 统一 enable/disable 逻辑
+    is_disable = action == 'disable'
+    expect_ext = '.py' if is_disable else '.py.ban'
+    if not abs_path.endswith(expect_ext):
+        return web.json_response({'success': False, 'message': f'只能操作 {expect_ext}'}, status=400)
+    new_abs = (abs_path + '.ban') if is_disable else abs_path[:-4]
+    if os.path.exists(new_abs):
+        return web.json_response({'success': False, 'message': '目标文件已存在'}, status=409)
+    os.rename(abs_path, new_abs)
+    await _try_reload_plugin(new_abs if not is_disable else abs_path, plugins_dir)
+    label = '已禁用' if is_disable else '已启用'
+    return web.json_response({'success': True, 'message': f'插件{label}', 'new_path': new_abs.replace('\\', '/')})
+
+
+async def _try_reload_plugin(file_path, plugins_dir):
+    """根据文件路径推导插件名并触发运行时热重载"""
+    pm = _get_pm()
+    if not pm:
+        return
+    # 从文件路径推导插件目录名: plugins/<name>/xxx.py → name
+    try:
+        rel = os.path.relpath(file_path, plugins_dir)
+        plugin_name = rel.split(os.sep)[0]
+        if plugin_name and plugin_name in pm.plugins:
+            await pm.reload(plugin_name)
+            log.info(f"插件文件变更触发热重载: {plugin_name}")
+    except Exception as e:
+        log.warning(f"自动热重载失败: {e}")
 
 
 # ==================== 热重载 ====================
@@ -270,11 +287,9 @@ async def handle_reload_plugin(request: web.Request):
     plugin_name = body.get('name', '')
     if not plugin_name:
         return web.json_response({'success': False, 'message': '缺少插件名'}, status=400)
-    if not _bot_manager:
-        return web.json_response({'success': False, 'message': '框架未启动'}, status=503)
-    pm = getattr(_bot_manager, '_plugin_manager', None) or getattr(_bot_manager, 'plugin_manager', None)
+    pm = _get_pm()
     if not pm:
-        return web.json_response({'success': False, 'message': '插件管理器未初始化'}, status=503)
+        return web.json_response({'success': False, 'message': '框架未启动或插件管理器未初始化'}, status=503)
     try:
         result = await pm.reload(plugin_name)
         if result:
@@ -428,6 +443,21 @@ def _modules_dir():
     return os.path.join(_base_dir, 'modules')
 
 
+def _read_module_meta(entry_path):
+    """通过 AST 读取 main.py 中的 __module_meta__"""
+    try:
+        with open(entry_path, 'r', encoding='utf-8') as f:
+            tree = ast.parse(f.read())
+        for node in ast.iter_child_nodes(tree):
+            if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                    and isinstance(node.targets[0], ast.Name)
+                    and node.targets[0].id == '__module_meta__'):
+                return ast.literal_eval(node.value)
+    except Exception:
+        pass
+    return {}
+
+
 def _scan_modules():
     """扫描所有模块, 包含运行时状态"""
     modules_dir = _modules_dir()
@@ -437,11 +467,20 @@ def _scan_modules():
 
     # 运行时模块状态
     runtime = {}
+    persist_map = {}
     if _bot_manager:
         mm = getattr(_bot_manager, 'module_manager', None)
         if mm:
             for m in mm.list_modules():
                 runtime[m['name']] = m
+    # 直接读取持久化开关文件 (不依赖运行时)
+    enabled_file = os.path.join(modules_dir, 'modules_enabled.json')
+    if os.path.isfile(enabled_file):
+        try:
+            with open(enabled_file, 'r', encoding='utf-8') as f:
+                persist_map = json.load(f) or {}
+        except Exception:
+            pass
 
     for name in sorted(os.listdir(modules_dir)):
         mod_dir = os.path.join(modules_dir, name)
@@ -451,15 +490,8 @@ def _scan_modules():
         if not os.path.isfile(entry):
             continue
 
-        # 读取 module.json
-        meta = {}
-        meta_path = os.path.join(mod_dir, 'module.json')
-        if os.path.isfile(meta_path):
-            try:
-                with open(meta_path, 'r', encoding='utf-8') as f:
-                    meta = json.load(f) or {}
-            except Exception:
-                pass
+        # 读取 __module_meta__
+        meta = _read_module_meta(entry)
 
         # 读取配置文件列表
         data_dir = os.path.join(mod_dir, 'data')
@@ -475,6 +507,7 @@ def _scan_modules():
             'version': meta.get('version') or rt.get('version', '1.0.0'),
             'author': meta.get('author') or rt.get('author', ''),
             'enabled': rt.get('enabled', False),
+            'persist_enabled': rt.get('persist_enabled', persist_map.get(name, False)),
             'error': rt.get('error'),
             'last_modified': mtime,
             'config_files': config_files,
@@ -483,8 +516,10 @@ def _scan_modules():
     return result
 
 
+_CONFIG_EXTS = frozenset({'.yaml', '.yml', '.json', '.toml', '.ini', '.cfg', '.conf', '.txt', '.md', '.backup'})
+
 def _list_config_files(data_dir):
-    """列出 data/ 下可配置的文件"""
+    """列出 data/ 下可编辑的配置文件 (排除 .db/.backup 等)"""
     files = []
     if not os.path.isdir(data_dir):
         return files
@@ -493,34 +528,40 @@ def _list_config_files(data_dir):
         if not os.path.isfile(fpath):
             continue
         ext = os.path.splitext(fname)[1].lower()
-        size = os.path.getsize(fpath)
-        fmt = _detect_config_format(ext)
+        if ext not in _CONFIG_EXTS:
+            continue
         files.append({
             'name': fname,
             'path': fpath.replace('\\', '/'),
-            'format': fmt,
-            'size': size,
+            'format': _detect_config_format(ext),
+            'size': os.path.getsize(fpath),
         })
     return files
 
 
+_FORMAT_MAP = {
+    '.yaml': 'yaml', '.yml': 'yaml', '.json': 'json', '.toml': 'toml',
+    '.ini': 'ini', '.cfg': 'ini', '.conf': 'ini',
+    '.txt': 'text', '.log': 'text', '.md': 'text',
+}
+
+
 def _detect_config_format(ext):
     """检测配置文件格式"""
-    if ext in ('.yaml', '.yml'):
-        return 'yaml'
-    if ext == '.json':
-        return 'json'
-    if ext in ('.toml',):
-        return 'toml'
-    if ext in ('.ini', '.cfg', '.conf'):
-        return 'ini'
-    if ext in ('.txt', '.log', '.md'):
-        return 'text'
-    return 'raw'
+    return _FORMAT_MAP.get(ext, 'raw')
 
 
 async def handle_scan_modules(request: web.Request):
     return web.json_response({'success': True, 'modules': _scan_modules()})
+
+
+def _validate_config_path(raw_path):
+    """校验配置文件路径是否在 modules/ 或 plugins/ 下, 返回 (abs_path, error_response)"""
+    abs_path = os.path.abspath(os.path.normpath(raw_path))
+    allowed = (os.path.abspath(_modules_dir()), os.path.abspath(_plugins_dir()))
+    if not any(abs_path.startswith(d) for d in allowed):
+        return None, web.json_response({'success': False, 'message': '无效路径'}, status=403)
+    return abs_path, None
 
 
 def _extract_yaml_comments(raw_text):
@@ -528,7 +569,6 @@ def _extract_yaml_comments(raw_text):
     支持顶层和嵌套 key 的行内注释 (key: value  # 注释)
     以及 key 上方一行的注释 (# 注释\\nkey: value)
     """
-    import re
     comments = {}
     lines = raw_text.split('\n')
     pending_comment = None
@@ -582,16 +622,11 @@ def _extract_yaml_comments(raw_text):
 async def handle_read_config(request: web.Request):
     """读取模块或插件的配置文件"""
     body = await request.json()
-    file_path = os.path.normpath(body.get('path', ''))
-    if not file_path:
+    if not body.get('path', ''):
         return web.json_response({'success': False, 'message': '缺少路径'}, status=400)
-
-    abs_path = os.path.abspath(file_path)
-    # 安全检查: 只允许 modules/ 和 plugins/ 下
-    modules_dir = os.path.abspath(_modules_dir())
-    plugins_dir = os.path.abspath(_plugins_dir())
-    if not (abs_path.startswith(modules_dir) or abs_path.startswith(plugins_dir)):
-        return web.json_response({'success': False, 'message': '无效路径'}, status=403)
+    abs_path, err = _validate_config_path(body['path'])
+    if err:
+        return err
     if not os.path.isfile(abs_path):
         return web.json_response({'success': False, 'message': '文件不存在'}, status=404)
 
@@ -632,17 +667,13 @@ async def handle_read_config(request: web.Request):
 async def handle_save_config(request: web.Request):
     """保存模块或插件的配置文件"""
     body = await request.json()
-    file_path = os.path.normpath(body.get('path', ''))
     content = body.get('content')
     fmt = body.get('format', 'raw')
-    if not file_path or content is None:
+    if not body.get('path', '') or content is None:
         return web.json_response({'success': False, 'message': '缺少参数'}, status=400)
-
-    abs_path = os.path.abspath(file_path)
-    modules_dir = os.path.abspath(_modules_dir())
-    plugins_dir = os.path.abspath(_plugins_dir())
-    if not (abs_path.startswith(modules_dir) or abs_path.startswith(plugins_dir)):
-        return web.json_response({'success': False, 'message': '无效路径'}, status=403)
+    abs_path, err = _validate_config_path(body['path'])
+    if err:
+        return err
 
     # 验证格式
     if fmt == 'yaml':
@@ -668,7 +699,22 @@ async def handle_save_config(request: web.Request):
     except Exception as e:
         return web.json_response({'success': False, 'message': str(e)}, status=500)
 
-    return web.json_response({'success': True, 'message': '配置已保存 (重启/重载后生效)'})
+    # 自动重载所属模块
+    reloaded = ''
+    if abs_path.startswith(modules_dir) and _bot_manager:
+        mm = getattr(_bot_manager, 'module_manager', None)
+        if mm:
+            rel = os.path.relpath(abs_path, modules_dir)
+            mod_name = rel.split(os.sep)[0]
+            if mm.is_enabled(mod_name):
+                try:
+                    await mm.reload(mod_name)
+                    reloaded = mod_name
+                except Exception as e:
+                    log.warning(f"模块 {mod_name} 重载失败: {e}")
+
+    msg = f'配置已保存, 模块 {reloaded} 已重载' if reloaded else '配置已保存'
+    return web.json_response({'success': True, 'message': msg})
 
 
 async def handle_module_toggle(request: web.Request):
@@ -688,10 +734,14 @@ async def handle_module_toggle(request: web.Request):
             ok = await mm.enable(name)
         else:
             ok = await mm.disable(name)
+            if not ok:
+                # 模块未运行但需要持久化关闭状态
+                mm.set_module_enabled_persist(name, False)
+                return web.json_response({'success': True, 'message': f'模块 {name} 已关闭'})
         if ok:
-            return web.json_response({'success': True, 'message': f'模块 {name} 已{action}'})
+            return web.json_response({'success': True, 'message': f'模块 {name} 已{"开启" if action == "enable" else "关闭"}'})
         else:
-            return web.json_response({'success': False, 'message': f'操作失败'})
+            return web.json_response({'success': False, 'message': '操作失败'})
     except Exception as e:
         return web.json_response({'success': False, 'message': str(e)}, status=500)
 
@@ -823,11 +873,9 @@ async def handle_plugin_config_files(request: web.Request):
 
 async def handle_get_plugin_bots(request: web.Request):
     """获取插件机器人绑定配置"""
-    if not _bot_manager:
-        return web.json_response({'success': False, 'message': '框架未启动'}, status=503)
-    pm = getattr(_bot_manager, '_plugin_manager', None) or getattr(_bot_manager, 'plugin_manager', None)
+    pm = _get_pm()
     if not pm:
-        return web.json_response({'success': False, 'message': '插件管理器未初始化'}, status=503)
+        return web.json_response({'success': False, 'message': '框架未启动或插件管理器未初始化'}, status=503)
     return web.json_response({'success': True, 'plugin_bots': pm.get_plugin_bots()})
 
 
@@ -837,11 +885,9 @@ async def handle_set_plugin_bots(request: web.Request):
     body: {"plugin_bots": {"插件名或插件名/文件名": ["appid1", "appid2", ...]}}
     空列表 = 不限制 (所有机器人均可触发)
     """
-    if not _bot_manager:
-        return web.json_response({'success': False, 'message': '框架未启动'}, status=503)
-    pm = getattr(_bot_manager, '_plugin_manager', None) or getattr(_bot_manager, 'plugin_manager', None)
+    pm = _get_pm()
     if not pm:
-        return web.json_response({'success': False, 'message': '插件管理器未初始化'}, status=503)
+        return web.json_response({'success': False, 'message': '框架未启动或插件管理器未初始化'}, status=503)
     body = await request.json()
     data = body.get('plugin_bots')
     if not isinstance(data, dict):

@@ -56,8 +56,8 @@ async def upload_media_bytes(sender, file_bytes, file_type, endpoint, *, file_na
         if file_info:
             return file_info
         if attempt == 0:
-            log.debug(f"[{sender._appid}] 上传返回无 file_info, 0.5s后重试 (resp={resp})")
-            await asyncio.sleep(0.5)
+            log.debug(f"[{sender._appid}] 上传返回无 file_info, 重试 (resp={resp})")
+            await asyncio.sleep(0.15)
     log.warning(f"[{sender._appid}] 上传失败: 无 file_info (endpoint={endpoint}, resp={last_resp})")
     return None
 

@@ -2,23 +2,24 @@
 # -*- coding: utf-8 -*-
 """拓展模块管理器 — 自动发现、依赖安装、启停管理
 
-模块结构: modules/{name}/ → main.py(入口) + module.json(清单) + requirements.txt(可选) + data/(配置)
+模块结构: modules/{name}/ → main.py(入口, 含 __module_meta__) + requirements.txt(可选) + data/(配置)
 入口函数: async def setup(ctx: ModuleContext) / async def teardown()
 安装即启用, 运行时可 disable(), 永久禁用删除目录
 """
 
 import os
 import sys
+import ast
 import json
 import subprocess
 import asyncio
 import importlib
 import importlib.util
 import re
-import yaml
 import importlib.metadata as _metadata
 from core.base.logger import get_logger, EXTENSION, report_error
 from core.base.config import cfg as app_cfg
+from core.base.context import BaseContext
 from core.module.hook import get_hook_manager
 
 log = get_logger(EXTENSION, "管理器")
@@ -29,7 +30,7 @@ async def _await_if_coro(result):
     return await result if asyncio.iscoroutine(result) else result
 
 
-# module.json 字段默认值
+# __module_meta__ 字段默认值
 _DEFAULT_MANIFEST = {
     'name': '',
     'description': '',
@@ -40,140 +41,18 @@ _DEFAULT_MANIFEST = {
 }
 
 
-class ModuleContext:
-    """模块上下文 — 数据目录访问、配置管理、Hook 注册"""
+class ModuleContext(BaseContext):
+    """模块上下文 — 继承 BaseContext, 额外提供 Hook 注册"""
 
-    __slots__ = ('name', 'module_dir', 'data_dir', 'log', '_hooks')
+    __slots__ = ('_hooks',)
 
     def __init__(self, name, module_dir):
-        self.name = name
-        self.module_dir = module_dir
-        self.data_dir = os.path.join(module_dir, 'data')
-        self.log = get_logger(EXTENSION, name)
+        super().__init__(name, module_dir, EXTENSION)
         self._hooks = get_hook_manager()
-        os.makedirs(self.data_dir, exist_ok=True)
 
-    # ---------- 路径 ----------
-
-    def get_data_path(self, filename):
-        """获取 data/ 下文件的绝对路径"""
-        return os.path.join(self.data_dir, filename)
-
-    def get_resource_path(self, filename):
-        """获取模块根目录下的文件路径 (代码/静态资源)"""
-        return os.path.join(self.module_dir, filename)
-
-    # ---------- 配置读写 ----------
-
-    def read_config(self, filename='config.yaml'):
-        """读取 data/ 下的 YAML 配置, 文件不存在返回空 dict"""
-        path = self.get_data_path(filename)
-        if not os.path.isfile(path):
-            return {}
-        try:
-            with open(path, 'r', encoding='utf-8') as f:
-                return yaml.safe_load(f) or {}
-        except Exception as e:
-            self.log.warning(f"读取配置失败 [{filename}]: {e}")
-            return {}
-
-    def save_config(self, data, filename='config.yaml', comments=None):
-        """保存配置到 data/, 可选写入注释"""
-        path = self.get_data_path(filename)
-        try:
-            if comments:
-                self._save_yaml_with_comments(path, data, comments)
-            else:
-                with open(path, 'w', encoding='utf-8') as f:
-                    yaml.dump(data, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
-        except Exception as e:
-            self.log.warning(f"保存配置失败 [{filename}]: {e}")
-
-    def _save_yaml_with_comments(self, path, data, comments, indent=0):
-        """写入带注释的 YAML 配置"""
-        lines = []
-        self._render_yaml_lines(lines, data, comments, indent)
-        with open(path, 'w', encoding='utf-8') as f:
-            f.write('\n'.join(lines) + '\n')
-
-    def _render_yaml_lines(self, lines, data, comments, indent=0):
-        """递归渲染 YAML 行 (带注释)"""
-        prefix = '  ' * indent
-        if not isinstance(data, dict):
-            return
-        for key, value in data.items():
-            comment = comments.get(key, '') if comments else ''
-            if isinstance(value, dict):
-                sub_comments = comments.get(key) if isinstance(comments.get(key), dict) else {}
-                if comment and isinstance(comment, str):
-                    lines.append(f"{prefix}# {comment}")
-                elif isinstance(sub_comments, dict) and '__desc__' in sub_comments:
-                    lines.append(f"{prefix}# {sub_comments['__desc__']}")
-                lines.append(f"{prefix}{key}:")
-                actual_comments = sub_comments if isinstance(sub_comments, dict) else {}
-                self._render_yaml_lines(lines, value, actual_comments, indent + 1)
-            else:
-                yaml_val = self._yaml_scalar(value)
-                if comment:
-                    lines.append(f"{prefix}{key}: {yaml_val}  # {comment}")
-                else:
-                    lines.append(f"{prefix}{key}: {yaml_val}")
-
-    @staticmethod
-    def _yaml_scalar(value):
-        """将 Python 值转为 YAML 标量字符串"""
-        if value is None:
-            return 'null'
-        if isinstance(value, bool):
-            return 'true' if value else 'false'
-        if isinstance(value, (int, float)):
-            return str(value)
-        if isinstance(value, str):
-            if not value:
-                return "''"
-            if any(c in value for c in ':{}[]&*?|>!%@`,"\'') or value.strip() != value:
-                return f"'{value}'"
-            return value
-        return yaml.dump(value, default_flow_style=True, allow_unicode=True).strip()
-
-    def ensure_config(self, defaults, filename='config.yaml', comments=None):
-        """确保配置存在且不缺项, 返回完整配置 dict"""
-        current = self.read_config(filename)
-        changed = False
-        for key, value in defaults.items():
-            if key not in current:
-                current[key] = value
-                changed = True
-        if changed:
-            self.save_config(current, filename, comments=comments)
-            self.log.info(f"配置已自动补全: {filename}")
-        return current
-
-    # ---------- 数据文件 ----------
-
-    def read_data(self, filename, encoding='utf-8'):
-        """读取 data/ 下的文本文件"""
-        path = self.get_data_path(filename)
-        if not os.path.isfile(path):
-            return None
-        with open(path, 'r', encoding=encoding) as f:
-            return f.read()
-
-    def save_data(self, filename, content, encoding='utf-8'):
-        """保存文本到 data/"""
-        path = self.get_data_path(filename)
-        with open(path, 'w', encoding=encoding) as f:
-            f.write(content)
-
-    def data_exists(self, filename):
-        """检查 data/ 下文件是否存在"""
-        return os.path.isfile(self.get_data_path(filename))
-
-    def list_data(self):
-        """列出 data/ 下所有文件"""
-        if not os.path.isdir(self.data_dir):
-            return []
-        return os.listdir(self.data_dir)
+    @property
+    def module_dir(self):
+        return self._root_dir
 
     # ---------- Hook ----------
 
@@ -228,6 +107,8 @@ class ModuleManager:
             self._dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'modules')
         self._modules = {}    # {name: ModuleInfo}
         self._lock = asyncio.Lock()
+        self._enabled_file = os.path.join(self._dir, 'modules_enabled.json')
+        self._enabled_map = self._load_enabled_map()  # {name: bool}
 
     # ==================== 发现 ====================
 
@@ -253,14 +134,49 @@ class ModuleManager:
         log.info(f"发现 {len(self._modules)} 个模块: "
                  f"{', '.join(f'{n}@{m.version}' for n, m in self._modules.items())}")
 
+    # ==================== 持久化开关 ====================
+
+    def _load_enabled_map(self):
+        """读取 modules_enabled.json, 不存在则返回空 dict"""
+        if not os.path.isfile(self._enabled_file):
+            return {}
+        try:
+            with open(self._enabled_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
+    def _save_enabled_map(self):
+        """保存 modules_enabled.json"""
+        os.makedirs(os.path.dirname(self._enabled_file), exist_ok=True)
+        try:
+            with open(self._enabled_file, 'w', encoding='utf-8') as f:
+                json.dump(self._enabled_map, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            log.warning(f"保存模块开关状态失败: {e}")
+
+    def is_module_enabled_persist(self, name):
+        """查询模块是否在持久化配置中标记为启用 (默认 False)"""
+        return self._enabled_map.get(name, False)
+
+    def set_module_enabled_persist(self, name, enabled):
+        """设置模块持久化开关状态"""
+        self._enabled_map[name] = bool(enabled)
+        self._save_enabled_map()
+
     # ==================== 自动启动 ====================
 
     async def start_enabled(self):
-        """启动所有发现的模块"""
-        tasks = [self._install_requirements(n, i.module_dir) for n, i in self._modules.items()]
+        """启动持久化配置中标记为启用的模块"""
+        to_start = [n for n in self._modules if self.is_module_enabled_persist(n)]
+        if not to_start:
+            log.info("无已启用模块, 跳过启动")
+            return
+        tasks = [self._install_requirements(n, self._modules[n].module_dir) for n in to_start]
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
-        for name in self._modules:
+        for name in to_start:
             try:
                 await self.enable(name, _skip_deps=True)
             except Exception as e:
@@ -268,7 +184,7 @@ class ModuleManager:
 
     # ==================== 启用/禁用 ====================
 
-    async def enable(self, name, _skip_deps=False):
+    async def enable(self, name, _skip_deps=False, _persist=True):
         """启用模块"""
         async with self._lock:
             info = self._modules.get(name)
@@ -288,17 +204,22 @@ class ModuleManager:
                 result = await _await_if_coro(setup_fn(ctx)) if setup_fn else None
                 info.instance = result if result is not None else True
                 info.error = None
+                if _persist:
+                    self.set_module_enabled_persist(name, True)
                 return True
             except Exception as e:
                 info.error = str(e)
                 report_error(EXTENSION, name, e)
                 return False
 
-    async def disable(self, name):
-        """禁用模块 (运行时生效, 重启后重新启用)"""
+    async def disable(self, name, _persist=True):
+        """禁用模块"""
         async with self._lock:
             info = self._modules.get(name)
-            if not info or info.instance is None:
+            is_running = info and info.instance is not None
+            if not is_running:
+                if _persist:
+                    self.set_module_enabled_persist(name, False)
                 return False
             try:
                 teardown_fn = getattr(info.module, 'teardown', None)
@@ -307,11 +228,22 @@ class ModuleManager:
             except Exception as e:
                 report_error(EXTENSION, name, e)
             get_hook_manager().unregister_owner(info.display_name or name)
-            info.instance = None
-            info.ctx = None
+            info.instance = info.ctx = None
             sys.modules.pop(f"modules.{name}", None)
+            if _persist:
+                self.set_module_enabled_persist(name, False)
             get_logger(EXTENSION, info.display_name).info("❌ 已禁用")
             return True
+
+    async def reload(self, name):
+        """重载模块 (teardown → 重新 import + setup), 不改变持久化状态"""
+        info = self._modules.get(name)
+        if not info:
+            return False
+        was_enabled = info.instance is not None
+        if was_enabled:
+            await self.disable(name, _persist=False)
+        return await self.enable(name, _persist=False)
 
     # ==================== 查询 ====================
 
@@ -339,7 +271,9 @@ class ModuleManager:
         return [{'name': i.name, 'display_name': i.display_name,
                  'description': i.description, 'version': i.version,
                  'author': i.author, 'github': i.github, 'releases': i.releases,
-                 'enabled': i.instance is not None, 'error': i.error}
+                 'enabled': i.instance is not None,
+                 'persist_enabled': self.is_module_enabled_persist(i.name),
+                 'error': i.error}
                 for i in self._modules.values()]
 
     # ==================== 内部 ====================
@@ -367,16 +301,21 @@ class ModuleManager:
 
     @staticmethod
     def _read_manifest(mod_dir):
-        """读取 module.json 清单"""
-        path = os.path.join(mod_dir, 'module.json')
-        if not os.path.isfile(path):
+        """从 main.py 的 __module_meta__ 读取模块元数据"""
+        entry = os.path.join(mod_dir, 'main.py')
+        if not os.path.isfile(entry):
             return dict(_DEFAULT_MANIFEST)
         try:
-            with open(path, 'r', encoding='utf-8') as f:
-                return json.load(f) or {}
+            with open(entry, 'r', encoding='utf-8') as f:
+                tree = ast.parse(f.read())
+            for node in ast.iter_child_nodes(tree):
+                if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                        and isinstance(node.targets[0], ast.Name)
+                        and node.targets[0].id == '__module_meta__'):
+                    return ast.literal_eval(node.value)
         except Exception as e:
-            log.warning(f"读取 module.json 失败 [{mod_dir}]: {e}")
-            return dict(_DEFAULT_MANIFEST)
+            log.warning(f"读取模块元数据失败 [{mod_dir}]: {e}")
+        return dict(_DEFAULT_MANIFEST)
 
     async def _install_requirements(self, name, target_dir):
         """检查并安装 requirements.txt 依赖"""
@@ -432,6 +371,5 @@ class ModuleManager:
 
     async def shutdown(self):
         """关闭所有已启用模块"""
-        for name, info in list(self._modules.items()):
-            if info.instance is not None:
-                await self.disable(name)
+        for name in [n for n, i in self._modules.items() if i.instance is not None]:
+            await self.disable(name)

@@ -45,26 +45,20 @@ def setup_web(app: web.Application, bot_manager, base_dir: str):
     _auth.init(base_dir)
     _panel_api.set_context(bot_manager, base_dir)
 
-    # 注入日志推送回调到 bot_manager 和每个 sender
+    # 注入日志推送 / 错误回调 / logging handler
     try:
         import web.ws as _ws
+        from core.base.logger import on_error
+
         bot_manager._web_log_cb = _ws.push_log
         for _inst in bot_manager._bots.values():
             if hasattr(_inst, 'sender'):
                 _inst.sender._web_log_cb = _ws.push_log
                 _inst.sender._bot_name = getattr(_inst, 'name', '')
                 _inst.sender._bot_qq = getattr(_inst, 'robot_qq', '')
-    except Exception:
-        pass
-
-    # 注册错误回调 → 将 report_error 的完整数据 (traceback, context) 推送到面板
-    try:
-        import web.ws as _ws
-        from core.base.logger import on_error
 
         def _push_error(error_data):
-            """report_error 回调: 推送完整错误信息到 web 面板"""
-            entry = {
+            _ws.push_log('error', {
                 'timestamp': error_data.get('timestamp', ''),
                 'appid': error_data.get('appid', '0000'),
                 'module_type': error_data.get('module_type', ''),
@@ -72,16 +66,9 @@ def setup_web(app: web.Application, bot_manager, base_dir: str):
                 'content': error_data.get('content', ''),
                 'traceback': error_data.get('traceback', ''),
                 'context': error_data.get('context', {}),
-            }
-            _ws.push_log('error', entry)
-
+            })
         on_error(_push_error)
-    except Exception:
-        pass
 
-    # 添加 Python logging handler → 捕获所有 ElainaBot.* 框架日志
-    try:
-        import web.ws as _ws
         _handler = _WebPanelLogHandler(_ws)
         _handler.setLevel(logging.INFO)
         logging.getLogger('ElainaBot').addHandler(_handler)

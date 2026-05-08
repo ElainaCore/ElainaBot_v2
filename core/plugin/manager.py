@@ -8,6 +8,7 @@ import subprocess
 import asyncio
 import importlib
 import importlib.util
+import importlib.machinery
 from collections import OrderedDict
 from core.base.logger import get_logger, PLUGIN, FRAMEWORK, report_error
 from core.base.config import cfg
@@ -72,6 +73,9 @@ class PluginManager:
         self._plugin_bots = {}           # {key: [appid, ...]} 机器人绑定
         self._lock = asyncio.Lock()
         self._base_dir = os.path.dirname(self._dir)  # 项目根目录
+        self._file_mtimes = {}           # {file_path: mtime} 文件修改时间跟踪
+        self._watcher_task = None        # 文件监视 asyncio.Task
+        self._watcher_running = False
         self._load_blacklists()
         self._load_plugin_bots()
 
@@ -84,6 +88,17 @@ class PluginManager:
         return len(self._all_handlers)
 
     # ==================== 加载 ====================
+
+    @staticmethod
+    def _register_pkg(mod_name, path):
+        """注册包到 sys.modules (带完整 ModuleSpec, 兼容 Python 3.9+)"""
+        if mod_name in sys.modules:
+            return sys.modules[mod_name]
+        spec = importlib.machinery.ModuleSpec(mod_name, None, is_package=True)
+        spec.submodule_search_locations = [path]
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[mod_name] = mod
+        return mod
 
     async def load_all(self):
         """加载 plugins/ 下所有插件目录"""
@@ -113,6 +128,7 @@ class PluginManager:
                 report_error(PLUGIN, name, e)
 
         self._rebuild_handler_list()
+        self._snapshot_all_mtimes()
         log.info(f"插件加载完成: {loaded}/{len(dirs)} 个 (大型 {large_count}), "
                  f"共 {self.handler_count} 个处理器")
 
@@ -219,11 +235,92 @@ class PluginManager:
         else:
             await self.load(name)
         self._rebuild_handler_list()
+        pdir = os.path.join(self._dir, name)
+        if os.path.isdir(pdir):
+            self._scan_plugin_mtimes(pdir)
         info = self._plugins.get(name)
         count = len(info.handlers) if info else 0
         t = f'{info.load_time:.2f}s' if info else '?'
         log.info(f"🔄 插件热重载: {name} ({count} 个处理器, {t})")
         return True
+
+    # ==================== 文件监视 (代码变更自动热重载) ====================
+
+    def _scan_plugin_mtimes(self, pdir):
+        """记录单个插件目录下 .py 文件 mtime"""
+        for root, _, files in os.walk(pdir):
+            for f in files:
+                if f.endswith('.py') and not f.startswith('_'):
+                    fp = os.path.join(root, f)
+                    try:
+                        self._file_mtimes[fp] = os.path.getmtime(fp)
+                    except OSError:
+                        pass
+
+    def _plugin_of(self, filepath):
+        """文件路径 → 所属插件名"""
+        return os.path.relpath(filepath, self._dir).split(os.sep)[0]
+
+    def _snapshot_all_mtimes(self):
+        """扫描所有插件目录, 记录 .py 文件 mtime"""
+        self._file_mtimes.clear()
+        for name in self._plugins:
+            pdir = os.path.join(self._dir, name)
+            if os.path.isdir(pdir):
+                self._scan_plugin_mtimes(pdir)
+
+    def _detect_changed_plugins(self):
+        """检测文件变更, 返回需要热重载的插件名集合"""
+        changed = set()
+        for fp, old_mt in list(self._file_mtimes.items()):
+            try:
+                if os.path.getmtime(fp) != old_mt:
+                    changed.add(self._plugin_of(fp))
+            except OSError:
+                changed.add(self._plugin_of(fp))
+                self._file_mtimes.pop(fp, None)
+        for name in self._plugins:
+            pdir = os.path.join(self._dir, name)
+            if not os.path.isdir(pdir):
+                continue
+            for root, _, files in os.walk(pdir):
+                for f in files:
+                    if f.endswith('.py') and not f.startswith('_'):
+                        if os.path.join(root, f) not in self._file_mtimes:
+                            changed.add(name)
+        return changed
+
+    async def _watcher_loop(self):
+        """每 2 秒对比 mtime, 变更则热重载"""
+        while self._watcher_running:
+            try:
+                await asyncio.sleep(2)
+                for name in self._detect_changed_plugins():
+                    if name not in self._plugins:
+                        continue
+                    try:
+                        await self.reload(name)
+                    except Exception as e:
+                        report_error(PLUGIN, name, e)
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                pass
+
+    def start_watcher(self):
+        """启动文件监视"""
+        if self._watcher_task and not self._watcher_task.done():
+            return
+        self._watcher_running = True
+        self._watcher_task = asyncio.ensure_future(self._watcher_loop())
+        log.info("📡 插件文件监视已启动")
+
+    def stop_watcher(self):
+        """停止文件监视"""
+        self._watcher_running = False
+        if self._watcher_task and not self._watcher_task.done():
+            self._watcher_task.cancel()
+            self._watcher_task = None
 
     async def unload(self, name):
         """卸载插件"""
@@ -263,15 +360,29 @@ class PluginManager:
                 return path
         return None
 
-    @staticmethod
-    def _import_plugin(name, plugin_dir, entry_path):
-        """动态导入插件目录"""
+    @classmethod
+    def _import_plugin(cls, name, plugin_dir, entry_path):
+        """动态导入插件目录 (预注册包层级, 兼容 Python 3.9+)"""
+        plugins_dir = os.path.dirname(plugin_dir)
         mod_name = f"plugins.{name}"
+        parent = cls._register_pkg('plugins', plugins_dir)
+        sub_dirs = [(s, os.path.join(plugin_dir, s))
+                    for s in os.listdir(plugin_dir)
+                    if os.path.isdir(os.path.join(plugin_dir, s))
+                    and not s.startswith(('_', '.'))]
+        for sub, sub_path in sub_dirs:
+            sub_mod = cls._register_pkg(f'{mod_name}.{sub}', sub_path)
+            setattr(sys.modules.get(mod_name, parent), sub, sub_mod)
         spec = importlib.util.spec_from_file_location(
             mod_name, entry_path,
             submodule_search_locations=[plugin_dir])
         module = importlib.util.module_from_spec(spec)
         sys.modules[mod_name] = module
+        setattr(parent, name, module)
+        for sub, _ in sub_dirs:
+            sub_mod = sys.modules.get(f'{mod_name}.{sub}')
+            if sub_mod:
+                setattr(module, sub, sub_mod)
         spec.loader.exec_module(module)
         return module
 
@@ -360,21 +471,15 @@ class PluginManager:
         content = event.content or ''
         user_id = event.user_id or ''
         appid = event.appid or self._appid
-
-        # 注入 sender 到 event, 插件通过 event.reply() 等方法发送
+        et = event.event_type
         event._sender = sender
 
-        # 提前获取 log_service (避免在循环里重复查找)
-        log_service = self._get_log_service(event)
-
-        # 黑名单
+        # 黑名单 (纯内存查找, 无 IO)
         bl_type = self._check_blacklist(event)
-        if bl_type == 'user':
-            await event.reply(template_name='blacklist',
-                              template_vars={'user_id': user_id, 'reason': '未指明原因'})
-            return True
-        if bl_type == 'group':
-            await event.reply(template_name='group_blacklist')
+        if bl_type:
+            tpl = 'blacklist' if bl_type == 'user' else 'group_blacklist'
+            tvars = {'user_id': user_id, 'reason': '未指明原因'} if bl_type == 'user' else None
+            await event.reply(template_name=tpl, template_vars=tvars)
             return True
 
         # 维护模式
@@ -382,103 +487,78 @@ class PluginManager:
             await event.reply(template_name='maintenance')
             return True
 
-        # 拦截器 (sync 在线程池, 不阻塞事件循环)
-        loop = asyncio.get_running_loop()
+        # 拦截器
         for ic in self._all_interceptors:
             try:
-                if ic['is_coro']:
-                    result = await ic['func'](event)
-                else:
-                    result = await loop.run_in_executor(None, ic['func'], event)
+                result = await ic['func'](event) if ic['is_coro'] else \
+                    await asyncio.get_running_loop().run_in_executor(None, ic['func'], event)
                 if result is True:
                     return True
             except Exception as e:
                 report_error(PLUGIN, ic.get('_plugin', '?'), e)
 
         # 匹配处理器 (支持 / 前缀自动去除)
-        # 如果消息以 / 开头, 先去掉 / 尝试匹配, 匹配不到再用原内容匹配
-        contents_to_try = [content]
-        if content.startswith('/') and len(content) > 1:
-            contents_to_try = [content[1:], content]
+        contents_to_try = (content[1:], content) if content[:1] == '/' and len(content) > 1 else (content,)
+        log_service = None
 
-        matched = False
         for try_content in contents_to_try:
-            result = await self._try_match_handlers(
-                try_content, event, sender, user_id, appid, log_service)
-            if result is not None:
-                matched = True
-                return result
-            # result=None 表示无匹配, 继续下一个 content
+            for h in self._all_handlers:
+                # 快速过滤 (位掩码级检查)
+                if (h['_allowed_bots'] is not None and appid not in h['_allowed_bots'])\
+                        or (h['event_types'] and et not in h['event_types'])\
+                        or (h['group_only'] and not event.is_group)\
+                        or (h['direct_only'] and not event.is_direct)\
+                        or (h['channel_only'] and not event.is_channel):
+                    continue
+                match = h['compiled'].search(try_content)
+                if not match:
+                    continue
 
-        # 无匹配 -> 默认回复
-        if not matched and event.event_type in ('GROUP_AT_MESSAGE_CREATE', 'C2C_MESSAGE_CREATE'):
-            if cfg.get_bot_setting(appid, 'message.send_default_response', True):
-                excluded = cfg.get_bot_setting(appid, 'message.default_response_excluded_regex', []) or []
-                if not any(re.search(p, content) for p in excluded if p):
-                    await event.reply(template_name='default',
+                # 权限检查
+                if h['owner_only'] and not self._is_owner(event):
+                    await event.reply(template_name='owner_only',
                                       template_vars={'user_id': user_id})
+                    return True
 
-        return matched
+                # 惰性获取 log_service
+                if log_service is None:
+                    log_service = self._get_log_service(event)
 
-    # ==================== 处理器匹配 ====================
+                plugin_name = h['name'] or h.get('_plugin', '')
+                sender._reply_log_cb = _make_reply_log_cb(plugin_name, log_service)
+                sender._reply_plugin_name = plugin_name or ''
 
-    async def _try_match_handlers(self, content, event, sender, user_id, appid, log_service):
-        """尝试匹配处理器, 返回 True(匹配) / None(无)"""
-        for h in self._all_handlers:
-            # 机器人绑定过滤
-            if not self._check_bot_binding(h, appid):
-                continue
-            # 事件类型过滤
-            if h['event_types'] and event.event_type not in h['event_types']:
-                continue
-            # 场景过滤
-            if h['group_only'] and not event.is_group:
-                continue
-            if h['direct_only'] and not event.is_direct:
-                continue
-            if h['channel_only'] and not event.is_channel:
-                continue
-
-            # 正则匹配
-            match = h['compiled'].search(content)
-            if not match:
-                continue
-
-            # 权限检查
-            if h['owner_only'] and not self._is_owner(event):
-                await event.reply(template_name='owner_only',
-                                  template_vars={'user_id': user_id})
+                try:
+                    fn, timeout = h['func'], 30
+                    if h['is_coro']:
+                        await asyncio.wait_for(fn(event, match), timeout=timeout)
+                    else:
+                        await asyncio.wait_for(
+                            asyncio.get_running_loop().run_in_executor(None, fn, event, match),
+                            timeout=timeout)
+                except asyncio.TimeoutError:
+                    report_error(PLUGIN, plugin_name or '?',
+                                 f"处理器 [{h['name']}] 超时(30s)",
+                                 context={'handler': h['name'], 'user_id': user_id,
+                                          'event_type': et, 'content': content[:200]})
+                except Exception as e:
+                    report_error(PLUGIN, plugin_name or '?', e,
+                                 context={'handler': h['name'], 'user_id': user_id,
+                                          'group_id': event.group_id or '',
+                                          'event_type': et, 'content': content[:200]})
+                finally:
+                    sender._reply_log_cb = None
+                    sender._reply_plugin_name = ''
                 return True
 
-            # 注入回复日志回调 (记录 handler name 到 message.db)
-            plugin_name = h['name'] or h.get('_plugin', '')
+        # 无匹配 -> 默认回复
+        if et in ('GROUP_AT_MESSAGE_CREATE', 'C2C_MESSAGE_CREATE') \
+                and cfg.get_bot_setting(appid, 'message.send_default_response', True):
+            excluded = cfg.get_bot_setting(appid, 'message.default_response_excluded_regex', []) or []
+            if not any(re.search(p, content) for p in excluded if p):
+                await event.reply(template_name='default', template_vars={'user_id': user_id})
 
-            sender._reply_log_cb = _make_reply_log_cb(plugin_name, log_service)
-            sender._reply_plugin_name = plugin_name or ''
-
-            # 执行 (async: wait_for + timeout; sync: 线程池隔离, 不阻塞事件循环)
-            err_ctx = {'handler': h['name'], 'user_id': user_id,
-                       'group_id': event.group_id or '',
-                       'event_type': event.event_type, 'content': content[:200]}
-            try:
-                if h['is_coro']:
-                    await asyncio.wait_for(h['func'](event, match), timeout=30)
-                else:
-                    loop = asyncio.get_running_loop()
-                    await asyncio.wait_for(
-                        loop.run_in_executor(None, h['func'], event, match), timeout=30)
-            except asyncio.TimeoutError:
-                report_error(PLUGIN, plugin_name or '?',
-                             f"处理器 [{h['name']}] 超时(30s)", context=err_ctx)
-            except Exception as e:
-                report_error(PLUGIN, plugin_name or '?', e, context=err_ctx)
-            finally:
-                sender._reply_log_cb = None
-                sender._reply_plugin_name = ''
-
-            return True  # 第一个匹配的处理器处理后结束
-
-        return None  # 无匹配
+        return False
 
     # ==================== 日志服务 ====================
 
@@ -488,7 +568,7 @@ class PluginManager:
         """获取当前 bot 的 log_service"""
         if self._bot_manager_ref is None:
             try:
-                from core.bot import _bot_manager_ref
+                from core.bot.manager import _bot_manager_ref
                 PluginManager._bot_manager_ref = _bot_manager_ref
             except Exception:
                 return None
@@ -534,16 +614,14 @@ class PluginManager:
     def _check_blacklist(self, event):
         appid = event.appid or self._appid
         user_id, group_id = event.user_id or '', event.group_id or ''
-        if user_id and cfg.get_bot_setting(appid, 'blacklist.user_enabled', False):
-            if user_id in self._blacklist_users:
-                return 'user'
-            if user_id in (cfg.get_bot_setting(appid, 'blacklist.user_list', []) or []):
-                return 'user'
-        if group_id and cfg.get_bot_setting(appid, 'blacklist.group_enabled', False):
-            if group_id in self._blacklist_groups:
-                return 'group'
-            if group_id in (cfg.get_bot_setting(appid, 'blacklist.group_list', []) or []):
-                return 'group'
+        if user_id and cfg.get_bot_setting(appid, 'blacklist.user_enabled', False) and (
+                user_id in self._blacklist_users or
+                user_id in (cfg.get_bot_setting(appid, 'blacklist.user_list', []) or [])):
+            return 'user'
+        if group_id and cfg.get_bot_setting(appid, 'blacklist.group_enabled', False) and (
+                group_id in self._blacklist_groups or
+                group_id in (cfg.get_bot_setting(appid, 'blacklist.group_list', []) or [])):
+            return 'group'
         return None
 
     def _is_owner(self, event):
@@ -551,9 +629,7 @@ class PluginManager:
         if not event.user_id:
             return False
         bot_cfg = cfg.get_bot_config(event.appid or self._appid)
-        if not bot_cfg:
-            return False
-        return event.user_id in (bot_cfg.get('owner_ids') or [])
+        return bool(bot_cfg) and event.user_id in (bot_cfg.get('owner_ids') or [])
 
     def add_blacklist_user(self, user_id):
         self._blacklist_users.add(user_id)
@@ -604,12 +680,6 @@ class PluginManager:
                           default_flow_style=False, sort_keys=False)
         except Exception as e:
             log.warning(f"保存插件机器人绑定失败: {e}")
-
-    @staticmethod
-    def _check_bot_binding(handler, appid):
-        """检查 handler 是否允许在指定 appid 上触发 (O(1) 集合查找)"""
-        allowed = handler.get('_allowed_bots')
-        return allowed is None or appid in allowed
 
     def get_plugin_bots(self):
         """获取插件机器人绑定配置 (供 Web API 读取)"""

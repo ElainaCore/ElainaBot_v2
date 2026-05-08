@@ -89,19 +89,13 @@ def get_system_info() -> dict:
 
     disk = psutil.disk_usage(os.path.abspath(os.getcwd()))
 
-    plugins_count = 0
-    bots_count = 0
-    today_active = 0
-    today_messages = 0
-    active_groups = 0
-    total_users = 0
-    total_groups = 0
+    plugins_count = bots_count = today_active = today_messages = 0
+    active_groups = total_users = total_groups = 0
     if _bot_manager:
         bots_count = len(_bot_manager._bots)
-        if hasattr(_bot_manager, '_plugin_manager') and _bot_manager._plugin_manager:
-            plugins_count = getattr(_bot_manager._plugin_manager, 'handler_count', 0)
-
-    if _bot_manager:
+        pm = getattr(_bot_manager, '_plugin_manager', None)
+        if pm:
+            plugins_count = getattr(pm, 'handler_count', 0)
         for inst in _bot_manager._bots.values():
             try:
                 rows = inst.log_service.query(

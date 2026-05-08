@@ -44,44 +44,37 @@ def _find_databases():
         if not os.path.isdir(appid_path):
             continue
 
-        # 获取机器人名称
         bot_name = appid_dir
         if _bot_manager:
             bot = _bot_manager.get_bot(appid_dir)
             if bot:
                 bot_name = bot.name or appid_dir
 
+        base = {'appid': appid_dir, 'bot_name': bot_name}
+
         # 根目录下的 .db 文件 (data.db, dau.db 等)
-        for f in sorted(os.listdir(appid_path)):
-            fpath = os.path.join(appid_path, f)
-            if f.endswith('.db') and os.path.isfile(fpath):
-                result.append({
-                    'appid': appid_dir,
-                    'bot_name': bot_name,
-                    'name': f,
-                    'path': fpath.replace('\\', '/'),
-                    'size': os.path.getsize(fpath),
-                    'date': '',
-                })
+        _collect_db_files(result, appid_path, base, '')
 
         # 日期子目录下的 .db 文件
         for date_dir in sorted(os.listdir(appid_path), reverse=True):
             date_path = os.path.join(appid_path, date_dir)
-            if not os.path.isdir(date_path) or not re.match(r'^\d{4}-\d{2}-\d{2}$', date_dir):
-                continue
-            for f in sorted(os.listdir(date_path)):
-                fpath = os.path.join(date_path, f)
-                if f.endswith('.db') and os.path.isfile(fpath):
-                    result.append({
-                        'appid': appid_dir,
-                        'bot_name': bot_name,
-                        'name': f,
-                        'path': fpath.replace('\\', '/'),
-                        'size': os.path.getsize(fpath),
-                        'date': date_dir,
-                    })
+            if os.path.isdir(date_path) and re.match(r'^\d{4}-\d{2}-\d{2}$', date_dir):
+                _collect_db_files(result, date_path, base, date_dir)
 
     return result
+
+
+def _collect_db_files(result, directory, base, date):
+    """扫描目录下的 .db 文件并追加到 result"""
+    for f in sorted(os.listdir(directory)):
+        fpath = os.path.join(directory, f)
+        if f.endswith('.db') and os.path.isfile(fpath):
+            result.append({
+                **base, 'name': f,
+                'path': fpath.replace('\\', '/'),
+                'size': os.path.getsize(fpath),
+                'date': date,
+            })
 
 
 def _validate_db_path(db_path):

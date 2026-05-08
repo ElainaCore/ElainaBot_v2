@@ -1,4 +1,5 @@
 """Web 面板自定义页面注册表 — 插件/模块通过 register_page 注册侧边栏页面"""
+from __future__ import annotations
 
 _registry: dict = {}  # {key: page_info}
 

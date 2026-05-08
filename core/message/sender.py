@@ -13,6 +13,7 @@
 
 import os
 import json
+import time
 import random
 import asyncio
 import hashlib
@@ -74,7 +75,10 @@ class MessageSender:
     async def _ensure_client(self):
         if self._client is None or self._client.closed:
             timeout = aiohttp.ClientTimeout(total=30)
-            conn = aiohttp.TCPConnector(ssl=self._ssl_ctx)
+            conn = aiohttp.TCPConnector(
+                ssl=self._ssl_ctx, limit=50, limit_per_host=10,
+                use_dns_cache=True, ttl_dns_cache=600,
+                keepalive_timeout=30)
             self._client = aiohttp.ClientSession(
                 base_url=self._base_url, timeout=timeout, connector=conn)
         return self._client
@@ -94,8 +98,12 @@ class MessageSender:
             if 'json' in kwargs:
                 headers.setdefault('Content-Type', 'application/json')
             try:
+                _t = time.time()
                 async with client.request(method, endpoint, headers=headers, **kwargs) as resp:
                     body = await resp.read()
+                    _dt = time.time() - _t
+                    if _dt > 1:
+                        log.warning(f"[{self._appid}] API 慢请求 {_dt*1000:.0f}ms {method} {endpoint}")
                     if resp.status >= 400:
                         try:
                             err = json.loads(body)
@@ -103,7 +111,7 @@ class MessageSender:
                             err = {'message': body.decode(errors='replace'), 'code': resp.status}
                         if err.get('code') == _TOKEN_EXPIRED_CODE and attempt == 0:
                             await self._token_mgr.refresh_token()
-                            await asyncio.sleep(1)
+                            await asyncio.sleep(0.1)
                             continue
                         return False, err
                     if body:
@@ -153,54 +161,38 @@ class MessageSender:
                                       **kwargs)
 
         success, data = await self._send_with_error_handling(endpoint, payload, event, content)
-        self._maybe_auto_recall(event, data, auto_delete_time) if success else None
+        if success:
+            self._maybe_auto_recall(event, data, auto_delete_time)
         return data
 
     # ==================== 媒体回复 ====================
 
-    async def reply_image(self, event, image_data, content='', *,
-                          auto_delete_time=None, target_user_id=None, target_group_id=None):
-        return await self._send_media(event, image_data, 1, content,
-                                      auto_delete_time=auto_delete_time,
-                                      target_user_id=target_user_id,
-                                      target_group_id=target_group_id)
+    async def reply_image(self, event, image_data, content='', **kw):
+        return await self._send_media(event, image_data, 1, content, **kw)
 
-    async def reply_voice(self, event, voice_data, content='', *,
-                          auto_delete_time=None, target_user_id=None, target_group_id=None):
-        return await self._send_media(event, voice_data, 3, content,
-                                      auto_delete_time=auto_delete_time,
-                                      target_user_id=target_user_id,
-                                      target_group_id=target_group_id)
+    async def reply_voice(self, event, voice_data, content='', **kw):
+        return await self._send_media(event, voice_data, 3, content, **kw)
 
-    async def reply_video(self, event, video_data, content='', *,
-                          auto_delete_time=None, target_user_id=None, target_group_id=None):
-        return await self._send_media(event, video_data, 2, content,
-                                      auto_delete_time=auto_delete_time,
-                                      target_user_id=target_user_id,
-                                      target_group_id=target_group_id)
+    async def reply_video(self, event, video_data, content='', **kw):
+        return await self._send_media(event, video_data, 2, content, **kw)
 
     async def reply_file(self, event, file_data, content='', *, file_name=None,
                          auto_delete_time=None, target_user_id=None, target_group_id=None):
+        kw = dict(auto_delete_time=auto_delete_time,
+                  target_user_id=target_user_id, target_group_id=target_group_id)
+        # URL → 直接上传
         if isinstance(file_data, str) and file_data.startswith(('http://', 'https://')):
             file_info = await upload_media_via_url(self, event, file_data, 4,
-                                                   file_name=file_name,
-                                                   target_user_id=target_user_id,
-                                                   target_group_id=target_group_id)
-            if not file_info:
-                return None
-            return await self._send_media_payload(event, file_info, content, auto_delete_time,
-                                                  target_user_id=target_user_id,
-                                                  target_group_id=target_group_id)
+                                                   file_name=file_name, **kw)
+            return await self._send_media_payload(event, file_info, content,
+                                                  **kw) if file_info else None
+        # 本地路径 → 读取
         if isinstance(file_data, str) and os.path.exists(file_data):
-            if not file_name:
-                file_name = os.path.basename(file_data)
+            file_name = file_name or os.path.basename(file_data)
             with open(file_data, 'rb') as f:
                 file_data = f.read()
         return await self._send_media(event, file_data, 4, content,
-                                      file_name=file_name,
-                                      auto_delete_time=auto_delete_time,
-                                      target_user_id=target_user_id,
-                                      target_group_id=target_group_id)
+                                      file_name=file_name, **kw)
 
     async def reply_ark(self, event, template_id, kv_data, content='', *,
                         auto_delete_time=None):
@@ -216,7 +208,8 @@ class MessageSender:
         if not endpoint:
             return None
         success, data = await self._send_with_error_handling(endpoint, payload, event, content)
-        self._maybe_auto_recall(event, data, auto_delete_time) if success else None
+        if success:
+            self._maybe_auto_recall(event, data, auto_delete_time)
         return data
 
     # ==================== 主动推送 ====================
@@ -461,17 +454,15 @@ class MessageSender:
         elif msg_id:
             payload['msg_id'] = msg_id
 
-        if target_group_id:
-            endpoint = f"/v2/groups/{target_group_id}/messages"
-        elif target_user_id:
-            endpoint = f"/v2/users/{target_user_id}/messages"
-        else:
-            endpoint = event.reply_endpoint
+        endpoint = (f"/v2/groups/{target_group_id}/messages" if target_group_id
+                    else f"/v2/users/{target_user_id}/messages" if target_user_id
+                    else event.reply_endpoint)
         if not endpoint:
             return None
 
         success, data = await self._send_with_error_handling(endpoint, payload, event, content)
-        self._maybe_auto_recall(event, data, auto_delete_time) if success else None
+        if success:
+            self._maybe_auto_recall(event, data, auto_delete_time)
         return data
 
     # ==================== 错误处理 ====================
@@ -495,7 +486,7 @@ class MessageSender:
                 return False, None
             report_error_raw(
                 FRAMEWORK, '消息发送',
-                content=getattr(event, 'content', '')[:2000] if hasattr(event, 'content') else '',
+                content=(getattr(event, 'content', '') or '')[:2000],
                 tb=json.dumps(data, ensure_ascii=False, default=str)[:2000] if data else '',
                 context=json.dumps(payload, ensure_ascii=False, default=str)[:2000],
                 appid=self._appid,
@@ -514,20 +505,17 @@ class MessageSender:
 
     def _log_sent(self, payload, event, content):
         """发送成功后的日志记录 (Web面板 + 持久化)"""
-        text = content or payload.get('content', '') or ''
+        # 拼装日志文本
         md = payload.get('markdown')
-        if md:
-            text = md.get('content', text)
+        text = (md.get('content', '') if md else None) or content or payload.get('content', '') or ''
         if payload.get('msg_type') == MSG_TYPE_MEDIA:
             label = self._last_media_label or '[media]'
             self._last_media_label = ''
             text = f'{label} {text}'.rstrip() if text else label
-        reply_text = text or ''
-        # 将完整按钮结构附加到日志文本
         kb = payload.get('keyboard')
         if kb:
             try:
-                reply_text += '\n[keyboard] ' + json.dumps(kb, ensure_ascii=False)
+                text += '\n[keyboard] ' + json.dumps(kb, ensure_ascii=False)
             except Exception:
                 pass
         user_id = getattr(event, 'user_id', '') or ''
@@ -539,7 +527,7 @@ class MessageSender:
                     'bot_name': self._bot_name or self._appid,
                     'bot_qq': self._bot_qq or '',
                     'user_id': user_id, 'group_id': group_id,
-                    'content': reply_text, 'is_bot': True,
+                    'content': text, 'is_bot': True,
                     'direction': 'send',
                     'plugin_name': self._reply_plugin_name or '',
                 })
@@ -547,7 +535,7 @@ class MessageSender:
                 pass
         if self._reply_log_cb:
             try:
-                self._reply_log_cb(reply_text, user_id, group_id,
+                self._reply_log_cb(text, user_id, group_id,
                                    json.dumps(payload, ensure_ascii=False, default=str))
             except Exception:
                 pass

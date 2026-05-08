@@ -1,8 +1,0 @@
-{
-  "name": "图床服务",
-  "description": "统一图床上传 (腾讯云COS / B站 / QQ频道), 各图床可独立开关, 异步接口",
-  "version": "1.0.0",
-  "author": "",
-  "github": "",
-  "releases": ""
-}

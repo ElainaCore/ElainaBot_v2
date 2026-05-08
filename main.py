@@ -16,7 +16,10 @@ sys.dont_write_bytecode = True
 
 
 def main():
-    from core.bot import BotManager
+    try:
+        from core.bot.manager import BotManager
+    except ImportError:
+        from core.bot import BotManager
     manager = BotManager()
 
     if sys.platform == 'win32':

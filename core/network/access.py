@@ -74,7 +74,8 @@ class TokenManager:
     async def _ensure_client(self):
         if self._client is None or self._client.closed:
             timeout = aiohttp.ClientTimeout(total=10)
-            conn = aiohttp.TCPConnector(ssl=self._ssl_ctx)
+            conn = aiohttp.TCPConnector(
+                ssl=self._ssl_ctx, use_dns_cache=True, ttl_dns_cache=600)
             self._client = aiohttp.ClientSession(timeout=timeout, connector=conn)
         return self._client
 
@@ -123,9 +124,6 @@ class TokenManager:
         self._closed = True
         if self._refresh_task and not self._refresh_task.done():
             self._refresh_task.cancel()
-            try:
-                await self._refresh_task
-            except asyncio.CancelledError:
-                pass
+            await asyncio.gather(self._refresh_task, return_exceptions=True)
         if self._client and not self._client.closed:
             await self._client.close()

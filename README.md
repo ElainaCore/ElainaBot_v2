@@ -42,7 +42,7 @@ python main.py
 启动后访问 Web 面板完成配置：
 
 ```
-http://localhost:5001/web/?token=你的access_token
+http://localhost:5200/web/
 ```
 
 ## 📁 框架结构

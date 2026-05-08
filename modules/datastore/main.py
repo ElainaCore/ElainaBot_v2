@@ -3,6 +3,7 @@
 """数据存储引擎 — MySQL + Redis 统一管理模块
 
 通过配置文件独立开关两个数据库。
+
 插件中获取:
     ds = bot.module_manager.get("datastore")
 
@@ -21,6 +22,13 @@
     mysql.yaml   → MySQL 连接参数
     redis.yaml   → Redis 连接参数
 """
+
+__module_meta__ = {
+    'name': '数据存储引擎',
+    'description': 'MySQL + Redis 统一数据存储, 异步连接池与完整 CRUD / 缓存操作',
+    'version': '1.0.0',
+    'author': 'ElainaBot',
+}
 
 from core.base.logger import get_logger, EXTENSION
 

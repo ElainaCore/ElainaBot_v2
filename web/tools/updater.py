@@ -78,12 +78,35 @@ GITHUB_FILE_MIRRORS = [
     'https://gh.noki.icu/',
 ]
 
-# ==================== 镜像缓存 ====================
+# ==================== 镜像缓存  ====================
 
-_mirror_cache = None        # list[dict] 按延迟排序的可用镜像
-_mirror_cache_ts = 0
-_mirror_testing = None       # asyncio.Task
-_MIRROR_CACHE_TTL = 30 * 60  # 30分钟
+_mirror_testing = None  # asyncio.Task (防重复测速)
+
+
+def _mirror_cache_path():
+    return os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'data', 'mirror_cache.json')
+
+
+def _save_mirror_cache(mirrors):
+    try:
+        path = _mirror_cache_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump({'mirrors': mirrors}, f)
+    except Exception:
+        pass
+
+
+def _load_mirror_cache():
+    """读取磁盘缓存 (永久有效, 全失败时由调用方重新测速)"""
+    try:
+        path = _mirror_cache_path()
+        if not os.path.isfile(path):
+            return []
+        with open(path, 'r', encoding='utf-8') as f:
+            return json.load(f).get('mirrors', [])
+    except Exception:
+        return []
 
 
 def _build_mirror_url(original_url, mirror):
@@ -123,31 +146,65 @@ async def test_all_mirrors(timeout=3):
 
 
 async def get_fast_mirrors(force=False):
-    """获取按延迟排序的可用镜像列表 (缓存 30 分钟)"""
-    global _mirror_cache, _mirror_cache_ts, _mirror_testing
-    now = time.time()
-    if not force and _mirror_cache and (now - _mirror_cache_ts) < _MIRROR_CACHE_TTL:
-        return _mirror_cache
+    """获取按延迟排序的可用镜像列表 (磁盘缓存 30 分钟)"""
+    global _mirror_testing
+    if not force:
+        cached = _load_mirror_cache()
+        if cached:
+            return cached
     if _mirror_testing and not _mirror_testing.done():
         return await _mirror_testing
     _mirror_testing = asyncio.ensure_future(test_all_mirrors())
     results = await _mirror_testing
-    _mirror_cache = [r for r in results if r['success']]
-    _mirror_cache_ts = now
+    ok = [r for r in results if r['success']]
     _mirror_testing = None
-    return _mirror_cache
+    _save_mirror_cache(ok)
+    return ok
 
 
 def clear_mirror_cache():
-    global _mirror_cache, _mirror_cache_ts
-    _mirror_cache = None
-    _mirror_cache_ts = 0
+    try:
+        path = _mirror_cache_path()
+        if os.path.isfile(path):
+            os.remove(path)
+    except Exception:
+        pass
 
 
 # 默认跳过的路径
 DEFAULT_SKIP = ['config/', 'data/', 'plugins/', 'modules/', '.git/', '__pycache__/']
 # 白名单: 即使父目录在 skip 列表, 这些路径仍然正常更新
 DEFAULT_WHITELIST = ['plugins/system/']
+
+
+# ==================== 环境检测 ====================
+
+def detect_environment():
+    """检测运行环境, 返回 {docker, writable, warning}"""
+    info = {'docker': False, 'writable': True, 'warnings': []}
+    # Docker 检测
+    if os.path.exists('/.dockerenv'):
+        info['docker'] = True
+    else:
+        try:
+            with open('/proc/1/cgroup', 'r') as f:
+                if 'docker' in f.read() or 'containerd' in f.read():
+                    info['docker'] = True
+        except Exception:
+            pass
+    # 可写性检测
+    try:
+        test_file = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__)))), '.write_test')
+        with open(test_file, 'w') as f:
+            f.write('test')
+        os.remove(test_file)
+    except Exception:
+        info['writable'] = False
+        info['warnings'].append('项目目录不可写, 更新将失败')
+    if info['docker']:
+        info['warnings'].append('检测到 Docker 环境, 请确保项目目录已挂载 volume 以持久化更新')
+    return info
 
 
 class FrameworkUpdater:
@@ -243,12 +300,12 @@ class FrameworkUpdater:
         self._save_setting('custom_mirror', self.custom_mirror)
 
     async def _pick_download_url(self, original_url):
-        """从缓存的快速镜像中选最快的可用 URL"""
+        """从磁盘缓存的排名中选最快的镜像 URL"""
         if self.custom_mirror:
             return _build_mirror_url(original_url, self.custom_mirror)
-        mirrors = await get_fast_mirrors()
-        if mirrors:
-            return _build_mirror_url(original_url, mirrors[0]['mirror'])
+        cached = _load_mirror_cache()
+        if cached:
+            return _build_mirror_url(original_url, cached[0]['mirror'])
         return original_url
 
     # ==================== 检查更新 ====================
@@ -270,8 +327,7 @@ class FrameworkUpdater:
                             ct = resp.headers.get('content-type', '')
                             body = await resp.read()
                             if b'[' in body[:2] or b'{' in body[:2]:
-                                import json as _json
-                                return _json.loads(body)
+                                return json.loads(body)
                             log.debug(f"API 返回非 JSON: {ct}, url={u}")
                         else:
                             log.debug(f"API 状态码 {resp.status}: {u}")
@@ -375,7 +431,7 @@ class FrameworkUpdater:
             log.error(f"备份失败: {e}")
             return None
 
-    # ==================== 覆盖文件 ====================
+    # ==================== 覆盖文件 ==
 
     def _should_skip(self, path):
         path = path.replace('\\', '/')
@@ -441,7 +497,13 @@ class FrameworkUpdater:
 
     # ==================== 更新流程 ====================
 
-    async def update_to_version(self, version, skip_backup=False):
+    async def update_to_version(self, version, skip_backup=False, auto_restart=False):
+        # 更新前环境检查
+        env = detect_environment()
+        if not env['writable']:
+            self._report('failed', '项目目录不可写, 无法更新', 0)
+            return {'success': False, 'message': '项目目录不可写, 无法更新'}
+
         self._report('preparing', f'准备更新到 {version}...', 0)
         zip_file = await self.download_update(version)
         if not zip_file:
@@ -449,29 +511,47 @@ class FrameworkUpdater:
         result = self.apply_update(zip_file, version, skip_backup=skip_backup)
         if result['success']:
             self._save_version(version)
+            result['environment'] = env
+            if auto_restart:
+                self._trigger_restart()
         return result
 
-    async def update_to_latest(self, skip_backup=False):
+    async def update_to_latest(self, skip_backup=False, auto_restart=False):
         check = await self.check_for_updates()
         if check.get('error'):
             return {'success': False, 'message': f"检查失败: {check['error']}"}
         if not check['has_update']:
             return {'success': False, 'message': '已是最新版本'}
-        return await self.update_to_version(check['latest_version'], skip_backup=skip_backup)
+        return await self.update_to_version(check['latest_version'], skip_backup=skip_backup, auto_restart=auto_restart)
 
-    async def force_update(self, skip_backup=False):
+    async def force_update(self, skip_backup=False, auto_restart=False):
         try:
             self._report('checking', '获取最新版本...', 0)
             commits = await self._fetch_api('/commits?per_page=1')
             if not commits or not isinstance(commits, list):
                 return {'success': False, 'message': '无法获取版本信息'}
             latest = commits[0].get('sha', '')[:8]
-            return await self.update_to_version(latest, skip_backup=skip_backup)
+            return await self.update_to_version(latest, skip_backup=skip_backup, auto_restart=auto_restart)
         except Exception as e:
             self._report('failed', f'获取版本失败: {e}', 0)
             return {'success': False, 'message': str(e)}
 
-    def update_from_upload(self, zip_file_path, version_name=None, skip_backup=False):
+    @staticmethod
+    def _trigger_restart():
+        """更新后重启: Windows 用外部脚本, Linux/Docker 走内部重启 + os.execv"""
+        try:
+            from core.bot.manager import _bot_manager_ref
+            if _bot_manager_ref:
+                log.info("更新完成, 触发重启...")
+                _bot_manager_ref._restart_requested = True
+                if _bot_manager_ref._stop_event:
+                    _bot_manager_ref._stop_event.set()
+                return
+        except Exception:
+            pass
+        log.warning("无法自动重启, 请手动重启")
+
+    def update_from_upload(self, zip_file_path, version_name=None, skip_backup=False, auto_restart=False):
         """从上传的压缩包更新"""
         try:
             self._report('preparing', '准备从上传的压缩包更新...', 0)
@@ -487,6 +567,8 @@ class FrameworkUpdater:
             result = self.apply_update(zip_file_path, version, skip_backup=skip_backup)
             if result['success']:
                 self._save_version(version)
+                if auto_restart:
+                    self._trigger_restart()
             return result
         except Exception as e:
             self._report('failed', f'更新失败: {e}', 0)

@@ -23,6 +23,13 @@
     config.yaml → max_pages / headless / idle_timeout / timeout 等
 """
 
+__module_meta__ = {
+    'name': 'Playwright 渲染引擎',
+    'description': '异步 Playwright 浏览器渲染, 支持 URL/HTML 截图与 PDF 导出',
+    'version': '1.0.0',
+    'author': 'ElainaBot',
+}
+
 import asyncio
 import time
 import os

@@ -1,7 +1,5 @@
 """统计数据 — DAU / 消息统计"""
 
-import time
-import uuid
 import asyncio
 import logging
 from datetime import datetime, timedelta
@@ -27,6 +25,37 @@ def _iter_bots(appid_filter=''):
     if appid_filter and appid_filter in _bot_manager._bots:
         return [(appid_filter, _bot_manager._bots[appid_filter])]
     return list(_bot_manager._bots.items())
+
+
+def _count_table(appid_filter, table):
+    """累计某张表的总行数 (data.db)"""
+    total = 0
+    for _, inst in _iter_bots(appid_filter):
+        try:
+            r = inst.log_service.query_data(f"SELECT COUNT(*) as c FROM {table}")
+            if r:
+                total += r[0].get('c', 0)
+        except Exception:
+            pass
+    return total
+
+
+def _aggregate_hourly(appid_filter, date):
+    """聚合某天的每小时消息分布, 返回 {hour_str: count}"""
+    hourly = {}
+    for _, inst in _iter_bots(appid_filter):
+        try:
+            rows = inst.log_service.query(
+                'message',
+                "SELECT substr(timestamp, 12, 2) AS hr, COUNT(*) AS c FROM log GROUP BY hr",
+                date=date)
+            for r in rows:
+                h = r.get('hr', '')
+                if h:
+                    hourly[h] = hourly.get(h, 0) + r.get('c', 0)
+        except Exception:
+            pass
+    return hourly
 
 
 async def handle_get_statistics(request: web.Request):
@@ -63,12 +92,8 @@ async def handle_get_available_dates(request: web.Request):
 
 async def handle_get_chart_data(request: web.Request):
     """返回最近 N 天的折线图数据"""
-    days = int(request.query.get('days', '7'))
+    days = max(1, min(30, int(request.query.get('days', '7'))))
     appid_filter = request.query.get('appid', '')
-    if days < 1:
-        days = 7
-    if days > 30:
-        days = 30
 
     labels = []
     # 消息统计
@@ -149,28 +174,9 @@ async def handle_get_chart_data(request: web.Request):
         ev_friend_remove.append(day_frem)
 
     # 累计: 用户 / 群组 / 好友 (从 data.db)
-    total_u = 0
-    total_g = 0
-    total_f = 0
-    for _appid, inst in _iter_bots(appid_filter):
-        try:
-            r = inst.log_service.query_data("SELECT COUNT(*) as c FROM users")
-            if r:
-                total_u += r[0].get('c', 0)
-        except Exception:
-            pass
-        try:
-            r = inst.log_service.query_data("SELECT COUNT(*) as c FROM groups_users")
-            if r:
-                total_g += r[0].get('c', 0)
-        except Exception:
-            pass
-        try:
-            r = inst.log_service.query_data("SELECT COUNT(*) as c FROM members")
-            if r:
-                total_f += r[0].get('c', 0)
-        except Exception:
-            pass
+    total_u = _count_table(appid_filter, 'users')
+    total_g = _count_table(appid_filter, 'groups_users')
+    total_f = _count_table(appid_filter, 'members')
 
     return web.json_response({
         'success': True,
@@ -194,7 +200,6 @@ async def handle_get_chart_data(request: web.Request):
 
 def _gather_stats(force=False, selected_date='', appid_filter=''):
     """收集统计数据 — 从 SQLite 查询 (实时 message.db + 已存 dau.db)"""
-    import json as _json
     now = datetime.now()
     bots_count = len(_bot_manager._bots) if _bot_manager else 0
     date = selected_date or now.strftime('%Y-%m-%d')
@@ -203,7 +208,6 @@ def _gather_stats(force=False, selected_date='', appid_filter=''):
     private_messages = 0
     active_users = set()
     active_groups = set()
-    hourly = {}          # {hour_str: count}
     group_msg = {}       # {gid: count}
     user_msg = {}        # {uid: count}
     cmd_msg = {}         # {plugin_name: count}
@@ -238,15 +242,7 @@ def _gather_stats(force=False, selected_date='', appid_filter=''):
                 for gr in gid_rows:
                     active_groups.add(gr.get('group_id', ''))
 
-                # 每小时消息分布
-                hr_rows = inst.log_service.query(
-                    'message',
-                    "SELECT substr(timestamp, 12, 2) AS hr, COUNT(*) AS c FROM log GROUP BY hr",
-                    date=date)
-                for r in hr_rows:
-                    h = r.get('hr', '')
-                    if h:
-                        hourly[h] = hourly.get(h, 0) + r.get('c', 0)
+                # 每小时消息分布 (在主循环后统一聚合)
 
                 # Top 群
                 g_rows = inst.log_service.query(
@@ -293,6 +289,9 @@ def _gather_stats(force=False, selected_date='', appid_filter=''):
             except Exception:
                 pass
 
+    # 每小时分布
+    hourly = _aggregate_hourly(appid_filter, date)
+
     # 高峰时段
     peak_hour = 0
     peak_hour_count = 0
@@ -308,19 +307,7 @@ def _gather_stats(force=False, selected_date='', appid_filter=''):
     yesterday_hourly_dist = None
     if not selected_date:
         yesterday = (now - timedelta(days=1)).strftime('%Y-%m-%d')
-        yh = {}
-        for _appid, inst in _iter_bots(appid_filter):
-            try:
-                hr_rows = inst.log_service.query(
-                    'message',
-                    "SELECT substr(timestamp, 12, 2) AS hr, COUNT(*) AS c FROM log GROUP BY hr",
-                    date=yesterday)
-                for r in hr_rows:
-                    h = r.get('hr', '')
-                    if h:
-                        yh[h] = yh.get(h, 0) + r.get('c', 0)
-            except Exception:
-                pass
+        yh = _aggregate_hourly(appid_filter, yesterday)
         yesterday_hourly_dist = [yh.get(f'{h:02d}', 0) for h in range(24)]
 
     top_groups = sorted(group_msg.items(), key=lambda x: x[1], reverse=True)[:10]
@@ -328,21 +315,8 @@ def _gather_stats(force=False, selected_date='', appid_filter=''):
     top_commands = sorted(cmd_msg.items(), key=lambda x: x[1], reverse=True)[:10]
 
     # 累计用户数 / 群数 (从 data.db)
-    total_users_all = 0
-    total_groups_all = 0
-    for _appid, inst in _iter_bots(appid_filter):
-        try:
-            r = inst.log_service.query_data("SELECT COUNT(*) as c FROM users")
-            if r:
-                total_users_all += r[0].get('c', 0)
-        except Exception:
-            pass
-        try:
-            r = inst.log_service.query_data("SELECT COUNT(*) as c FROM groups_users")
-            if r:
-                total_groups_all += r[0].get('c', 0)
-        except Exception:
-            pass
+    total_users_all = _count_table(appid_filter, 'users')
+    total_groups_all = _count_table(appid_filter, 'groups_users')
 
     return {
         'today': {

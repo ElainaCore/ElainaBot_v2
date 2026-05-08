@@ -1,4 +1,4 @@
-"""插件市场 — GitHub 插件库 + 本地插件管理"""
+"""插件/模块市场 — GitHub 插件库 + 本地插件/模块管理"""
 
 import os
 import re
@@ -15,14 +15,12 @@ log = logging.getLogger('ElainaBot.web.market')
 
 # ==================== GitHub 插件库配置 ====================
 PLUGIN_REPO = 'ElainaCore/Elaina-plugins'
-PLUGIN_JSON_RAW = f'https://raw.githubusercontent.com/{PLUGIN_REPO}/main/plugins.json'
-# 镜像列表 (从 updater 复用)
-_PLUGIN_JSON_MIRRORS = [
-    PLUGIN_JSON_RAW,  # 直连
-    f'https://ghproxy.cc/https://raw.githubusercontent.com/{PLUGIN_REPO}/main/plugins.json',
-    f'https://gh-proxy.com/https://raw.githubusercontent.com/{PLUGIN_REPO}/main/plugins.json',
-    f'https://gh.llkk.cc/https://raw.githubusercontent.com/{PLUGIN_REPO}/main/plugins.json',
-    f'https://gh.idayer.com/https://raw.githubusercontent.com/{PLUGIN_REPO}/main/plugins.json',
+_PLUGIN_JSON_RAW = f'https://raw.githubusercontent.com/{PLUGIN_REPO}/main/plugins.json'
+_FALLBACK_MIRROR_PREFIXES = [
+    'https://ghproxy.cc/',
+    'https://gh-proxy.com/',
+    'https://gh.llkk.cc/',
+    'https://gh.idayer.com/',
 ]
 
 _base_dir = ''
@@ -40,30 +38,58 @@ def _plugins_dir():
     return os.path.join(_base_dir, 'plugins')
 
 
+def _modules_dir():
+    return os.path.join(_base_dir, 'modules')
+
+
+def _ranked_mirror_urls(raw_url):
+    """按磁盘缓存排名生成 URL 列表, 缓存为空时用兜底镜像"""
+    from web.tools.updater import _load_mirror_cache, _build_mirror_url
+    cached = _load_mirror_cache()
+    if cached:
+        urls = [_build_mirror_url(raw_url, m['mirror'] if isinstance(m, dict) else m) for m in cached]
+    else:
+        urls = [_build_mirror_url(raw_url, p) for p in _FALLBACK_MIRROR_PREFIXES]
+    if raw_url not in urls:
+        urls.append(raw_url)
+    return urls
+
+
+async def _try_fetch_json(session, urls, headers, timeout):
+    """依次尝试 URL 列表下载 JSON, 成功返回解析结果, 全部失败返回 None"""
+    for url in urls:
+        try:
+            async with session.get(url, headers=headers, timeout=timeout,
+                                   ssl=False, allow_redirects=True) as resp:
+                if resp.status == 200:
+                    body = await resp.read()
+                    if body[:1] in (b'[', b'{'):
+                        return json.loads(body)
+        except Exception:
+            continue
+    return None
+
+
 async def _fetch_plugin_json(force=False):
-    """从 GitHub 获取 plugins.json, 带缓存和镜像回退"""
+    """从 GitHub 获取 plugins.json, 按镜像排名依次尝试"""
     global _plugin_cache, _plugin_cache_ts
     now = time.time()
     if not force and _plugin_cache and (now - _plugin_cache_ts) < _PLUGIN_CACHE_TTL:
         return _plugin_cache
 
+    raw_url = f'https://raw.githubusercontent.com/{PLUGIN_REPO}/main/plugins.json'
     headers = {'User-Agent': 'ElainaBot/1.0'}
     timeout = _aiohttp.ClientTimeout(total=10)
     async with _aiohttp.ClientSession() as session:
-        for url in _PLUGIN_JSON_MIRRORS:
-            try:
-                async with session.get(url, headers=headers, timeout=timeout,
-                                       ssl=False, allow_redirects=True) as resp:
-                    if resp.status == 200:
-                        body = await resp.read()
-                        if body[:1] in (b'[', b'{'):
-                            data = json.loads(body)
-                            _plugin_cache = data
-                            _plugin_cache_ts = now
-                            return data
-            except Exception:
-                continue
-    return None
+        data = await _try_fetch_json(session, _ranked_mirror_urls(raw_url), headers, timeout)
+    if not data:
+        from web.tools.updater import get_fast_mirrors
+        await get_fast_mirrors(force=True)
+        async with _aiohttp.ClientSession() as session:
+            data = await _try_fetch_json(session, _ranked_mirror_urls(raw_url), headers, timeout)
+    if data:
+        _plugin_cache, _plugin_cache_ts = data, now
+    return data
 
 
 def _convert_github_url(url):
@@ -104,6 +130,18 @@ def _github_to_archive(url, branch='main'):
 
 # ==================== 市场列表 ====================
 
+_SAFE_NAME_RE = re.compile(r'[^\w\- ]')
+
+
+def _extract_plugins(data):
+    """从缓存数据提取插件列表 (兼容 list 和 dict 格式)"""
+    return data if isinstance(data, list) else data.get('plugins', [])
+
+
+def _safe_name(name):
+    return _SAFE_NAME_RE.sub('', name).strip()
+
+
 async def handle_market_list(request: web.Request):
     """获取插件市场列表"""
     search = request.query.get('search', '').lower()
@@ -112,8 +150,7 @@ async def handle_market_list(request: web.Request):
     if data is None:
         return web.json_response({'success': False, 'message': '无法连接插件库, 请检查网络'})
 
-    plugins = data if isinstance(data, list) else data.get('plugins', [])
-
+    plugins = _extract_plugins(data)
     if category:
         plugins = [p for p in plugins if p.get('category', '') == category]
     if search:
@@ -122,11 +159,19 @@ async def handle_market_list(request: web.Request):
                    or search in p.get('description', '').lower()
                    or search in p.get('author', '').lower()]
 
-    # 标记已安装状态
-    installed = _get_installed_names()
+    # 标记已安装状态 + 版本对比
+    installed_plugins = _get_installed_names()
+    installed_modules = _get_installed_module_names()
     for p in plugins:
-        safe = "".join(c for c in p.get('name', '') if c.isalnum() or c in ('_', '-', ' ')).strip()
-        p['installed'] = safe in installed
+        safe = _safe_name(p.get('name', ''))
+        if p.get('type') == 'module':
+            p['installed'] = safe in installed_modules
+            if p['installed']:
+                local_ver = _get_local_module_version(safe)
+                p['local_version'] = local_ver
+                p['has_update'] = _version_lt(local_ver, p.get('version', ''))
+        else:
+            p['installed'] = safe in installed_plugins
 
     return web.json_response({'success': True, 'data': plugins, 'total': len(plugins)})
 
@@ -136,8 +181,7 @@ async def handle_market_categories(request: web.Request):
     data = await _fetch_plugin_json()
     if data is None:
         return web.json_response({'success': False, 'message': '无法连接插件库'})
-    plugins = data if isinstance(data, list) else data.get('plugins', [])
-    cats = sorted(set(p.get('category', '未分类') for p in plugins))
+    cats = sorted(set(p.get('category', '未分类') for p in _extract_plugins(data)))
     return web.json_response({'success': True, 'data': cats})
 
 
@@ -148,11 +192,9 @@ async def handle_market_detail(request: web.Request):
     data = await _fetch_plugin_json()
     if data is None:
         return web.json_response({'success': False, 'message': '无法连接插件库'})
-    plugins = data if isinstance(data, list) else data.get('plugins', [])
-    for p in plugins:
-        if p.get('name') == name:
-            return web.json_response({'success': True, 'data': p})
-    return web.json_response({'success': False, 'message': '插件不存在'})
+    match = next((p for p in _extract_plugins(data) if p.get('name') == name), None)
+    return (web.json_response({'success': True, 'data': match}) if match
+            else web.json_response({'success': False, 'message': '插件不存在'}))
 
 
 async def handle_market_refresh(request: web.Request):
@@ -160,8 +202,8 @@ async def handle_market_refresh(request: web.Request):
     data = await _fetch_plugin_json(force=True)
     if data is None:
         return web.json_response({'success': False, 'message': '刷新失败, 无法连接插件库'})
-    plugins = data if isinstance(data, list) else data.get('plugins', [])
-    return web.json_response({'success': True, 'message': f'已刷新, 共 {len(plugins)} 个插件'})
+    total = len(_extract_plugins(data))
+    return web.json_response({'success': True, 'message': f'已刷新, 共 {total} 个插件'})
 
 
 # ==================== 预览/安装 ====================
@@ -198,37 +240,44 @@ async def handle_market_preview(request: web.Request):
 
 
 async def handle_market_install(request: web.Request):
-    """安装插件: 支持 GitHub 仓库 URL / 仓库内指定文件 / zip / 单 py
+    """安装插件/模块
     请求体:
-        name     — 插件名 (用作 plugins/<name> 目录名)
-        url      — 下载地址 (支持 GitHub 仓库链接, 自动转为 archive zip)
-        github   — 等同于 url, 兼容 plugins.json 中的 github 字段
-        path     — 仓库内文件路径 (如 plugins/hello/hello.py), 有此字段时只下载该文件
+        name     — 名称 (用作 plugins/<name> 或 modules/<name>)
+        type     — 类型: plugin(默认) / module
+        url      — 下载地址
+        github   — 等同于 url
+        path     — 仓库内文件路径 (单文件插件用)
         branch   — 分支名, 默认 main
     """
     body = await request.json()
     github_url = body.get('github', '') or body.get('url', '') or body.get('download_url', '')
-    plugin_name = body.get('name', 'unknown_plugin')
+    item_name = body.get('name', 'unknown')
+    item_type = body.get('type', 'plugin')
     file_path = body.get('path', '')
     branch = body.get('branch', 'main')
     if not github_url:
         return web.json_response({'success': False, 'message': '缺少下载地址'}, status=400)
 
     try:
-        # 有 path → 从仓库下载单个文件
+        # 模块安装: 从仓库 zip 中提取 modules/<name>/ 子目录
+        if item_type == 'module':
+            return web.json_response(
+                await _install_module(github_url, item_name, branch))
+
+        # 插件安装: 有 path → 从仓库下载单个文件
         if file_path:
             url = _repo_raw_url(github_url, file_path, branch)
-            log.info(f"插件安装 (单文件): {plugin_name} ← {url}")
+            log.info(f"插件安装 (单文件): {item_name} ← {url}")
             content = await _download_file(url)
             if content is None:
                 return web.json_response({'success': False, 'message': '文件下载失败, 请检查路径或网络'})
-            return web.json_response(_install_py(content, plugin_name, url))
+            return web.json_response(_install_py(content, item_name, url))
 
-        # 无 path → 拉取整个仓库 zip
+        # 插件安装: 无 path → 拉取整个仓库 zip
         is_repo = bool(re.match(r'https?://github\.com/[^/]+/[^/]+/?$', github_url.rstrip('/')))
         if is_repo:
             url = _github_to_archive(github_url, branch)
-            log.info(f"插件安装 (仓库): {plugin_name} ← {url}")
+            log.info(f"插件安装 (仓库): {item_name} ← {url}")
         else:
             url = _convert_github_url(github_url)
 
@@ -237,35 +286,23 @@ async def handle_market_install(request: web.Request):
             return web.json_response({'success': False, 'message': '下载失败, 请检查网络或镜像'})
 
         if content[:4] == b'PK\x03\x04':
-            return web.json_response(_install_zip(content, plugin_name))
+            return web.json_response(_install_zip(content, item_name))
 
         is_py = url.endswith('.py') or any(k in content[:500] for k in [b'import ', b'def ', b'class '])
         if is_py:
-            return web.json_response(_install_py(content, plugin_name, url))
+            return web.json_response(_install_py(content, item_name, url))
         return web.json_response({'success': False, 'message': '不支持的文件类型'})
     except Exception as e:
-        log.error(f"插件安装失败 [{plugin_name}]: {e}")
+        log.error(f"安装失败 [{item_name}]: {e}")
         return web.json_response({'success': False, 'message': str(e)})
 
 
 # ==================== 下载辅助 ====================
 
 async def _download_file(url, timeout=60):
-    """通过镜像或直连下载文件"""
-    from web.tools.updater import GITHUB_FILE_MIRRORS, _build_mirror_url
-    urls = [url]
-    if 'github.com' in url or 'githubusercontent.com' in url:
-        # 取缓存的快镜像, 无缓存则用前 3 个默认镜像
-        try:
-            from web.tools.updater import _mirror_cache
-            mirrors = _mirror_cache or []
-        except Exception:
-            mirrors = []
-        for m in (mirrors or GITHUB_FILE_MIRRORS)[:3]:
-            mirror = m['mirror'] if isinstance(m, dict) else m
-            if mirror:
-                urls.append(_build_mirror_url(url, mirror))
-
+    """按镜像排名下载, 全失败重新测速后再试"""
+    is_gh = 'github.com' in url or 'githubusercontent.com' in url
+    urls = _ranked_mirror_urls(url) if is_gh else [url]
     async with _aiohttp.ClientSession() as session:
         for u in urls:
             try:
@@ -274,6 +311,20 @@ async def _download_file(url, timeout=60):
                                        headers={'User-Agent': 'ElainaBot/1.0'}) as resp:
                     if resp.status == 200:
                         return await resp.read()
+            except Exception:
+                continue
+    # 全失败 → 重新测速后再试
+    if is_gh:
+        from web.tools.updater import get_fast_mirrors
+        await get_fast_mirrors(force=True)
+        for u in _ranked_mirror_urls(url):
+            try:
+                async with _aiohttp.ClientSession() as session:
+                    async with session.get(u, timeout=_aiohttp.ClientTimeout(total=timeout),
+                                           ssl=False, allow_redirects=True,
+                                           headers={'User-Agent': 'ElainaBot/1.0'}) as resp:
+                        if resp.status == 200:
+                            return await resp.read()
             except Exception:
                 continue
     return None
@@ -304,8 +355,7 @@ def _install_py(content, plugin_name, url):
     fname = url.split('/')[-1].split('?')[0]
     if not fname.endswith('.py'):
         fname = f"{plugin_name}.py"
-    safe = "".join(c for c in plugin_name if c.isalnum() or c in ('_', '-', ' ')).strip() \
-        or fname.replace('.py', '')
+    safe = _safe_name(plugin_name) or fname.replace('.py', '')
     dest_dir = os.path.join(plugins_dir, safe)
     os.makedirs(dest_dir, exist_ok=True)
     with open(os.path.join(dest_dir, fname), 'wb') as f:
@@ -316,7 +366,7 @@ def _install_py(content, plugin_name, url):
 def _install_zip(content, plugin_name):
     """解压 zip 到 plugins/<plugin_name>/, 自动去除 GitHub archive 的根目录"""
     plugins_dir = _plugins_dir()
-    safe = "".join(c for c in plugin_name if c.isalnum() or c in ('_', '-', ' ')).strip() or 'unknown'
+    safe = _safe_name(plugin_name) or 'unknown'
     dest_dir = os.path.join(plugins_dir, safe)
     try:
         with zipfile.ZipFile(io.BytesIO(content), 'r') as zf:
@@ -354,29 +404,34 @@ def _install_zip(content, plugin_name):
 # ==================== 卸载 ====================
 
 async def handle_market_uninstall(request: web.Request):
-    """卸载已安装的插件 (删除 plugins/<name> 目录)"""
+    """卸载已安装的插件/模块"""
     body = await request.json()
-    plugin_name = body.get('name', '')
-    if not plugin_name:
-        return web.json_response({'success': False, 'message': '缺少插件名'}, status=400)
+    item_name = body.get('name', '')
+    item_type = body.get('type', 'plugin')
+    if not item_name:
+        return web.json_response({'success': False, 'message': '缺少名称'}, status=400)
 
-    safe = "".join(c for c in plugin_name if c.isalnum() or c in ('_', '-', ' ')).strip()
+    safe = _safe_name(item_name)
     if not safe:
-        return web.json_response({'success': False, 'message': '无效插件名'}, status=400)
+        return web.json_response({'success': False, 'message': '无效名称'}, status=400)
 
-    dest_dir = os.path.join(_plugins_dir(), safe)
+    if item_type == 'module':
+        dest_dir = os.path.join(_modules_dir(), safe)
+        label = f'modules/{safe}'
+    else:
+        dest_dir = os.path.join(_plugins_dir(), safe)
+        label = f'plugins/{safe}'
+        if safe == 'system':
+            return web.json_response({'success': False, 'message': '系统插件不可卸载'})
+
     if not os.path.isdir(dest_dir):
-        return web.json_response({'success': False, 'message': f'plugins/{safe} 不存在'})
-
-    # 安全检查: 不能删除 system 插件
-    if safe == 'system':
-        return web.json_response({'success': False, 'message': '系统插件不可卸载'})
+        return web.json_response({'success': False, 'message': f'{label} 不存在'})
 
     import shutil
     try:
         shutil.rmtree(dest_dir)
-        log.info(f"插件 {safe} 已卸载 (目录已删除)")
-        return web.json_response({'success': True, 'message': f'已卸载 plugins/{safe}'})
+        log.info(f"{label} 已卸载")
+        return web.json_response({'success': True, 'message': f'已卸载 {label}'})
     except Exception as e:
         return web.json_response({'success': False, 'message': f'删除失败: {e}'})
 
@@ -388,6 +443,131 @@ def _get_installed_names():
         return set()
     return {d for d in os.listdir(plugins_dir)
             if os.path.isdir(os.path.join(plugins_dir, d)) and not d.startswith(('.', '__'))}
+
+
+def _get_installed_module_names():
+    """获取已安装的模块目录名列表"""
+    modules_dir = _modules_dir()
+    if not os.path.isdir(modules_dir):
+        return set()
+    return {d for d in os.listdir(modules_dir)
+            if os.path.isdir(os.path.join(modules_dir, d)) and not d.startswith(('.', '__'))}
+
+
+def _get_local_module_version(name):
+    """读取本地模块的 __module_meta__['version']"""
+    import ast
+    entry = os.path.join(_modules_dir(), name, 'main.py')
+    if not os.path.isfile(entry):
+        return ''
+    try:
+        with open(entry, 'r', encoding='utf-8') as f:
+            tree = ast.parse(f.read())
+        for node in ast.iter_child_nodes(tree):
+            if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                    and isinstance(node.targets[0], ast.Name)
+                    and node.targets[0].id == '__module_meta__'):
+                meta = ast.literal_eval(node.value)
+                return meta.get('version', '')
+    except Exception:
+        pass
+    return ''
+
+
+def _version_lt(local, remote):
+    """简单版本号对比: local < remote 则有更新"""
+    if not local or not remote:
+        return False
+    try:
+        lp = [int(x) for x in local.split('.')]
+        rp = [int(x) for x in remote.split('.')]
+        return lp < rp
+    except (ValueError, AttributeError):
+        return local != remote
+
+
+def _clean_module_dir(dest_dir):
+    """清理模块目录 (保留 data/ 用户配置)"""
+    if not os.path.isdir(dest_dir):
+        return
+    import shutil
+    for item in os.listdir(dest_dir):
+        if item == 'data':
+            continue
+        p = os.path.join(dest_dir, item)
+        if os.path.isdir(p):
+            shutil.rmtree(p)
+        else:
+            os.remove(p)
+
+
+async def _install_module(github_url, module_name, branch='main'):
+    """安装/更新模块
+    两种模式自动判断:
+      1. 官方模块: 仓库含 modules/<name>/ → 只提取该子目录
+      2. 第三方模块: 整个仓库就是模块 → 全部装到 modules/<name>/
+    """
+    safe = _safe_name(module_name) or 'unknown'
+    url = _github_to_archive(github_url, branch)
+    log.info(f"模块安装: {safe} ← {url}")
+
+    content = await _download_file(url)
+    if content is None:
+        return {'success': False, 'message': '下载失败, 请检查网络或镜像'}
+    if content[:4] != b'PK\x03\x04':
+        return {'success': False, 'message': '下载内容不是有效的 zip 文件'}
+
+    try:
+        with zipfile.ZipFile(io.BytesIO(content), 'r') as zf:
+            flist = zf.namelist()
+            # GitHub archive 根目录 (repo-branch/)
+            roots = {f.split('/')[0] for f in flist if '/' in f and f.split('/')[0]}
+            root_prefix = (list(roots)[0] + '/') if len(roots) == 1 else ''
+
+            # 尝试匹配 modules/<name>/ (官方/框架内模块)
+            mod_prefix = f'{root_prefix}modules/{safe}/'
+            mod_files = [f for f in flist if f.startswith(mod_prefix) and not f.endswith('/')]
+
+            if not mod_files:
+                # 判断是否为框架仓库 (精确匹配官方仓库)
+                is_framework = 'ElainaCore/ElainaBot_v2' in github_url
+                if is_framework:
+                    return {'success': False, 'message': f'框架仓库中未找到 modules/{safe}/'}
+                # 第三方模块: 整个仓库就是模块内容
+                mod_prefix = root_prefix
+                mod_files = [f for f in flist if f.startswith(mod_prefix) and not f.endswith('/')]
+
+            if not mod_files:
+                return {'success': False, 'message': '仓库内容为空'}
+
+            dest_dir = os.path.join(_modules_dir(), safe)
+            _clean_module_dir(dest_dir)
+            os.makedirs(dest_dir, exist_ok=True)
+
+            extracted = []
+            for fp in mod_files:
+                if '__pycache__' in fp or '/.git/' in fp:
+                    continue
+                rel = fp[len(mod_prefix):]
+                if not rel:
+                    continue
+                # 保留用户已有的 data/ 配置
+                if rel.startswith('data/'):
+                    dest = os.path.join(dest_dir, rel)
+                    if os.path.exists(dest):
+                        continue
+                dest = os.path.join(dest_dir, rel)
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                with zf.open(fp) as src, open(dest, 'wb') as dst:
+                    dst.write(src.read())
+                extracted.append(rel)
+
+            log.info(f"模块 {safe} 安装完成: {len(extracted)} 个文件")
+            return {'success': True,
+                    'message': f'已更新 modules/{safe}/ ({len(extracted)} 个文件)',
+                    'path': f'modules/{safe}', 'files': len(extracted)}
+    except Exception as e:
+        return {'success': False, 'message': str(e)}
 
 
 # ==================== 本地插件管理 ====================

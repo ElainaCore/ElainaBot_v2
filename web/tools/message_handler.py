@@ -71,7 +71,7 @@ def _query_messages(date=None, limit=500, appid_filter='', days=1):
             try:
                 rows = inst.log_service.query(
                     'message',
-                    f"SELECT * FROM log ORDER BY id DESC LIMIT {limit}",
+                    f"SELECT * FROM log ORDER BY timestamp DESC, id DESC LIMIT {limit}",
                     date=d,
                 )
                 for r in rows:
@@ -82,7 +82,7 @@ def _query_messages(date=None, limit=500, appid_filter='', days=1):
                 results.extend(rows)
             except Exception:
                 pass
-    results.sort(key=lambda r: r.get('id', 0))
+    results.sort(key=lambda r: (r.get('timestamp', ''), r.get('id', 0)))
     return results
 
 
@@ -185,8 +185,15 @@ async def handle_get_chat_history(request: web.Request):
         gid = r.get('group_id', '')
         content = r.get('content', '')
         msg_type = r.get('type', '')
-        plugin_name = r.get('plugin_name', '')
-        is_bot = msg_type == 'plugin' or (content.startswith(('[Bot回复]', '[Bot:')) if content else False)
+
+        # 匹配聊天会话
+        if chat_type == 'group':
+            if gid != chat_id:
+                continue
+        elif uid != chat_id or gid:
+            continue
+
+        is_bot = msg_type in ('plugin', 'onebot_send') or (content.startswith(('[Bot回复]', '[Bot:')) if content else False)
 
         # 清理旧的 [Bot:xxx] 前缀
         if content.startswith('[Bot:'):
@@ -194,32 +201,28 @@ async def handle_get_chat_history(request: web.Request):
             if idx > 0:
                 content = content[idx + 2:]
 
-        if chat_type == 'group' and gid == chat_id:
-            matched = True
-        elif chat_type == 'user' and uid == chat_id and not gid:
-            matched = True
-        else:
-            matched = False
+        plugin_name = r.get('plugin_name', '')
+        source = 'web_panel' if plugin_name == 'WebPanel' else ('onebot' if msg_type in ('onebot_send', 'onebot_recv') else '')
+        messages.append({
+            'id': r.get('id', len(messages)),
+            'user_id': uid,
+            'appid': r.get('appid', ''),
+            'bot_qq': r.get('bot_qq', '') if is_bot else '',
+            'nickname': (r.get('bot_name', '') or 'Bot') if is_bot else _get_nickname(uid),
+            'content': content,
+            'timestamp': r.get('timestamp', ''),
+            'is_self': is_bot,
+            'source': source,
+        })
 
-        if matched:
-            messages.append({
-                'id': r.get('id', len(messages)),
-                'user_id': uid,
-                'appid': r.get('appid', ''),
-                'bot_qq': r.get('bot_qq', '') if is_bot else '',
-                'nickname': (r.get('bot_name', '') or 'Bot') if is_bot else _get_nickname(uid),
-                'content': content,
-                'timestamp': r.get('timestamp', ''),
-                'is_self': is_bot,
-                'source': 'web_panel' if plugin_name == 'WebPanel' else '',
-            })
-
-    # 取最近一条非 bot 消息的 message_id 用于发送回复
+    # 取最近一条非 bot 消息的 message_id 用于发送回复 (仅当天, 避免过期)
     last_msg_id = ''
+    today_str = _date.today().strftime('%Y-%m-%d')
     for r in reversed(rows):
+        if r.get('_date', '') != today_str:
+            continue
         mid = r.get('message_id', '')
         if mid and r.get('type') != 'plugin':
-            # 确认属于当前聊天
             uid = r.get('user_id', '')
             gid = r.get('group_id', '')
             if (chat_type == 'group' and gid == chat_id) or \
@@ -297,26 +300,24 @@ async def handle_send_message(request: web.Request):
         bot_qq = getattr(bot, 'robot_qq', '') or ''
 
         # 根据消息类型发送
+        is_group = chat_type == 'group'
+        gid = chat_id if is_group else None
+        uid = chat_id if not is_group else None
+
         if msg_type == 'media' and content:
             ok, data = await _send_media_url(
                 sender, content, file_type=media_file_type,
-                group_id=chat_id if chat_type == 'group' else None,
-                user_id=chat_id if chat_type != 'group' else None,
-                msg_id=msg_id)
+                group_id=gid, user_id=uid, msg_id=msg_id)
 
         elif msg_type == 'ark' and content:
             ok, data = await _send_ark(
                 sender, ark_template_id, content,
-                group_id=chat_id if chat_type == 'group' else None,
-                user_id=chat_id if chat_type != 'group' else None,
-                msg_id=msg_id)
+                group_id=gid, user_id=uid, msg_id=msg_id)
 
         elif msg_type == 'text' and image_data:
             ok, data = await _send_text_with_image(
                 sender, content, image_data,
-                group_id=chat_id if chat_type == 'group' else None,
-                user_id=chat_id if chat_type != 'group' else None,
-                msg_id=msg_id)
+                group_id=gid, user_id=uid, msg_id=msg_id)
 
         else:
             api_msg_type = 2 if msg_type == 'markdown' else 0
@@ -333,17 +334,13 @@ async def handle_send_message(request: web.Request):
         # 构建显示内容
         display = _build_display(msg_type, content, image_data, media_file_type, ark_template_id, media_label)
 
+        send_payload = locals().get('actual_payload') or {'msg_type': msg_type, 'content': content}
         if ok:
-            # 记录到消息数据库
-            send_payload = locals().get('actual_payload') or {'msg_type': msg_type, 'content': content}
             _log_sent_message(bot, chat_type, chat_id, display, bot_appid, bot_name, bot_qq, send_payload)
             return web.json_response({'success': True, 'message': '发送成功'})
-        else:
-            err_msg = data.get('message', '发送失败') if isinstance(data, dict) else str(data)
-            # 记录到报错数据库 (传真实 API payload)
-            send_payload = locals().get('actual_payload') or {'msg_type': msg_type, 'content': content}
-            _log_send_error(bot, msg_type, chat_type, chat_id, send_payload, data, bot_appid, msg_id)
-            return web.json_response({'success': False, 'message': err_msg})
+        err_msg = data.get('message', '发送失败') if isinstance(data, dict) else str(data)
+        _log_send_error(bot, msg_type, chat_type, chat_id, send_payload, data, bot_appid, msg_id)
+        return web.json_response({'success': False, 'message': err_msg})
 
     except Exception as e:
         import traceback

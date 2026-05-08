@@ -1,4 +1,4 @@
-"""可选模块: 统一图床服务 (腾讯云COS / B站 / QQ频道)
+"""可选模块: 统一图床服务 (腾讯云COS / B站 / QQ频道 / ChatGLM / Ukaka / 星野 / Nature)
 
 各图床可在配置中独立开关, 未开启或未配置时返回明确提示。
 同步 SDK 通过 run_in_executor 包装为异步 API。
@@ -9,6 +9,10 @@
         url = await hosting.upload_cos(image_bytes, "test.png", user_id="abc")
         url = await hosting.upload_bilibili(image_bytes)
         url = await hosting.upload_qq(image_bytes)
+        url = await hosting.upload_chatglm(image_bytes)
+        url = await hosting.upload_ukaka(image_bytes)
+        url = await hosting.upload_xingye(image_bytes)
+        url = await hosting.upload_nature(image_bytes)
 
 配置 (modules/image_hosting/data/config.yaml):
     cos:
@@ -28,21 +32,45 @@
     qq_channel:
         enabled: false
         channel_id: ""
+    chatglm:
+        enabled: false
+    ukaka:
+        enabled: false
+    xingye:
+        enabled: false
+    nature:
+        enabled: false
 """
+
+__module_meta__ = {
+    'name': '图床服务',
+    'description': '统一图床上传 (COS / B站 / QQ频道 / ChatGLM / Ukaka / 星野 / Nature)',
+    'version': '1.2.0',
+    'author': 'ElainaBot',
+}
 
 import os
 import re
 import asyncio
 import hashlib
+import hmac
 import mimetypes
 import tempfile
 from datetime import datetime
 from io import BytesIO
+from base64 import b64decode as _d
 from core.base.logger import get_logger, EXTENSION
 
 log = get_logger(EXTENSION, "图床服务")
 
 _instance = None
+
+_NATURE_SECRET_ID = _d(b'QUtJRHJiOFRiZlhBWnJ5cVRzMnlnQlNWSkdzSFRROGR0d21O').decode()
+_NATURE_SECRET_KEY = _d(b'UFphTnhLV2ZjTHAzNHJQanJ1dGtXRnlaQ2N5REdCMGQ=').decode()
+_NATURE_BUCKET = 'sgame-data-service-1252931805'
+_NATURE_REGION = 'ap-nanjing'
+_NATURE_CDN = 'https://download.nature.qq.com'
+_NATURE_PATH_PREFIX = 'SnsShare/lengxi'
 
 _DEFAULTS = {
     'cos': {
@@ -64,6 +92,18 @@ _DEFAULTS = {
     'qq_channel': {
         'enabled': False,
         'channel_id': '',
+    },
+    'chatglm': {
+        'enabled': False,
+    },
+    'ukaka': {
+        'enabled': False,
+    },
+    'xingye': {
+        'enabled': False,
+    },
+    'nature': {
+        'enabled': False,
     },
 }
 
@@ -91,6 +131,22 @@ _COMMENTS = {
         'enabled': '是否启用 QQ频道图床',
         'channel_id': '用于上传图片的子频道 ID',
     },
+    'chatglm': {
+        '__desc__': '智谱 ChatGLM 图床 (免费, 无需配置)',
+        'enabled': '是否启用 ChatGLM 图床',
+    },
+    'ukaka': {
+        '__desc__': 'Ukaka 图床 (免费, 无需配置)',
+        'enabled': '是否启用 Ukaka 图床',
+    },
+    'xingye': {
+        '__desc__': '星野图床 (免费, 无需配置)',
+        'enabled': '是否启用星野图床',
+    },
+    'nature': {
+        '__desc__': 'Nature 图床 (腾讯 COS 直传, 密钥内置, 仅图片)',
+        'enabled': '是否启用 Nature 图床',
+    },
 }
 
 _DIM_PATTERN = re.compile(r'_(\d+)x(\d+)\.[^.]+$')
@@ -114,15 +170,18 @@ async def teardown():
 # ==================== 统一图床服务 ====================
 
 class ImageHosting:
-    """统一图床上传 (COS / B站 / QQ频道), 各图床可独立开关"""
+    """统一图床上传 (COS / B站 / QQ频道 / ChatGLM / Ukaka / 星野 / Nature)"""
 
-    __slots__ = ('_cfg', '_ctx', '_cos_client', '_cos_available')
+    __slots__ = ('_cfg', '_ctx', '_cos_client', '_cos_available', '_sign_url', '_sign_origin', '_ua')
 
     def __init__(self, cfg, ctx):
         self._cfg = cfg
         self._ctx = ctx
         self._cos_client = None
         self._cos_available = False
+        self._sign_url = 'https://bed-sign.vercel.0013107.xyz/sign'
+        self._sign_origin = 'https://bed.vercel.0013107.xyz'
+        self._ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36'
 
     def initialize(self):
         """初始化各图床 (仅 COS 需要预初始化)"""
@@ -135,6 +194,10 @@ class ImageHosting:
         status.append(f"COS={'✅' if self._cos_available else '❌'}")
         status.append(f"B站={'✅' if bili_cfg.get('enabled') and bili_cfg.get('csrf_token') and bili_cfg.get('sessdata') else '❌'}")
         status.append(f"QQ频道={'✅' if qq_cfg.get('enabled') and qq_cfg.get('channel_id') else '❌'}")
+        status.append(f"ChatGLM={'✅' if self._cfg.get('chatglm', {}).get('enabled') else '❌'}")
+        status.append(f"Ukaka={'✅' if self._cfg.get('ukaka', {}).get('enabled') else '❌'}")
+        status.append(f"星野={'✅' if self._cfg.get('xingye', {}).get('enabled') else '❌'}")
+        status.append(f"Nature={'✅' if self._cfg.get('nature', {}).get('enabled') else '❌'}")
         log.info(f"图床状态: {' | '.join(status)}")
 
     def _init_cos(self, cos_cfg):
@@ -172,12 +235,28 @@ class ImageHosting:
         qq = self._cfg.get('qq_channel', {})
         return qq.get('enabled') and qq.get('channel_id')
 
+    def is_chatglm_available(self):
+        return self._cfg.get('chatglm', {}).get('enabled', False)
+
+    def is_ukaka_available(self):
+        return self._cfg.get('ukaka', {}).get('enabled', False)
+
+    def is_xingye_available(self):
+        return self._cfg.get('xingye', {}).get('enabled', False)
+
+    def is_nature_available(self):
+        return self._cfg.get('nature', {}).get('enabled', False)
+
     def status(self):
         """返回各图床状态 dict"""
         return {
             'cos': self.is_cos_available(),
             'bilibili': bool(self.is_bilibili_available()),
             'qq_channel': bool(self.is_qq_available()),
+            'chatglm': self.is_chatglm_available(),
+            'ukaka': self.is_ukaka_available(),
+            'xingye': self.is_xingye_available(),
+            'nature': self.is_nature_available(),
         }
 
     # ==================== COS 上传 ====================
@@ -382,6 +461,150 @@ class ImageHosting:
                     pass
 
 
+    # ==================== ChatGLM 图床 ====================
+
+    async def upload_chatglm(self, image_data):
+        """上传到智谱ChatGLM图床, 返回 URL 字符串或 (False, 原因)"""
+        if not self.is_chatglm_available():
+            return (False, 'ChatGLM 图床未开启, 请在 image_hosting 模块配置中启用')
+        if not isinstance(image_data, bytes) or len(image_data) > 20 * 1024 * 1024:
+            return (False, '无效数据或超过20MB限制')
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self._upload_chatglm_sync, image_data)
+
+    def _upload_chatglm_sync(self, image_data):
+        try:
+            import httpx
+            mime = _detect_mime(image_data)
+            ext = mime.split('/')[-1] if '/' in mime else 'jpg'
+            resp = httpx.post(
+                'https://chatglm.cn/chatglm/backend-api/assistant/file_upload',
+                files={'file': (f'image.{ext}', image_data, mime)},
+                headers={
+                    'User-Agent': self._ua,
+                    'Accept-Encoding': 'gzip, deflate, br',
+                },
+                timeout=30)
+            if resp.status_code == 200:
+                url = resp.json().get('result', {}).get('file_url', '')
+                if url:
+                    return url
+            return (False, f'ChatGLM 上传失败 (HTTP {resp.status_code})')
+        except Exception as e:
+            return (False, str(e))
+
+    # ==================== Ukaka 图床 ====================
+
+    async def upload_ukaka(self, image_data):
+        """上传到Ukaka图床, 返回 URL 字符串或 (False, 原因)"""
+        if not self.is_ukaka_available():
+            return (False, 'Ukaka 图床未开启, 请在 image_hosting 模块配置中启用')
+        if not isinstance(image_data, bytes) or len(image_data) > 20 * 1024 * 1024:
+            return (False, '无效数据或超过20MB限制')
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self._upload_signed_sync, image_data, 'ukaka')
+
+    # ==================== 星野图床 ====================
+
+    async def upload_xingye(self, image_data):
+        """上传到星野图床, 返回 URL 字符串或 (False, 原因)"""
+        if not self.is_xingye_available():
+            return (False, '星野图床未开启, 请在 image_hosting 模块配置中启用')
+        if not isinstance(image_data, bytes) or len(image_data) > 20 * 1024 * 1024:
+            return (False, '无效数据或超过20MB限制')
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self._upload_signed_sync, image_data, 'xingye')
+
+    def _upload_signed_sync(self, image_data, module):
+        """Ukaka / 星野 共用签名上传逻辑"""
+        try:
+            import httpx
+            mime = _detect_mime(image_data)
+            ext = mime.split('/')[-1] if '/' in mime else 'jpg'
+            filename = f'image.{ext}'
+            sign_headers = {
+                'Accept': '*/*',
+                'Origin': self._sign_origin,
+                'Referer': f'{self._sign_origin}/',
+                'User-Agent': self._ua,
+            }
+            sign_resp = httpx.get(
+                self._sign_url,
+                params={'module': module, 'filename': filename, 'mimeType': mime},
+                headers=sign_headers, timeout=15)
+            sign_data = sign_resp.json()
+
+            upload_url = sign_data.get('url')
+            resource_url = sign_data.get('resourceUrl')
+            if not upload_url or not resource_url:
+                return (False, f'{module} 签名返回数据不完整')
+
+            if module == 'xingye':
+                ct = (sign_data.get('header') or {}).get('Content-Type', mime)
+                resp = httpx.put(upload_url, content=image_data,
+                                 headers={'Content-Type': ct, 'User-Agent': self._ua},
+                                 timeout=30)
+            else:
+                body = sign_data.get('body', {})
+                files_dict = {}
+                data_dict = {k: str(v) for k, v in body.items()
+                             if k != 'file' and v is not None and v != ''}
+                files_dict['file'] = (filename, image_data, mime)
+                resp = httpx.post(upload_url, data=data_dict, files=files_dict,
+                                  headers={'User-Agent': self._ua}, timeout=30)
+
+            if resp.status_code < 300:
+                return resource_url
+            return (False, f'{module} 上传失败 (HTTP {resp.status_code})')
+        except Exception as e:
+            return (False, str(e))
+
+    # ==================== Nature 图床 ====================
+
+    async def upload_nature(self, image_data):
+        """上传到 Nature 图床 (腾讯COS直传), 返回 URL 字符串或 (False, 原因)"""
+        if not self.is_nature_available():
+            return (False, 'Nature 图床未开启, 请在 image_hosting 模块配置中启用')
+        if not isinstance(image_data, bytes) or len(image_data) > 100 * 1024 * 1024:
+            return (False, '无效数据或超过100MB限制')
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self._upload_nature_sync, image_data)
+
+    def _upload_nature_sync(self, image_data):
+        try:
+            import httpx
+            mime, ext = _detect_nature_mime(image_data)
+            if not mime:
+                return (False, '仅支持 PNG/JPG/WebP/GIF 格式')
+            content_type = 'image/jpeg' if mime == 'image/gif' else mime
+
+            ts = int(datetime.now().timestamp())
+            rand = os.urandom(4).hex()
+            upload_path = f'{_NATURE_PATH_PREFIX}/{ts}_{rand}.{ext}'
+            host = f'{_NATURE_BUCKET}.cos.{_NATURE_REGION}.myqcloud.com'
+
+            sign_time = f'{ts};{ts + 3600}'
+            sign_key = hmac.new(
+                _NATURE_SECRET_KEY.encode(), sign_time.encode(), 'sha1').hexdigest()
+            fmt = f'put\n/{upload_path}\n\nhost={host}\n'
+            sts = f'sha1\n{sign_time}\n{hashlib.sha1(fmt.encode()).hexdigest()}\n'
+            sig = hmac.new(sign_key.encode(), sts.encode(), 'sha1').hexdigest()
+            auth = (f'q-sign-algorithm=sha1&q-ak={_NATURE_SECRET_ID}'
+                    f'&q-sign-time={sign_time}&q-key-time={sign_time}'
+                    f'&q-header-list=host&q-url-param-list=&q-signature={sig}')
+
+            resp = httpx.put(
+                f'https://{host}/{upload_path}', content=image_data,
+                headers={'Host': host, 'Content-Type': content_type,
+                         'Authorization': auth},
+                timeout=30)
+            if resp.status_code == 200:
+                return f'{_NATURE_CDN}/{upload_path}'
+            return (False, f'Nature 上传失败 (HTTP {resp.status_code})')
+        except Exception as e:
+            return (False, str(e))
+
+
 # ==================== 辅助函数 ====================
 
 def _guess_content_type(filename):
@@ -406,6 +629,19 @@ def _detect_mime(data):
         return magic.Magic(mime=True).from_buffer(data)
     except Exception:
         return 'image/jpeg'
+
+
+def _detect_nature_mime(data):
+    """检测图片类型 (仅 PNG/JPG/WebP/GIF), 返回 (mime, ext)"""
+    if data[:8].startswith(b'\x89PNG\r\n\x1a\n'):
+        return 'image/png', 'png'
+    if data[:3] == b'\xff\xd8\xff':
+        return 'image/jpeg', 'jpg'
+    if len(data) >= 12 and data[:4] == b'RIFF' and data[8:12] == b'WEBP':
+        return 'image/webp', 'webp'
+    if data[:3] == b'GIF':
+        return 'image/gif', 'jpg'
+    return None, None
 
 
 def parse_dimensions_from_filename(filename):

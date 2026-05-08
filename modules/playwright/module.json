@@ -1,8 +1,0 @@
-{
-  "name": "Playwright 渲染引擎",
-  "description": "异步 Playwright 浏览器渲染模块, 支持 URL/HTML/文件截图与 PDF 导出, 信号量控制并发页面数",
-  "version": "1.0.0",
-  "author": "",
-  "github": "",
-  "releases": ""
-}

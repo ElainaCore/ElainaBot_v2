@@ -6,6 +6,23 @@ from core.plugin.decorators import handler
 from core.base.config import cfg
 
 
+# ==================== ping ====================
+
+@handler(r'^ping$', name='Ping', desc='测试QQ消息接口延迟')
+async def ping(event, match):
+    import time, aiohttp
+    t0 = time.time()
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.get('https://api.sgroup.qq.com/gateway/bot', timeout=aiohttp.ClientTimeout(total=5)):
+                api_ms = round((time.time() - t0) * 1000)
+    except Exception:
+        api_ms = -1
+    api_text = f'{api_ms}ms' if api_ms >= 0 else '超时'
+    msg_ms = round((time.time() - event.timestamp) * 1000) if event.timestamp else '未知'
+    await event.reply(f"pong 🏓\nAPI延迟: {api_text}\n消息延迟: {msg_ms}ms" if msg_ms != '未知' else f"pong 🏓\nAPI延迟: {api_text}")
+
+
 # ==================== 我的id ====================
 
 @handler(r'^我的id$', name='我的ID', desc='查看自己的用户/群组ID')
@@ -47,7 +64,7 @@ async def about_info(event, match):
     # 获取版本号
     kernel_version = '2.0'
     try:
-        from core.bot import _bot_manager_ref
+        from core.bot.manager import _bot_manager_ref
         if _bot_manager_ref:
             pm = getattr(_bot_manager_ref, 'plugin_manager', None)
             if pm:

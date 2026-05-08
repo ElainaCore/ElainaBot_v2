@@ -1,8 +1,0 @@
-{
-  "name": "数据存储引擎",
-  "description": "MySQL + Redis 统一数据存储模块, 提供异步连接池与完整 CRUD / 缓存操作, 支持独立开关",
-  "version": "1.0.0",
-  "author": "",
-  "github": "",
-  "releases": ""
-}

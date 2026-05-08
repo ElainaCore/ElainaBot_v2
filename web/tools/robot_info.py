@@ -35,10 +35,17 @@ async def handle_get_robot_info(request: web.Request):
     robot_qq = getattr(bot, 'robot_qq', '') if bot else ''
     share_url = _SHARE_URL.format(robot_qq)
 
-    ws_connected = False
+    ws_connected = bool(bot and bot.ws_client and getattr(bot.ws_client, '_connected', False))
     conn_type = 'WebSocket'
-    if bot and bot.ws_client:
-        ws_connected = getattr(bot.ws_client, '_connected', False)
+    conn_status = '已连接' if ws_connected else ('等待接收中' if conn_type == 'Webhook' else '未连接')
+    channel_url = _CHANNEL_URL.format(appid)
+    _qr = lambda u: '/api/robot/qrcode?url=' + urllib.parse.quote(u, safe='')
+    base = {
+        'appid': appid, 'qq': robot_qq, 'link': share_url,
+        'connection_type': conn_type, 'connection_status': conn_status,
+        'qr_code_api': _qr(share_url),
+        'channel_link': channel_url, 'channel_qr_code_api': _qr(channel_url),
+    }
 
     try:
         async with _aiohttp.ClientSession() as session:
@@ -54,35 +61,20 @@ async def handle_get_robot_info(request: web.Request):
         if avatar and 'myqcloud.com' in avatar:
             avatar += ('&' if '?' in avatar else '?') + 'imageMogr2/format/png'
 
-        return web.json_response({
-            'success': True, 'qq': robot.get('robot_uin', robot_qq),
+        return web.json_response({**base, 'success': True,
+            'qq': robot.get('robot_uin', robot_qq),
             'name': robot.get('robot_name', '未知机器人'),
             'description': robot.get('robot_desc', '暂无描述'),
             'avatar': avatar, 'appid': robot.get('appid', appid),
             'developer': robot.get('create_name', '未知'),
-            'link': share_url,
             'status': '正常' if robot.get('robot_offline', 1) == 0 else '离线',
-            'connection_type': conn_type,
-            'connection_status': '已连接' if ws_connected else ('等待接收中' if conn_type == 'Webhook' else '未连接'),
             'data_source': 'api',
             'is_banned': robot.get('robot_ban', False),
             'commands_count': len(commands),
-            'qr_code_api': '/api/robot/qrcode?url=' + urllib.parse.quote(share_url, safe=''),
-            'channel_link': _CHANNEL_URL.format(appid),
-            'channel_qr_code_api': '/api/robot/qrcode?url=' + urllib.parse.quote(_CHANNEL_URL.format(appid), safe=''),
         })
     except Exception as e:
-        channel_url = _CHANNEL_URL.format(appid)
-        return web.json_response({
-            'success': False, 'error': str(e), 'qq': robot_qq,
-            'name': '加载失败', 'appid': appid,
-            'link': share_url,
-            'connection_type': conn_type,
-            'connection_status': '已连接' if ws_connected else ('等待接收中' if conn_type == 'Webhook' else '未连接'),
-            'data_source': 'fallback',
-            'qr_code_api': '/api/robot/qrcode?url=' + urllib.parse.quote(share_url, safe=''),
-            'channel_link': channel_url,
-            'channel_qr_code_api': '/api/robot/qrcode?url=' + urllib.parse.quote(channel_url, safe=''),
+        return web.json_response({**base, 'success': False, 'error': str(e),
+            'name': '加载失败', 'data_source': 'fallback',
         })
 
 

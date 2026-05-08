@@ -42,6 +42,9 @@ bots:
     maintenance:
       enabled: false
 
+    # 事件去重 (过滤重复 message_id / event_id, 缓存5分钟)
+    dedup:
+      enabled: false
     # 黑名单
     blacklist:
       user_enabled: false              # 用户黑名单开关

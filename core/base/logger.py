@@ -217,8 +217,7 @@ def report_error(module_type, module_name, error, context=None, notify=True):
 
     if isinstance(error, BaseException):
         tb_str = ''.join(traceback.format_exception(type(error), error, error.__traceback__))
-        log.error(f"{error}", exc_info=False)
-        log.debug(f"Traceback:\n{tb_str}")
+        log.error(f"{error}\n{tb_str}")
     else:
         tb_str = ''
         log.error(str(error))

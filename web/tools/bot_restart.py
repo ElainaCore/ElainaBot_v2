@@ -2,12 +2,10 @@
 
 import os
 import sys
-import json
 import time
 import platform
 import subprocess
 import threading
-from datetime import datetime
 
 from aiohttp import web
 
@@ -80,9 +78,8 @@ async def handle_restart(request: web.Request):
             subprocess.Popen([sys.executable, restarter], cwd=_base_dir,
                              creationflags=subprocess.CREATE_NEW_CONSOLE)
             threading.Thread(target=lambda: (time.sleep(1), os._exit(0)), daemon=True).start()
-            return web.json_response({'success': True, 'message': '正在重启...'})
         else:
             subprocess.Popen([sys.executable, restarter], cwd=_base_dir, start_new_session=True)
-            return web.json_response({'success': True, 'message': '正在重启...'})
+        return web.json_response({'success': True, 'message': '正在重启...'})
     except Exception as e:
         return web.json_response({'success': False, 'error': str(e)})
