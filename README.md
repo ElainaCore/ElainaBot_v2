@@ -155,19 +155,21 @@ def _on_load():
 - [Docker](https://docs.docker.com/get-docker/) 20.10+
 - [Docker Compose](https://docs.docker.com/compose/install/) v2+
 
-### 快速启动
+### 快速启动（推荐）
 
-**1. 克隆仓库**
+直接拉取预构建镜像，无需克隆代码：
+
+**1. 创建目录并下载 compose 文件**
 
 ```bash
-git clone https://github.com/ElainaCore/ElainaBot_v2.git
-cd ElainaBot_v2
+mkdir elainabot && cd elainabot
+curl -O https://raw.githubusercontent.com/ElainaCore/ElainaBot_v2/main/docker-compose.yml
 ```
 
-**2. 构建并启动**
+**2. 启动容器**
 
 ```bash
-docker compose up -d --build
+docker compose up -d
 ```
 
 **3. 访问 Web 面板完成配置**
@@ -190,8 +192,8 @@ docker compose down
 # 重启
 docker compose restart
 
-# 更新代码后重新构建
-docker compose up -d --build
+# 更新到最新镜像
+docker compose pull && docker compose up -d
 ```
 
 ### 数据持久化说明
@@ -204,6 +206,16 @@ docker compose up -d --build
 | `./plugins/` | 已安装的插件 |
 | `./modules/` | 模块文件 |
 | `./log/` | 运行日志 |
+
+### 自行构建（可选）
+
+如需从源码构建：
+
+```bash
+git clone https://github.com/ElainaCore/ElainaBot_v2.git
+cd ElainaBot_v2
+docker compose -f docker-compose.build.yml up -d --build
+```
 
 ---
 
