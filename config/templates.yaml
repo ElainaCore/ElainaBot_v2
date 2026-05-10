@@ -19,10 +19,8 @@
 #   带按钮:
 #     welcome:
 #       content: "你好"
-#       buttons:                # 按钮行列表, 每个 - 代表一行, 行内为按钮列表
-#         - - {text: "菜单", data: "/菜单", enter: true, style: 1}
-#           - {text: "帮助", data: "/帮助", enter: true, style: 0}
-#         - - {text: "邀请进群", link: "https://...", style: 1}
+#       buttons: [[{text: "菜单", data: "/菜单", enter: true, style: 1},{text: "帮助", data: "/帮助"}],[{text: "邀请进群", link: "https://...", style: 1}]]
+#       # 格式: [[第一行按钮],[第二行按钮]]  每个 [] 是一行, {} 是一个按钮
 #   MD/文本分离:
 #     welcome:
 #       markdown: "**你好**"    # Markdown 模式用此内容
@@ -42,9 +40,7 @@
 # ===== 群欢迎(机器人被邀请入群) =====
 welcome:
   markdown: "感谢邀请我进群，发送菜单查看全部帮助。"
-  # buttons:
-  #   - - {text: "菜单", data: "/菜单", enter: true, style: 1}
-  #     - {text: "娱乐菜单", data: "/娱乐菜单", enter: true, style: 1}
+  buttons: [[{text: "菜单", data: "/菜单", enter: true, style: 1},{text: "娱乐菜单", data: "/娱乐菜单", enter: true, style: 1}],[{text: "签到", data: "/签到", enter: true, style: 1},{text: "我的信息", data: "/我的信息", enter: true, style: 0}]]
 
 # ===== 新用户首次交互 =====
 user_welcome:

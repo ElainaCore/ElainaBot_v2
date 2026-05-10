@@ -24,8 +24,7 @@ class TemplateEngine:
         纯文本: "你好 {user_id}"
         带按钮:
             content: "你好"
-            buttons:
-                - - {text: "菜单", data: "/菜单", enter: true, style: 1}
+            buttons: [[{text: "菜单", data: "/菜单", enter: true, style: 1},{text: "帮助"}],[{text: "链接", link: "..."}]]
         MD分离:
             markdown: "**你好**"
             text: "你好"
@@ -127,37 +126,17 @@ class TemplateEngine:
 
     @staticmethod
     def _build_buttons(button_rows, variables):
-        """构建按钮结构
-
-        输入 (YAML 格式):
-            buttons:
-              - - {text: "菜单", data: "/菜单", enter: true, style: 1}
-                - {text: "帮助", data: "/帮助"}
-              - - {text: "链接", link: "https://..."}
-
-        输出:
-            [
-                [{text, type, data, enter, style, ...}, {text, type, data, ...}],
-                [{text, type, link, ...}],
-            ]
-        """
-        if not button_rows:
+        """构建按钮: [[{text,data,...},...],...]  →  [[{text,type,data,...},...],...]"""
+        if not button_rows or not isinstance(button_rows, list):
             return None
-
         rows = []
         for row in button_rows:
             if not isinstance(row, list):
                 continue
-            built_row = []
-            for btn in row:
-                if not isinstance(btn, dict):
-                    continue
-                built = _build_single_button(btn, variables)
-                if built:
-                    built_row.append(built)
-            if built_row:
-                rows.append(built_row)
-        return rows if rows else None
+            built = [_build_single_button(b, variables) for b in row if isinstance(b, dict)]
+            if built:
+                rows.append(built)
+        return rows or None
 
 
 def _build_single_button(btn, variables):
