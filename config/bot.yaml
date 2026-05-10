@@ -8,7 +8,7 @@ bots:
     secret: ""                         # QQ开发者平台 密钥
     robot_qq: ""                       # 机器人QQ号
     owner_ids:                         # 主人 OpenID 列表
-      - "1"
+      - ""
 
 
     # WebSocket 连接配置
@@ -41,6 +41,7 @@ bots:
     # 维护模式
     maintenance:
       enabled: false
+      reply: true                        # 维护时是否回复维护提示消息
 
     # 事件去重 (过滤重复 message_id / event_id, 缓存5分钟)
     dedup:

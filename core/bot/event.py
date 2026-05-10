@@ -213,8 +213,9 @@ class EventHandlerMixin:
         if username:
             bot.log_service.db_queue(
                 "INSERT INTO users (user_id, name) VALUES (?, ?) "
-                "ON CONFLICT(user_id) DO UPDATE SET name=?",
-                (uid, username, username))
+                "ON CONFLICT(user_id) DO UPDATE SET name=excluded.name "
+                "WHERE users.name = '' OR users.name IS NULL",
+                (uid, username))
 
         # 已知用户: 跳过 DB 查询
         if uid in self._known_users:

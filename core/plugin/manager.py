@@ -471,9 +471,9 @@ class PluginManager:
         content = event.content or ''
         user_id = event.user_id or ''
         appid = event.appid or self._appid
+        event.appid = appid
         et = event.event_type
         event._sender = sender
-
         # 黑名单 (纯内存查找, 无 IO)
         bl_type = self._check_blacklist(event)
         if bl_type:
@@ -484,7 +484,8 @@ class PluginManager:
 
         # 维护模式
         if cfg.get_bot_setting(appid, 'maintenance.enabled', False) and not self._is_owner(event):
-            await event.reply(template_name='maintenance')
+            if cfg.get_bot_setting(appid, 'maintenance.reply', True):
+                await event.reply(template_name='maintenance')
             return True
 
         # 拦截器

@@ -116,7 +116,8 @@ _SCHEMAS = {
     'data': """
         CREATE TABLE IF NOT EXISTS users (
             user_id TEXT PRIMARY KEY,
-            name TEXT DEFAULT ''
+            name TEXT DEFAULT '',
+            state INTEGER DEFAULT 0
         );
         CREATE TABLE IF NOT EXISTS members (
             user_id TEXT PRIMARY KEY
@@ -166,6 +167,25 @@ def _close_all_conns(conns):
         except Exception:
             pass
     conns.clear()
+
+
+_DATA_MIGRATIONS = [
+    ('users', 'state', 'INTEGER DEFAULT 0'),
+]
+
+
+def _migrate_data_tables(conn):
+    """为 data 库的旧表补齐缺失列"""
+    for table, col, col_def in _DATA_MIGRATIONS:
+        try:
+            existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+            if col in existing:
+                continue
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_def}")
+            conn.commit()
+            log.info(f"自动迁移: {table} 表新增列 {col}")
+        except Exception as e:
+            log.warning(f"迁移列 {table}.{col} 失败: {e}")
 
 
 def _migrate_missing_columns(conn, log_type):
@@ -226,6 +246,7 @@ class _BaseLogService:
             if schema:
                 if log_type == 'data':
                     conn.executescript(schema)
+                    _migrate_data_tables(conn)
                 else:
                     conn.execute(schema)
                     conn.commit()
