@@ -76,7 +76,7 @@ class MessageSender:
         if self._client is None or self._client.closed:
             timeout = aiohttp.ClientTimeout(total=30)
             conn = aiohttp.TCPConnector(
-                ssl=self._ssl_ctx, limit=50, limit_per_host=10,
+                ssl=self._ssl_ctx, limit=100, limit_per_host=50,
                 use_dns_cache=True, ttl_dns_cache=600,
                 keepalive_timeout=30)
             self._client = aiohttp.ClientSession(
@@ -132,7 +132,7 @@ class MessageSender:
 
     # ==================== 回复 ====================
 
-    async def reply(self, event, content=None, *, buttons=None, media=None,
+    async def reply(self, event, content=None, buttons=None, *, media=None,
                     msg_type=None, template_name=None, template_vars=None,
                     prompt_buttons=None, auto_delete_time=None,
                     **kwargs):
@@ -186,11 +186,12 @@ class MessageSender:
                                                    file_name=file_name, **kw)
             return await self._send_media_payload(event, file_info, content,
                                                   **kw) if file_info else None
-        # 本地路径 → 读取
+        # 本地路径 → 异步读取
         if isinstance(file_data, str) and os.path.exists(file_data):
             file_name = file_name or os.path.basename(file_data)
-            with open(file_data, 'rb') as f:
-                file_data = f.read()
+            _path = file_data
+            file_data = await asyncio.get_running_loop().run_in_executor(
+                None, self._read_file_sync, _path)
         return await self._send_media(event, file_data, 4, content,
                                       file_name=file_name, **kw)
 
@@ -298,8 +299,11 @@ class MessageSender:
 
     # ==================== 交互 / 撤回 ====================
 
-    async def ack_interaction(self, event, code=0):
-        return await self.put(f"/interactions/{event.message_id}", json={'code': code})
+    async def ack_interaction(self, event, code=0, *, interaction_id=None):
+        iid = interaction_id or event.message_id
+        if not iid:
+            return False, {'message': 'no interaction_id'}
+        return await self.put(f"/interactions/{iid}", json={'code': code})
 
     async def recall(self, event, message_id=None):
         mid = message_id or event.message_id
@@ -410,7 +414,7 @@ class MessageSender:
         if original_url:
             self._last_media_label = f'[{type_name}]{original_url}'
         else:
-            self._last_media_label = self._save_media(data, file_type)
+            self._last_media_label = await self._save_media(data, file_type)
 
         file_info = await upload_media_bytes(self, data, file_type, upload_ep,
                                              file_name=file_name)
@@ -425,23 +429,37 @@ class MessageSender:
     _MEDIA_TYPE_NAMES = {1: '图片', 2: '视频', 3: '语音', 4: '文件'}
     _MEDIA_TYPE_EXTS  = {1: '.png', 2: '.mp4', 3: '.mp3', 4: '.dat'}
 
-    def _save_media(self, data, file_type):
+    async def _save_media(self, data, file_type):
         """本地 bytes → 保存到 data/media/, MD5 校验唯一 (同内容只保存一次)"""
         type_name = self._MEDIA_TYPE_NAMES.get(file_type, '媒体')
         if not self._media_dir:
             return f'[{type_name}]'
         try:
-            ext = self._MEDIA_TYPE_EXTS.get(file_type, '.dat')
-            md5 = hashlib.md5(data).hexdigest()
-            filename = f'{md5}{ext}'
-            filepath = os.path.join(self._media_dir, filename)
-            if not os.path.exists(filepath):
-                with open(filepath, 'wb') as f:
-                    f.write(data)
-            return f'[{type_name}]/api/media/{filename}'
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(
+                None, self._save_media_sync, data, file_type, type_name)
         except Exception as e:
             log.debug(f'[媒体保存] {e}')
             return f'[{type_name}]'
+
+    def _save_media_sync(self, data, file_type, type_name):
+        ext = self._MEDIA_TYPE_EXTS.get(file_type, '.dat')
+        md5 = hashlib.md5(data).hexdigest()
+        filename = f'{md5}{ext}'
+        filepath = os.path.join(self._media_dir, filename)
+        if not os.path.exists(filepath):
+            self._write_file_sync(filepath, data)
+        return f'[{type_name}]/api/media/{filename}'
+
+    @staticmethod
+    def _read_file_sync(path):
+        with open(path, 'rb') as f:
+            return f.read()
+
+    @staticmethod
+    def _write_file_sync(path, data):
+        with open(path, 'wb') as f:
+            f.write(data)
 
     async def _send_media_payload(self, event, file_info, content, auto_delete_time=None, *,
                                   target_user_id=None, target_group_id=None, msg_id=None):
@@ -506,6 +524,9 @@ class MessageSender:
 
     def _log_sent(self, payload, event, content):
         """发送成功后的日志记录 (Web面板 + 持久化)"""
+        # per-event 上下文 (线程安全) > sender 共享状态 (兼容)
+        reply_log_cb = getattr(event, '_reply_log_cb', None) or self._reply_log_cb
+        plugin_name = getattr(event, '_reply_plugin_name', '') or self._reply_plugin_name
         # 拼装日志文本
         md = payload.get('markdown')
         text = (md.get('content', '') if md else None) or content or payload.get('content', '') or ''
@@ -532,14 +553,14 @@ class MessageSender:
                     'user_id': user_id, 'group_id': group_id,
                     'content': text, 'is_bot': True,
                     'direction': 'send',
-                    'plugin_name': self._reply_plugin_name or '',
+                    'plugin_name': plugin_name or '',
                 })
             except Exception:
                 pass
         raw_msg = json.dumps(payload, ensure_ascii=False, default=str)
-        if self._reply_log_cb:
+        if reply_log_cb:
             try:
-                self._reply_log_cb(text, user_id, group_id, raw_msg)
+                reply_log_cb(text, user_id, group_id, raw_msg)
             except Exception:
                 pass
         elif self._log_service:
@@ -548,7 +569,7 @@ class MessageSender:
                     'type': 'template',
                     'user_id': user_id, 'group_id': group_id,
                     'content': text, 'raw_message': raw_msg, 'direction': 'send',
-                    'plugin_name': self._reply_plugin_name or 'framework',
+                    'plugin_name': plugin_name or 'framework',
                 }))
             except Exception:
                 pass

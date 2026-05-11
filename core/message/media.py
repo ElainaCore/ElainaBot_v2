@@ -130,9 +130,8 @@ async def chunked_upload(sender, file_path, file_type, endpoint, *, file_name=No
         idx = part['index']
         offset = (idx - 1) * block_size
         chunk_size = min(block_size, file_size - offset)
-        with open(file_path, 'rb') as f:
-            f.seek(offset)
-            chunk = f.read(chunk_size)
+        chunk = await asyncio.get_running_loop().run_in_executor(
+            None, _read_chunk, file_path, offset, chunk_size)
 
         for retry in range(3):
             try:
@@ -158,6 +157,14 @@ async def chunked_upload(sender, file_path, file_type, endpoint, *, file_name=No
     if success:
         return result.get('file_info')
     return None
+
+
+# ==================== 文件 I/O (同步, executor 中运行) ====================
+
+def _read_chunk(file_path, offset, size):
+    with open(file_path, 'rb') as f:
+        f.seek(offset)
+        return f.read(size)
 
 
 # ==================== 文件哈希 (同步, executor 中运行) ====================

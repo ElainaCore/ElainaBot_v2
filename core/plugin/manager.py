@@ -4,7 +4,6 @@ import os
 import re
 import sys
 import time
-import subprocess
 import asyncio
 import importlib
 import importlib.util
@@ -12,6 +11,7 @@ import importlib.machinery
 from collections import OrderedDict
 from core.base.logger import get_logger, PLUGIN, FRAMEWORK, report_error
 from core.base.config import cfg
+from core.base.pip_helper import install_requirements as _install_deps
 from core.plugin.decorators import (
     _pending_handlers, _pending_on_load, _pending_on_unload, _pending_interceptors,
 )
@@ -19,6 +19,8 @@ import core.plugin.context as _ctx_mod
 from core.plugin.context import PluginContext, PluginInfo, _make_reply_log_cb
 
 log = get_logger(FRAMEWORK, "插件管理")
+
+_ENTRY_NAMES = frozenset({'index.py', 'app.py', 'main.py'})
 
 
 def _clear_pending():
@@ -145,7 +147,7 @@ class PluginManager:
             if name in self._plugins:
                 await self._unload_plugin(name)
 
-            await self._install_requirements(name, plugin_dir)
+            await _install_deps(name, plugin_dir)
 
             plugin_ctx = PluginContext(name, plugin_dir)
             _ctx_mod.ctx = plugin_ctx
@@ -202,7 +204,7 @@ class PluginManager:
             if name in self._plugins:
                 await self._unload_plugin(name)
 
-            await self._install_requirements(name, plugin_dir)
+            await _install_deps(name, plugin_dir)
 
             _clear_pending()
             plugin_ctx = PluginContext(name, plugin_dir)
@@ -292,10 +294,12 @@ class PluginManager:
 
     async def _watcher_loop(self):
         """每 2 秒对比 mtime, 变更则热重载"""
+        loop = asyncio.get_running_loop()
         while self._watcher_running:
             try:
                 await asyncio.sleep(2)
-                for name in self._detect_changed_plugins():
+                changed = await loop.run_in_executor(None, self._detect_changed_plugins)
+                for name in changed:
                     if name not in self._plugins:
                         continue
                     try:
@@ -346,7 +350,6 @@ class PluginManager:
     @staticmethod
     def _list_py_files(plugin_dir):
         """列出小型插件目录内全部 .py (不含 _ 开头, 排除入口文件名, 不递归)"""
-        _ENTRY_NAMES = {'index.py', 'app.py', 'main.py'}
         return sorted(
             os.path.join(plugin_dir, f) for f in os.listdir(plugin_dir)
             if f.endswith('.py') and not f.startswith('_') and f not in _ENTRY_NAMES)
@@ -383,42 +386,6 @@ class PluginManager:
             setattr(module, s, sub)
         spec.loader.exec_module(module)
         return module
-
-    # ==================== 依赖安装 ====================
-
-    async def _install_requirements(self, name, target_dir):
-        """检查并安装 requirements.txt 依赖"""
-        req_path = os.path.join(target_dir, 'requirements.txt')
-        if not os.path.isfile(req_path):
-            return
-
-        if not cfg.get('settings', 'pip.auto_install', True):
-            return
-
-        mirror = cfg.get('settings', 'pip.mirror', '')
-        cmd = [sys.executable, '-m', 'pip', 'install', '-r', req_path, '--quiet']
-        if mirror:
-            cmd.extend(['-i', mirror])
-
-        loop = asyncio.get_running_loop()
-        try:
-            exit_code = await loop.run_in_executor(None, self._pip_install_sync, cmd, name)
-            if exit_code != 0:
-                log.warning(f"[{name}] 依赖安装可能失败 (exit={exit_code})")
-        except Exception as e:
-            log.warning(f"[{name}] 依赖安装异常: {e}")
-
-    @staticmethod
-    def _pip_install_sync(cmd, name):
-        log.info(f"[{name}] 正在安装依赖...")
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-        if result.returncode == 0:
-            log.info(f"[{name}] 依赖安装完成")
-        else:
-            stderr = result.stderr.strip()
-            if stderr:
-                log.warning(f"[{name}] pip: {stderr[:200]}")
-        return result.returncode
 
     def _rebuild_handler_list(self):
         """重建全局处理器列表(按优先级排序)"""
@@ -465,7 +432,7 @@ class PluginManager:
     # ==================== 分发 ====================
 
     async def dispatch(self, event, sender):
-        """分发事件到匹配的插件处理器"""
+        """分发事件到匹配的插件处理器 (匹配后 fire-and-forget, 不阻塞事件循环)"""
         content = event.content or ''
         user_id = event.user_id or ''
         appid = event.appid or self._appid
@@ -477,13 +444,13 @@ class PluginManager:
         if bl_type:
             tpl = 'blacklist' if bl_type == 'user' else 'group_blacklist'
             tvars = {'user_id': user_id, 'reason': '未指明原因'} if bl_type == 'user' else None
-            await event.reply(template_name=tpl, template_vars=tvars)
+            asyncio.create_task(event.reply(template_name=tpl, template_vars=tvars))
             return True
 
         # 维护模式
         if cfg.get_bot_setting(appid, 'maintenance.enabled', False) and not self._is_owner(event):
             if cfg.get_bot_setting(appid, 'maintenance.reply', True):
-                await event.reply(template_name='maintenance')
+                asyncio.create_task(event.reply(template_name='maintenance'))
             return True
 
         # 拦截器
@@ -498,7 +465,6 @@ class PluginManager:
 
         # 匹配处理器 (支持 / 前缀自动去除)
         contents_to_try = (content[1:], content) if content[:1] == '/' and len(content) > 1 else (content,)
-        log_service = None
 
         for try_content in contents_to_try:
             for h in self._all_handlers:
@@ -515,39 +481,19 @@ class PluginManager:
 
                 # 权限检查
                 if h['owner_only'] and not self._is_owner(event):
-                    await event.reply(template_name='owner_only',
-                                      template_vars={'user_id': user_id})
+                    asyncio.create_task(event.reply(
+                        template_name='owner_only', template_vars={'user_id': user_id}))
                     return True
 
-                # 惰性获取 log_service
-                if log_service is None:
-                    log_service = self._get_log_service(event)
-
+                # 日志上下文绑定到 event (线程安全, 不依赖 sender 共享状态)
                 plugin_name = h['name'] or h.get('_plugin', '')
-                sender._reply_log_cb = _make_reply_log_cb(plugin_name, log_service)
-                sender._reply_plugin_name = plugin_name or ''
+                log_service = self._get_log_service(event)
+                event._reply_log_cb = _make_reply_log_cb(plugin_name, log_service)
+                event._reply_plugin_name = plugin_name or ''
 
-                try:
-                    fn, timeout = h['func'], 30
-                    if h['is_coro']:
-                        await asyncio.wait_for(fn(event, match), timeout=timeout)
-                    else:
-                        await asyncio.wait_for(
-                            asyncio.get_running_loop().run_in_executor(None, fn, event, match),
-                            timeout=timeout)
-                except asyncio.TimeoutError:
-                    report_error(PLUGIN, plugin_name or '?',
-                                 f"处理器 [{h['name']}] 超时(30s)",
-                                 context={'handler': h['name'], 'user_id': user_id,
-                                          'event_type': et, 'content': content[:200]})
-                except Exception as e:
-                    report_error(PLUGIN, plugin_name or '?', e,
-                                 context={'handler': h['name'], 'user_id': user_id,
-                                          'group_id': event.group_id or '',
-                                          'event_type': et, 'content': content[:200]})
-                finally:
-                    sender._reply_log_cb = None
-                    sender._reply_plugin_name = ''
+                # fire-and-forget: 匹配后立即返回, 处理器在独立 task 中执行
+                asyncio.create_task(self._run_handler(
+                    h, event, match, plugin_name, user_id, et, content))
                 return True
 
         # 无匹配 -> 默认回复
@@ -555,9 +501,37 @@ class PluginManager:
                 and cfg.get_bot_setting(appid, 'message.send_default_response', True):
             excluded = cfg.get_bot_setting(appid, 'message.default_response_excluded_regex', []) or []
             if not any(re.search(p, content) for p in excluded if p):
-                await event.reply(template_name='default', template_vars={'user_id': user_id})
+                asyncio.create_task(event.reply(
+                    template_name='default', template_vars={'user_id': user_id}))
 
         return False
+
+    async def _run_handler(self, h, event, match, plugin_name, user_id, et, content):
+        """在独立 task 中执行处理器 (不阻塞分发)"""
+        _t0 = time.time()
+        try:
+            fn = h['func']
+            if h['is_coro']:
+                await asyncio.wait_for(fn(event, match), timeout=30)
+            else:
+                await asyncio.wait_for(
+                    asyncio.get_running_loop().run_in_executor(None, fn, event, match),
+                    timeout=30)
+        except asyncio.TimeoutError:
+            report_error(PLUGIN, plugin_name or '?',
+                         f"处理器 [{h['name']}] 超时(30s)",
+                         context={'handler': h['name'], 'user_id': user_id,
+                                  'event_type': et, 'content': content[:200]})
+        except Exception as e:
+            report_error(PLUGIN, plugin_name or '?', e,
+                         context={'handler': h['name'], 'user_id': user_id,
+                                  'group_id': event.group_id or '',
+                                  'event_type': et, 'content': content[:200]})
+        finally:
+            _dt = time.time() - _t0
+            if _dt > 3:
+                log.warning(f"[性能] 处理器 [{plugin_name}] 耗时 {_dt*1000:.0f}ms "
+                            f"content={content[:50]}")
 
     # ==================== 日志服务 ====================
 
@@ -599,13 +573,21 @@ class PluginManager:
             setattr(self, attr, items)
 
     def _save_blacklist(self, attr, fname):
-        """保存黑名单到文件"""
+        """保存黑名单到文件 (调度到线程池)"""
+        snapshot = sorted(getattr(self, attr))
+        try:
+            loop = asyncio.get_running_loop()
+            loop.run_in_executor(None, self._write_blacklist_sync, snapshot, fname)
+        except RuntimeError:
+            self._write_blacklist_sync(snapshot, fname)
+
+    def _write_blacklist_sync(self, items, fname):
         data_dir = os.path.join(self._base_dir, 'data')
         os.makedirs(data_dir, exist_ok=True)
         path = os.path.join(data_dir, fname)
         try:
             with open(path, 'w', encoding='utf-8') as f:
-                for item in sorted(getattr(self, attr)):
+                for item in items:
                     f.write(item + '\n')
         except Exception as e:
             log.warning(f"保存黑名单失败 [{fname}]: {e}")
@@ -668,14 +650,22 @@ class PluginManager:
             self._plugin_bots = {}
 
     def _save_plugin_bots(self):
-        """保存插件机器人绑定到 data/plugin_bots.yaml"""
+        """保存插件机器人绑定到 data/plugin_bots.yaml (调度到线程池)"""
+        snapshot = dict(self._plugin_bots)
+        try:
+            loop = asyncio.get_running_loop()
+            loop.run_in_executor(None, self._write_plugin_bots_sync, snapshot)
+        except RuntimeError:
+            self._write_plugin_bots_sync(snapshot)
+
+    def _write_plugin_bots_sync(self, data):
         import yaml
         data_dir = os.path.join(self._base_dir, 'data')
         os.makedirs(data_dir, exist_ok=True)
         path = os.path.join(data_dir, 'plugin_bots.yaml')
         try:
             with open(path, 'w', encoding='utf-8') as f:
-                yaml.dump(self._plugin_bots, f, allow_unicode=True,
+                yaml.dump(data, f, allow_unicode=True,
                           default_flow_style=False, sort_keys=False)
         except Exception as e:
             log.warning(f"保存插件机器人绑定失败: {e}")

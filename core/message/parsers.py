@@ -116,12 +116,12 @@ def parse_channel_direct_message(event, d):
 
 def parse_interaction(event, d):
     """交互事件解析 (按钮回调等)"""
+    event.interaction_data = d
+    event.message_id = d.get('id', '')
+
     if d.get('type') == 13:
         event.content = ''
         return
-
-    event.interaction_data = d
-    event.message_id = d.get('id', '')
     event.timestamp = d.get('timestamp', '')
 
     chat_type = d.get('chat_type')

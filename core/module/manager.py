@@ -11,15 +11,13 @@ import os
 import sys
 import ast
 import json
-import subprocess
 import asyncio
 import importlib
 import importlib.util
-import re
-import importlib.metadata as _metadata
 from core.base.logger import get_logger, EXTENSION, report_error
 from core.base.config import cfg as app_cfg
 from core.base.context import BaseContext
+from core.base.pip_helper import install_requirements as _install_deps
 from core.module.hook import get_hook_manager
 
 log = get_logger(EXTENSION, "管理器")
@@ -173,7 +171,8 @@ class ModuleManager:
         if not to_start:
             log.info("无已启用模块, 跳过启动")
             return
-        tasks = [self._install_requirements(n, self._modules[n].module_dir) for n in to_start]
+        tasks = [_install_deps(n, self._modules[n].module_dir, skip_if_met=True, no_cache=True)
+                 for n in to_start]
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         for name in to_start:
@@ -195,7 +194,7 @@ class ModuleManager:
                 return True
             try:
                 if not _skip_deps:
-                    await self._install_requirements(name, info.module_dir)
+                    await _install_deps(name, info.module_dir, skip_if_met=True, no_cache=True)
                 ctx = ModuleContext(info.display_name or name, info.module_dir)
                 info.ctx = ctx
                 module = self._import_module(name, info.module_dir)
@@ -316,58 +315,6 @@ class ModuleManager:
         except Exception as e:
             log.warning(f"读取模块元数据失败 [{mod_dir}]: {e}")
         return dict(_DEFAULT_MANIFEST)
-
-    async def _install_requirements(self, name, target_dir):
-        """检查并安装 requirements.txt 依赖"""
-        req_path = os.path.join(target_dir, 'requirements.txt')
-        if not os.path.isfile(req_path):
-            return
-        if not app_cfg.get('settings', 'pip.auto_install', True):
-            return
-        if self._all_requirements_met(req_path):
-            return
-        mirror = app_cfg.get('settings', 'pip.mirror', '')
-        cmd = [sys.executable, '-m', 'pip', 'install', '-r', req_path, '--quiet', '--no-cache-dir']
-        if mirror:
-            cmd.extend(['-i', mirror])
-
-        loop = asyncio.get_running_loop()
-        try:
-            exit_code = await loop.run_in_executor(None, self._pip_install_sync, cmd, name)
-            if exit_code != 0:
-                log.warning(f"[{name}] 依赖安装可能失败 (exit={exit_code})")
-        except Exception as e:
-            log.warning(f"[{name}] 依赖安装异常: {e}")
-
-    @staticmethod
-    def _all_requirements_met(req_path):
-        """检查 requirements.txt 中所有包是否已安装"""
-        try:
-            with open(req_path, 'r', encoding='utf-8') as f:
-                lines = f.readlines()
-        except Exception:
-            return False
-        for raw in lines:
-            pkg = re.split(r'[>=<!\[;]', raw.strip())[0].strip()
-            if not pkg or pkg.startswith(('#', '-')):
-                continue
-            try:
-                _metadata.distribution(pkg)
-            except _metadata.PackageNotFoundError:
-                return False
-        return True
-
-    @staticmethod
-    def _pip_install_sync(cmd, name):
-        log.info(f"[{name}] 正在安装依赖...")
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-        if result.returncode == 0:
-            log.info(f"[{name}] 依赖安装完成")
-        else:
-            stderr = result.stderr.strip()
-            if stderr:
-                log.warning(f"[{name}] pip: {stderr[:200]}")
-        return result.returncode
 
     async def shutdown(self):
         """关闭所有已启用模块"""

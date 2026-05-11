@@ -6,6 +6,7 @@ import os
 import time
 import copy
 import logging
+import asyncio
 import threading
 
 try:
@@ -178,6 +179,12 @@ class ConfigManager:
         if old_mtime is not None:
             logger.info(f"配置热加载: {name}")
             self._fire_callbacks(name, data)
+
+    async def reload_if_changed(self, *names):
+        """异步预加载配置, 文件 I/O 在线程池执行, 适用于 watch loop 等 async 上下文"""
+        loop = asyncio.get_running_loop()
+        for name in names:
+            await loop.run_in_executor(None, self._maybe_reload, name)
 
     def _fire_callbacks(self, name, data):
         for cb in self._callbacks.get(name, []):

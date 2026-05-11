@@ -57,9 +57,13 @@ class HookManager:
 
     async def emit(self, hook_name, *args, **kwargs):
         """广播执行 — 依次调用所有回调, 异常不中断"""
+        loop = asyncio.get_running_loop()
         for _, owner, cb, is_coro in self._get_sorted(hook_name):
             try:
-                await cb(*args, **kwargs) if is_coro else cb(*args, **kwargs)
+                if is_coro:
+                    await cb(*args, **kwargs)
+                else:
+                    await loop.run_in_executor(None, lambda: cb(*args, **kwargs))
             except Exception as e:
                 log.warning(f"[{owner}] hook '{hook_name}': {e}")
 
@@ -67,9 +71,10 @@ class HookManager:
         """管道执行 — 数据依次流过回调, 返回 None 表示拦截"""
         if data is None:
             return None
+        loop = asyncio.get_running_loop()
         for _, owner, cb, is_coro in self._get_sorted(hook_name):
             try:
-                data = await cb(data) if is_coro else cb(data)
+                data = await cb(data) if is_coro else await loop.run_in_executor(None, cb, data)
                 if data is None:
                     return None
             except Exception as e:

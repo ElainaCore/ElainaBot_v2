@@ -189,9 +189,7 @@ class BotManager(EventHandlerMixin):
         while True:
             await asyncio.sleep(5)
             try:
-                cfg.get('bot', 'bots')
-                cfg.get('settings')
-                cfg.get('templates')
+                await cfg.reload_if_changed('bot', 'settings', 'templates')
             except Exception:
                 pass
 
@@ -289,10 +287,13 @@ class BotManager(EventHandlerMixin):
                     if success else web.json_response({'error': 'invalid validation'}, status=400))
 
         try:
-            asyncio.create_task(self._on_event(Event.from_webhook(headers, body)))
+            event = Event.from_webhook(headers, body)
+            asyncio.create_task(self._on_event(event))
         except Exception as e:
             report_error(SYSTEM, "Webhook", e, context={'appid': appid})
 
+        if body.get('t') == 'INTERACTION_CREATE':
+            return web.json_response({'op': 12, 'code': 0})
         return web.json_response({})
 
     async def _handle_health(self, request):

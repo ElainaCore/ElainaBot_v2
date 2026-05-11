@@ -19,6 +19,7 @@ log = get_logger(FRAMEWORK, "事件处理")
 
 _USER_CACHE_TTL = 3600
 _DEDUP_TTL = 300
+_GROUP_CACHE_MAX = 10000
 _NEW_USER_ENTRY = lambda uid, today: {'userid': uid, 'value': 1, 'last_active': today}
 
 
@@ -63,6 +64,14 @@ class EventHandlerMixin:
 
         et = event.event_type
 
+        if et == INTERACTION_CREATE:
+            interaction_id = event.message_id or event.event_id
+            if interaction_id:
+                try:
+                    await bot.sender.ack_interaction(event, interaction_id=interaction_id)
+                except Exception as e:
+                    log.warning(f"[{appid}] 交互ACK失败: {e}")
+
         # 去重 (setdefault 避免二次查找)
         if cfg.get_bot_setting(appid, 'dedup.enabled', False):
             dedup = self._dedup.setdefault(appid, _EventDedup())
@@ -96,11 +105,12 @@ class EventHandlerMixin:
 
         # 消息日志 + 用户追踪 (消息事件和回调事件都记录)
         if et in MESSAGE_TYPES or et == INTERACTION_CREATE:
+            raw_json = json.dumps(event.raw, ensure_ascii=False)
             log_entry = {
                 'type': et, 'message_id': event.message_id or '',
                 'user_id': event.user_id or '', 'group_id': event.group_id or '',
                 'content': event.content or '',
-                'raw_message': json.dumps(event.raw, ensure_ascii=False),
+                'raw_message': raw_json,
                 'direction': 'receive',
             }
             bot.log_service.add_sync('message', log_entry)
@@ -309,7 +319,14 @@ class EventHandlerMixin:
                 bot.log_service.db_queue(
                     "INSERT INTO groups_users (group_id, users) VALUES (?, ?)",
                     (group_id, self._users_json(user_map)))
-            self._group_users_cache[group_id] = (self._tomorrow_ts(), user_map)
+            self._set_group_cache(group_id, user_map)
         except Exception as e:
             report_error(FRAMEWORK, "群用户列表更新", e,
                          context={'group_id': group_id, 'user_id': uid})
+
+    def _set_group_cache(self, group_id, user_map):
+        """写入群缓存, 超过上限时淘汰最早条目"""
+        if len(self._group_users_cache) >= _GROUP_CACHE_MAX and group_id not in self._group_users_cache:
+            oldest = next(iter(self._group_users_cache))
+            del self._group_users_cache[oldest]
+        self._group_users_cache[group_id] = (self._tomorrow_ts(), user_map)

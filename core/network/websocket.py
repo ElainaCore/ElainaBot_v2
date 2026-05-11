@@ -22,6 +22,7 @@ _OP_RECONNECT = 7
 _OP_INVALID_SESSION = 9
 _OP_HELLO = 10
 _OP_HEARTBEAT_ACK = 11
+_OP_EVENT_ACK = 12
 
 
 class WSClient:
@@ -130,6 +131,8 @@ class WSClient:
     async def _on_dispatch(self, payload):
         """事件分发 → 构造 Event 并回调"""
         event_type = payload.get('t', '')
+        if event_type == 'INTERACTION_CREATE':
+            await self._send_event_ack(payload)
         if event_type == 'READY':
             self._session_id = payload.get('d', {}).get('session_id')
             log.info(f"[{self._appid}] WebSocket 已就绪 (session={self._session_id})")
@@ -143,6 +146,13 @@ class WSClient:
             asyncio.create_task(self._on_event(event))
         except Exception as e:
             log.error(f"[{self._appid}] 事件处理异常: {e}")
+
+    async def _send_event_ack(self, payload, code=0):
+        """回复事件确认 (op 12)"""
+        try:
+            await self._ws.send(json.dumps({'op': _OP_EVENT_ACK, 'code': code}))
+        except Exception:
+            pass
 
     async def _send_op(self, op, data, label=''):
         """发送 WS 操作帧"""

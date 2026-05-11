@@ -9,6 +9,7 @@ import asyncio
 import sqlite3
 import shutil
 import logging
+import threading
 from datetime import datetime, timedelta
 from collections import defaultdict
 
@@ -17,6 +18,8 @@ from core.storage.share import ShareMixin
 from core.storage.wakeup import WakeupMixin
 
 log = get_logger(SERVICE, "日志")
+
+_QUEUE_MAXSIZE = 50000
 
 
 def _json_field(data, key, default=''):
@@ -220,8 +223,9 @@ class _BaseLogService:
         self._interval = insert_interval
         self._batch_size = batch_size
         self._retention_days = retention_days
-        self._queues = {t: asyncio.Queue() for t in queue_types}
+        self._queues = {t: asyncio.Queue(maxsize=_QUEUE_MAXSIZE) for t in queue_types}
         self._conns = {}
+        self._conn_locks = {}
         self._initialized = set()
         self._stop = asyncio.Event()
         self._tasks = []
@@ -253,6 +257,7 @@ class _BaseLogService:
                 _migrate_missing_columns(conn, log_type)
             self._initialized.add(db_path)
         self._conns[db_path] = conn
+        self._conn_locks.setdefault(db_path, threading.Lock())
         return conn
 
     def query(self, log_type, sql, params=(), date=None):
@@ -261,9 +266,11 @@ class _BaseLogService:
         if not os.path.isfile(db_path):
             return []
         conn = self._get_conn(db_path, log_type)
+        lock = self._conn_locks.get(db_path)
         try:
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute(sql, params).fetchall()
+            with lock:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(sql, params).fetchall()
             return [dict(r) for r in rows]
         except Exception as e:
             log.warning(f"[{self._log_tag}] 查询失败 [{log_type}]: {e}")
@@ -297,9 +304,11 @@ class _BaseLogService:
 
     def _write_batch_sync(self, db_path, log_type, sql, rows):
         conn = self._get_conn(db_path, log_type)
+        lock = self._conn_locks.get(db_path)
         try:
-            conn.executemany(sql, rows)
-            conn.commit()
+            with lock:
+                conn.executemany(sql, rows)
+                conn.commit()
         except sqlite3.Error as e:
             log.error(f"[{self._log_tag}] SQLite 错误 [{log_type}]: {e}")
             try:
@@ -429,7 +438,7 @@ class LogService(_BaseLogService, ShareMixin, WakeupMixin):
                          wal_mode, insert_interval, batch_size, retention_days, ALL_TYPES)
         self._appid = str(appid)
         self._log_tag = self._appid
-        self._data_write_queue = asyncio.Queue()  # data.db 通用写入队列 (sql, params)
+        self._data_write_queue = asyncio.Queue(maxsize=_QUEUE_MAXSIZE)
 
     async def start(self):
         """启动日志服务"""
@@ -450,10 +459,13 @@ class LogService(_BaseLogService, ShareMixin, WakeupMixin):
         log.info(f"[{self._appid}] 日志服务已关闭")
 
     async def add(self, log_type, data):
-        """添加日志条目到队列"""
+        """添加日志条目到队列 (队列满时丢弃, 不阻塞)"""
         if log_type not in ALL_TYPES:
             return False
-        await self._queues[log_type].put(data)
+        try:
+            self._queues[log_type].put_nowait(data)
+        except asyncio.QueueFull:
+            return False
         # DAU 立即刷写
         if log_type == 'dau':
             await self._flush_type('dau')
@@ -518,10 +530,12 @@ class LogService(_BaseLogService, ShareMixin, WakeupMixin):
 
     def _flush_data_queue_sync(self, ops):
         conn = self._data_conn
+        lock = self._data_lock
         try:
-            for sql, params in ops:
-                conn.execute(sql, params)
-            conn.commit()
+            with lock:
+                for sql, params in ops:
+                    conn.execute(sql, params)
+                conn.commit()
         except Exception as e:
             log.error(f"[{self._appid}] data.db 批量写入失败: {e}")
             try:
@@ -533,30 +547,37 @@ class LogService(_BaseLogService, ShareMixin, WakeupMixin):
     def _data_conn(self):
         return self._get_conn(self._resolve_db_path('data'), 'data')
 
+    @property
+    def _data_lock(self):
+        return self._conn_locks.get(self._resolve_db_path('data'))
+
     async def db_execute(self, sql, params=()):
         """执行写操作, 返回 lastrowid"""
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._db_execute_sync, sql, params)
 
     def _db_execute_sync(self, sql, params):
-        cursor = self._data_conn.execute(sql, params)
-        self._data_conn.commit()
-        return cursor.lastrowid
+        with self._data_lock:
+            cursor = self._data_conn.execute(sql, params)
+            self._data_conn.commit()
+            return cursor.lastrowid
 
     async def db_execute_many(self, sql, params_list):
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._db_execute_many_sync, sql, params_list)
 
     def _db_execute_many_sync(self, sql, params_list):
-        self._data_conn.executemany(sql, params_list)
-        self._data_conn.commit()
+        with self._data_lock:
+            self._data_conn.executemany(sql, params_list)
+            self._data_conn.commit()
 
     async def db_execute_script(self, script):
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._db_execute_script_sync, script)
 
     def _db_execute_script_sync(self, script):
-        self._data_conn.executescript(script)
+        with self._data_lock:
+            self._data_conn.executescript(script)
 
     async def db_fetch_one(self, sql, params=()):
         loop = asyncio.get_running_loop()
@@ -564,8 +585,9 @@ class LogService(_BaseLogService, ShareMixin, WakeupMixin):
 
     def _db_fetch_one_sync(self, sql, params):
         conn = self._data_conn
-        conn.row_factory = sqlite3.Row
-        row = conn.execute(sql, params).fetchone()
+        with self._data_lock:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(sql, params).fetchone()
         return dict(row) if row else None
 
     async def db_fetch_all(self, sql, params=()):
@@ -574,8 +596,10 @@ class LogService(_BaseLogService, ShareMixin, WakeupMixin):
 
     def _db_fetch_all_sync(self, sql, params):
         conn = self._data_conn
-        conn.row_factory = sqlite3.Row
-        return [dict(r) for r in conn.execute(sql, params).fetchall()]
+        with self._data_lock:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
 
     async def db_fetch_value(self, sql, params=(), default=None):
         """查询单个值"""

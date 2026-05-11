@@ -4,6 +4,7 @@ PluginContext 和 ModuleContext 均继承此类, 避免重复代码。
 """
 
 import os
+import asyncio
 import yaml
 from core.base.logger import get_logger
 
@@ -146,11 +147,21 @@ class BaseContext:
         with open(path, 'r', encoding=encoding) as f:
             return f.read()
 
+    async def read_data_async(self, filename, encoding='utf-8'):
+        """异步读取 data/ 下的文本文件"""
+        return await asyncio.get_running_loop().run_in_executor(
+            None, self.read_data, filename, encoding)
+
     def save_data(self, filename, content, encoding='utf-8'):
         """保存文本到 data/"""
         path = self.get_data_path(filename)
         with open(path, 'w', encoding=encoding) as f:
             f.write(content)
+
+    async def save_data_async(self, filename, content, encoding='utf-8'):
+        """异步保存文本到 data/"""
+        await asyncio.get_running_loop().run_in_executor(
+            None, self.save_data, filename, content, encoding)
 
     def data_exists(self, filename):
         return os.path.isfile(self.get_data_path(filename))
@@ -159,3 +170,13 @@ class BaseContext:
         if not os.path.isdir(self.data_dir):
             return []
         return os.listdir(self.data_dir)
+
+    async def read_config_async(self, filename='config.yaml'):
+        """异步读取 data/ 下的 YAML 配置"""
+        return await asyncio.get_running_loop().run_in_executor(
+            None, self.read_config, filename)
+
+    async def save_config_async(self, data, filename='config.yaml', comments=None):
+        """异步保存配置到 data/"""
+        await asyncio.get_running_loop().run_in_executor(
+            None, self.save_config, data, filename, comments)
