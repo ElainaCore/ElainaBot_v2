@@ -146,7 +146,6 @@ class PluginManager:
         async with self._lock:
             if name in self._plugins:
                 await self._unload_plugin(name)
-
             await _install_deps(name, plugin_dir)
 
             plugin_ctx = PluginContext(name, plugin_dir)
@@ -155,7 +154,6 @@ class PluginManager:
 
             all_h, all_load, all_unload, all_ic = [], [], [], []
             first_module = None
-
             for py_path in py_files:
                 _clear_pending()
                 fname = os.path.basename(py_path)[:-3]
@@ -177,17 +175,10 @@ class PluginManager:
                 except Exception as e:
                     report_error(PLUGIN, f"{name}/{fname}", e)
 
-            plugin = PluginInfo(name, plugin_dir)
-            plugin.module = first_module
-            plugin.ctx = plugin_ctx
-            plugin.handlers, plugin.on_load_funcs = all_h, all_load
-            plugin.on_unload_funcs, plugin.interceptors = all_unload, all_ic
-            plugin.load_time = time.time() - start
-            plugin.meta = _read_plugin_meta(first_module)
-            if not all_h and py_files:
-                plugin.error = "未注册任何处理器 (可能存在导入错误)"
-
-            _ctx_mod.ctx = None
+            error = "未注册任何处理器 (可能存在导入错误)" if not all_h and py_files else ''
+            plugin = self._finalize_plugin(
+                name, plugin_dir, first_module, plugin_ctx,
+                all_h, all_load, all_unload, all_ic, start, error=error)
             await _run_hooks(plugin.on_load_funcs, name)
             self._plugins[name] = plugin
             plog = get_logger(PLUGIN, name)
@@ -203,7 +194,6 @@ class PluginManager:
         async with self._lock:
             if name in self._plugins:
                 await self._unload_plugin(name)
-
             await _install_deps(name, plugin_dir)
 
             _clear_pending()
@@ -214,20 +204,29 @@ class PluginManager:
             module = self._import_plugin(name, plugin_dir, entry)
             h, lo, ul, ic = _collect_pending()
 
-            plugin = PluginInfo(name, plugin_dir)
-            plugin.module = module
-            plugin.ctx = plugin_ctx
-            plugin.handlers, plugin.on_load_funcs = h, lo
-            plugin.on_unload_funcs, plugin.interceptors = ul, ic
-            plugin.is_large = True
-            plugin.load_time = time.time() - start
-            plugin.meta = _read_plugin_meta(module)
-
-            _ctx_mod.ctx = None
+            plugin = self._finalize_plugin(
+                name, plugin_dir, module, plugin_ctx, h, lo, ul, ic, start, is_large=True)
             await _run_hooks(plugin.on_load_funcs, name)
             self._plugins[name] = plugin
             plog = get_logger(PLUGIN, name)
             plog.info(f"大型插件加载完成 ({len(plugin.handlers)} 个处理器, {plugin.load_time:.2f}s)")
+
+    @staticmethod
+    def _finalize_plugin(name, plugin_dir, module, ctx, handlers, on_load, on_unload, interceptors,
+                         start, *, is_large=False, error=''):
+        """构建 PluginInfo 并清理上下文 (load / _load_large 共用)"""
+        plugin = PluginInfo(name, plugin_dir)
+        plugin.module = module
+        plugin.ctx = ctx
+        plugin.handlers, plugin.on_load_funcs = handlers, on_load
+        plugin.on_unload_funcs, plugin.interceptors = on_unload, interceptors
+        plugin.is_large = is_large
+        plugin.load_time = time.time() - start
+        plugin.meta = _read_plugin_meta(module)
+        if error:
+            plugin.error = error
+        _ctx_mod.ctx = None
+        return plugin
 
     async def reload(self, name):
         """热重载插件 (大型/小型均支持)"""
@@ -572,14 +571,17 @@ class PluginManager:
                     log.warning(f"加载黑名单失败 [{fname}]: {e}")
             setattr(self, attr, items)
 
+    @staticmethod
+    def _fire_and_forget(func, *args):
+        """调度同步函数到线程池 (fire-and-forget), 无事件循环时同步执行"""
+        try:
+            asyncio.get_running_loop().run_in_executor(None, func, *args)
+        except RuntimeError:
+            func(*args)
+
     def _save_blacklist(self, attr, fname):
         """保存黑名单到文件 (调度到线程池)"""
-        snapshot = sorted(getattr(self, attr))
-        try:
-            loop = asyncio.get_running_loop()
-            loop.run_in_executor(None, self._write_blacklist_sync, snapshot, fname)
-        except RuntimeError:
-            self._write_blacklist_sync(snapshot, fname)
+        self._fire_and_forget(self._write_blacklist_sync, sorted(getattr(self, attr)), fname)
 
     def _write_blacklist_sync(self, items, fname):
         data_dir = os.path.join(self._base_dir, 'data')
@@ -651,12 +653,7 @@ class PluginManager:
 
     def _save_plugin_bots(self):
         """保存插件机器人绑定到 data/plugin_bots.yaml (调度到线程池)"""
-        snapshot = dict(self._plugin_bots)
-        try:
-            loop = asyncio.get_running_loop()
-            loop.run_in_executor(None, self._write_plugin_bots_sync, snapshot)
-        except RuntimeError:
-            self._write_plugin_bots_sync(snapshot)
+        self._fire_and_forget(self._write_plugin_bots_sync, dict(self._plugin_bots))
 
     def _write_plugin_bots_sync(self, data):
         import yaml

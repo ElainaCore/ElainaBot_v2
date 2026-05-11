@@ -20,9 +20,11 @@ def _calc_stage(days):
 class WakeupMixin:
     """唤醒系统 (wakeup.db) 方法集"""
 
-    def _wakeup_conn(self):
-        """获取 wakeup.db 连接"""
-        return self._get_conn(self._resolve_db_path('wakeup'), 'wakeup')
+    def _wakeup_locked(self):
+        """获取 wakeup.db 连接和锁"""
+        db_path = self._resolve_db_path('wakeup')
+        conn = self._get_conn(db_path, 'wakeup')
+        return conn, self._conn_locks.get(db_path)
 
     async def wakeup_update(self, openid):
         """用户发消息时更新活跃日期, stage 重置为 0"""
@@ -31,16 +33,17 @@ class WakeupMixin:
 
     def _wakeup_update_sync(self, openid):
         today = datetime.now().strftime('%Y-%m-%d')
-        conn = self._wakeup_conn()
-        row = conn.execute(
-            "SELECT last_msg_date FROM log WHERE openid=?", (openid,)).fetchone()
-        if row and row[0] == today:
-            return  # 今天已更新过
-        conn.execute(
-            "INSERT INTO log (openid, last_msg_date, wakeup_stage) VALUES (?,?,0) "
-            "ON CONFLICT(openid) DO UPDATE SET last_msg_date=?, wakeup_stage=0",
-            (openid, today, today))
-        conn.commit()
+        conn, lock = self._wakeup_locked()
+        with lock:
+            row = conn.execute(
+                "SELECT last_msg_date FROM log WHERE openid=?", (openid,)).fetchone()
+            if row and row[0] == today:
+                return  # 今天已更新过
+            conn.execute(
+                "INSERT INTO log (openid, last_msg_date, wakeup_stage) VALUES (?,?,0) "
+                "ON CONFLICT(openid) DO UPDATE SET last_msg_date=?, wakeup_stage=0",
+                (openid, today, today))
+            conn.commit()
 
     async def wakeup_can_send(self, openid):
         """检查是否可发唤醒, 返回 (can_send, target_stage, days_inactive)"""
@@ -48,12 +51,13 @@ class WakeupMixin:
         return await loop.run_in_executor(None, self._wakeup_can_send_sync, openid)
 
     def _wakeup_can_send_sync(self, openid):
-        conn = self._wakeup_conn()
-        conn.row_factory = sqlite3.Row
-        row = conn.execute(
-            "SELECT last_msg_date, wakeup_stage, last_wakeup_date FROM log WHERE openid=?",
-            (openid,)).fetchone()
-        conn.row_factory = None
+        conn, lock = self._wakeup_locked()
+        with lock:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT last_msg_date, wakeup_stage, last_wakeup_date FROM log WHERE openid=?",
+                (openid,)).fetchone()
+            conn.row_factory = None
         if not row:
             return (False, 0, -1)
         today = datetime.now().date()
@@ -74,11 +78,12 @@ class WakeupMixin:
 
     def _wakeup_mark_sent_sync(self, openid, stage):
         today = datetime.now().strftime('%Y-%m-%d')
-        conn = self._wakeup_conn()
-        conn.execute(
-            "UPDATE log SET wakeup_stage=?, last_wakeup_date=?, updated_at=? WHERE openid=?",
-            (stage, today, today, openid))
-        conn.commit()
+        conn, lock = self._wakeup_locked()
+        with lock:
+            conn.execute(
+                "UPDATE log SET wakeup_stage=?, last_wakeup_date=?, updated_at=? WHERE openid=?",
+                (stage, today, today, openid))
+            conn.commit()
 
     async def wakeup_get_users(self, target_stage=None):
         """获取可唤醒用户列表"""
@@ -86,10 +91,11 @@ class WakeupMixin:
         return await loop.run_in_executor(None, self._wakeup_get_users_sync, target_stage)
 
     def _wakeup_get_users_sync(self, target_stage=None):
-        conn = self._wakeup_conn()
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute("SELECT openid, last_msg_date, wakeup_stage, last_wakeup_date FROM log").fetchall()
-        conn.row_factory = None
+        conn, lock = self._wakeup_locked()
+        with lock:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute("SELECT openid, last_msg_date, wakeup_stage, last_wakeup_date FROM log").fetchall()
+            conn.row_factory = None
         today = datetime.now().date()
         today_str = today.strftime('%Y-%m-%d')
         results = []

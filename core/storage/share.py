@@ -20,10 +20,6 @@ _SCENE_MAP = {
 class ShareMixin:
     """分享来源 (share.db) 方法集"""
 
-    def _share_conn(self):
-        """获取 share.db 连接"""
-        return self._get_conn(self._resolve_db_path('share'), 'share')
-
     @staticmethod
     def get_scene_name(scene):
         """场景值 -> 可读名称"""
@@ -42,26 +38,29 @@ class ShareMixin:
             None, self._share_record_sync, sharer_id, referral_id, scene)
 
     def _share_record_sync(self, sharer_id, referral_id, scene):
-        conn = self._share_conn()
+        db_path = self._resolve_db_path('share')
+        conn = self._get_conn(db_path, 'share')
+        lock = self._conn_locks.get(db_path)
         now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        row = conn.execute(
-            "SELECT referrals FROM log WHERE openid=?", (sharer_id,)).fetchone()
-        if not row:
-            conn.execute(
-                "INSERT INTO log (openid, referrals, created_at, updated_at) VALUES (?,?,?,?)",
-                (sharer_id, json.dumps({referral_id: scene}, ensure_ascii=False), now, now))
+        with lock:
+            row = conn.execute(
+                "SELECT referrals FROM log WHERE openid=?", (sharer_id,)).fetchone()
+            if not row:
+                conn.execute(
+                    "INSERT INTO log (openid, referrals, created_at, updated_at) VALUES (?,?,?,?)",
+                    (sharer_id, json.dumps({referral_id: scene}, ensure_ascii=False), now, now))
+                conn.commit()
+                return True
+            try:
+                referrals = json.loads(row[0]) if row[0] else {}
+            except (json.JSONDecodeError, TypeError):
+                referrals = {}
+            if referral_id in referrals:
+                return True
+            referrals[referral_id] = scene
+            conn.execute("UPDATE log SET referrals=?, updated_at=? WHERE openid=?",
+                         (json.dumps(referrals, ensure_ascii=False), now, sharer_id))
             conn.commit()
-            return True
-        try:
-            referrals = json.loads(row[0]) if row[0] else {}
-        except (json.JSONDecodeError, TypeError):
-            referrals = {}
-        if referral_id in referrals:
-            return True
-        referrals[referral_id] = scene
-        conn.execute("UPDATE log SET referrals=?, updated_at=? WHERE openid=?",
-                     (json.dumps(referrals, ensure_ascii=False), now, sharer_id))
-        conn.commit()
         return True
 
     async def share_get_referrals(self, sharer_id):
@@ -73,9 +72,12 @@ class ShareMixin:
             None, self._share_get_referrals_sync, sharer_id)
 
     def _share_get_referrals_sync(self, sharer_id):
-        conn = self._share_conn()
-        row = conn.execute(
-            "SELECT referrals FROM log WHERE openid=?", (sharer_id,)).fetchone()
+        db_path = self._resolve_db_path('share')
+        conn = self._get_conn(db_path, 'share')
+        lock = self._conn_locks.get(db_path)
+        with lock:
+            row = conn.execute(
+                "SELECT referrals FROM log WHERE openid=?", (sharer_id,)).fetchone()
         if row and row[0]:
             try:
                 return json.loads(row[0])
@@ -97,10 +99,13 @@ class ShareMixin:
             None, self._share_find_sharer_sync, referral_id)
 
     def _share_find_sharer_sync(self, referral_id):
-        conn = self._share_conn()
-        rows = conn.execute(
-            "SELECT openid, referrals FROM log WHERE referrals LIKE ?",
-            (f'%{referral_id}%',)).fetchall()
+        db_path = self._resolve_db_path('share')
+        conn = self._get_conn(db_path, 'share')
+        lock = self._conn_locks.get(db_path)
+        with lock:
+            rows = conn.execute(
+                "SELECT openid, referrals FROM log WHERE referrals LIKE ?",
+                (f'%{referral_id}%',)).fetchall()
         for row in rows:
             try:
                 referrals = json.loads(row[1]) if row[1] else {}

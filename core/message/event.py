@@ -113,7 +113,7 @@ class Event:
         'is_group', 'is_direct', 'is_channel', 'is_interaction', 'is_lifecycle',
         'interaction_data', 'chat_type_code', 'scene', 'scene_source',
         'sharer_id', 'scene_param',
-        '_sender',
+        '_sender', '_reply_log_cb', '_reply_plugin_name',
     )
 
     def __init__(self):
@@ -152,6 +152,8 @@ class Event:
         self.sharer_id = None
         self.scene_param = None
         self._sender = None
+        self._reply_log_cb = None
+        self._reply_plugin_name = ''
 
     # ==================== 构造 ====================
 

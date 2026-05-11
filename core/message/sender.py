@@ -43,6 +43,7 @@ _API_BASE = "https://api.sgroup.qq.com"
 
 _IGNORE_ERROR_CODES = frozenset({11293, 40054002, 40054003})
 _TOKEN_EXPIRED_CODE = 11244
+_MAX_MEDIA_DOWNLOAD = 100 * 1024 * 1024  # 100MB 下载上限, 防止 OOM
 
 
 def _msg_seq():
@@ -52,7 +53,7 @@ def _msg_seq():
 class MessageSender:
     """消息发送器 (每个机器人实例一个)"""
 
-    __slots__ = ('_token_mgr', '_appid', '_client', '_base_url', '_ssl_ctx', '_web_log_cb', '_bot_name', '_bot_qq', '_log_service', '_reply_log_cb', '_reply_plugin_name', '_custom_api_base', '_media_dir', '_last_media_label')
+    __slots__ = ('_token_mgr', '_appid', '_client', '_base_url', '_ssl_ctx', '_web_log_cb', '_bot_name', '_bot_qq', '_log_service', '_reply_log_cb', '_reply_plugin_name', '_custom_api_base', '_media_dir')
 
     def __init__(self, token_manager, custom_api_base=''):
         self._token_mgr = token_manager
@@ -70,7 +71,6 @@ class MessageSender:
         self._reply_log_cb = None # 由 dispatch 临时注入, 记录插件回复
         self._reply_plugin_name = '' # 由 dispatch 临时注入, 当前插件名称
         self._media_dir = ''         # 由 BotManager 注入, data/media 绝对路径
-        self._last_media_label = ''  # 临时: 上次发送的媒体标签
 
     async def _ensure_client(self):
         if self._client is None or self._client.closed:
@@ -187,7 +187,8 @@ class MessageSender:
             return await self._send_media_payload(event, file_info, content,
                                                   **kw) if file_info else None
         # 本地路径 → 异步读取
-        if isinstance(file_data, str) and os.path.exists(file_data):
+        if isinstance(file_data, str) and await asyncio.get_running_loop().run_in_executor(
+                None, os.path.exists, file_data):
             file_name = file_name or os.path.basename(file_data)
             _path = file_data
             file_data = await asyncio.get_running_loop().run_in_executor(
@@ -403,7 +404,13 @@ class MessageSender:
             try:
                 client = await self._ensure_client()
                 async with client.get(data) as resp:
-                    data = await resp.read()
+                    if resp.content_length and resp.content_length > _MAX_MEDIA_DOWNLOAD:
+                        log.warning(f"[{self._appid}] 媒体过大 ({resp.content_length} bytes), 跳过")
+                        return None
+                    data = await resp.content.read(_MAX_MEDIA_DOWNLOAD + 1)
+                    if len(data) > _MAX_MEDIA_DOWNLOAD:
+                        log.warning(f"[{self._appid}] 媒体超过 {_MAX_MEDIA_DOWNLOAD} bytes, 跳过")
+                        return None
             except Exception as e:
                 log.warning(f"[{self._appid}] 下载媒体失败: {e}")
                 return None
@@ -412,19 +419,19 @@ class MessageSender:
 
         type_name = self._MEDIA_TYPE_NAMES.get(file_type, '媒体')
         if original_url:
-            self._last_media_label = f'[{type_name}]{original_url}'
+            media_label = f'[{type_name}]{original_url}'
         else:
-            self._last_media_label = await self._save_media(data, file_type)
+            media_label = await self._save_media(data, file_type)
 
         file_info = await upload_media_bytes(self, data, file_type, upload_ep,
                                              file_name=file_name)
         if not file_info:
-            self._last_media_label = ''
             return None
         return await self._send_media_payload(event, file_info, content, auto_delete_time,
                                               target_user_id=target_user_id,
                                               target_group_id=target_group_id,
-                                              msg_id=msg_id)
+                                              msg_id=msg_id,
+                                              media_label=media_label)
 
     _MEDIA_TYPE_NAMES = {1: '图片', 2: '视频', 3: '语音', 4: '文件'}
     _MEDIA_TYPE_EXTS  = {1: '.png', 2: '.mp4', 3: '.mp3', 4: '.dat'}
@@ -462,7 +469,8 @@ class MessageSender:
             f.write(data)
 
     async def _send_media_payload(self, event, file_info, content, auto_delete_time=None, *,
-                                  target_user_id=None, target_group_id=None, msg_id=None):
+                                  target_user_id=None, target_group_id=None, msg_id=None,
+                                  media_label=''):
         proactive = bool(target_user_id or target_group_id)
         payload = {
             'msg_type': MSG_TYPE_MEDIA, 'msg_seq': _msg_seq(),
@@ -479,14 +487,16 @@ class MessageSender:
         if not endpoint:
             return None
 
-        success, data = await self._send_with_error_handling(endpoint, payload, event, content)
+        success, data = await self._send_with_error_handling(
+            endpoint, payload, event, content, media_label=media_label)
         if success:
             self._maybe_auto_recall(event, data, auto_delete_time)
         return data
 
     # ==================== 错误处理 ====================
 
-    async def _send_with_error_handling(self, endpoint, payload, event, content=None):
+    async def _send_with_error_handling(self, endpoint, payload, event, content=None, *,
+                                        media_label=''):
         # before_send hook (管道模式, 可修改/拦截)
         hooks = _get_hooks()
         if hooks.has('before_send'):
@@ -512,7 +522,7 @@ class MessageSender:
             )
             return False, data
 
-        self._log_sent(payload, event, content)
+        self._log_sent(payload, event, content, media_label)
 
         # after_send hook (广播)
         if hooks.has('after_send'):
@@ -522,7 +532,7 @@ class MessageSender:
             })
         return True, data
 
-    def _log_sent(self, payload, event, content):
+    def _log_sent(self, payload, event, content, media_label=''):
         """发送成功后的日志记录 (Web面板 + 持久化)"""
         # per-event 上下文 (线程安全) > sender 共享状态 (兼容)
         reply_log_cb = getattr(event, '_reply_log_cb', None) or self._reply_log_cb
@@ -531,8 +541,7 @@ class MessageSender:
         md = payload.get('markdown')
         text = (md.get('content', '') if md else None) or content or payload.get('content', '') or ''
         if payload.get('msg_type') == MSG_TYPE_MEDIA:
-            label = self._last_media_label or '[media]'
-            self._last_media_label = ''
+            label = media_label or '[media]'
             text = f'{label} {text}'.rstrip() if text else label
         kb = payload.get('keyboard')
         if kb:
