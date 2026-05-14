@@ -1,5 +1,6 @@
 """Web 面板 API 路由"""
 
+import asyncio
 import logging
 from datetime import datetime
 
@@ -252,11 +253,12 @@ def _iter_bots(appid_filter=''):
     return list(_bot_manager._bots.items())
 
 
-_LOG_SQL = "SELECT * FROM log ORDER BY timestamp DESC, id DESC LIMIT 50"
+# 使用 id (AUTOINCREMENT 主键) 排序, 走 B-tree 倒序扫描, O(LIMIT) 不全表扫描
+_LOG_SQL = "SELECT * FROM log ORDER BY id DESC LIMIT 50"
 
 
 def _query_bot_logs(log_type, appid_filter, post_fn=None):
-    """从各机器人 SQLite 查询日志, 返回按时间排序的最近 50 条"""
+    """从各机器人 SQLite 查询日志, 返回按 id 排序的最近 50 条 (同步, 由 executor 调用)"""
     results = []
     for appid, inst in _iter_bots(appid_filter):
         try:
@@ -269,22 +271,21 @@ def _query_bot_logs(log_type, appid_filter, post_fn=None):
             results.extend(rows)
         except Exception:
             pass
-    results.sort(key=lambda r: (r.get('timestamp', ''), r.get('id', 0)))
+    # id 是 AUTOINCREMENT, 按 (appid, id) 视为时间顺序, 取最新 50 条
+    results.sort(key=lambda r: r.get('id', 0))
     return results[-50:]
 
 
-async def handle_recent_logs(request: web.Request):
-    """最近日志 — 全部从 SQLite 读取, 不使用内存缓冲"""
+def _tag_direction(r):
+    if r.get('direction') == 'send':
+        r['is_bot'] = True
+
+
+def _gather_recent_logs_sync(appid_filter):
+    """同步聚合所有日志查询 (在 executor 中执行, 避免阻塞事件循环)"""
     from core.storage.log import SharedLogService
-    appid_filter = request.query.get('appid', '')
-
-    def _tag_direction(r):
-        if r.get('direction') == 'send':
-            r['is_bot'] = True
-
     messages = _query_bot_logs('message', appid_filter, _tag_direction)
     lifecycle = _query_bot_logs('lifecycle', appid_filter)
-
     shared = SharedLogService._instance
     if shared:
         framework = shared.query('framework', _LOG_SQL)
@@ -294,13 +295,20 @@ async def handle_recent_logs(request: web.Request):
     else:
         framework = []
         errors = []
-
-    return web.json_response({
+    return {
         'message': messages,
         'framework': framework,
         'error': errors,
         'lifecycle': lifecycle,
-    })
+    }
+
+
+async def handle_recent_logs(request: web.Request):
+    """最近日志 — SQLite 同步查询放到 executor, 不阻塞事件循环"""
+    appid_filter = request.query.get('appid', '')
+    loop = asyncio.get_running_loop()
+    payload = await loop.run_in_executor(None, _gather_recent_logs_sync, appid_filter)
+    return web.json_response(payload)
 
 
 # ======================== 自定义页面 ========================

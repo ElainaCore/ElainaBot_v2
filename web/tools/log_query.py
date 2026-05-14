@@ -1,11 +1,24 @@
 """日志查询 — 分页读取 + 登录日志"""
 
+import asyncio
 from aiohttp import web
 import web.auth as auth
 
 
-async def handle_get_logs(request: web.Request):
+def _query_logs_sync(log_type, page_size, offset):
+    """同步查询日志 (executor 中调用)"""
     from core.storage.log import SharedLogService
+    shared = SharedLogService._instance
+    if log_type not in ('framework', 'error') or not shared:
+        return [], 0
+    rows = shared.query(log_type, f"SELECT * FROM log ORDER BY id DESC LIMIT {page_size} OFFSET {offset}")
+    # 用 MAX(id) 估算总数 — id 是 AUTOINCREMENT, 避免全表 COUNT(*) 在大表上的开销
+    total_rows = shared.query(log_type, "SELECT MAX(id) as cnt FROM log")
+    total = total_rows[0].get('cnt') or 0 if total_rows else 0
+    return rows, total
+
+
+async def handle_get_logs(request: web.Request):
     log_type = request.match_info.get('log_type', 'message')
     if log_type not in ('message', 'framework', 'error', 'lifecycle'):
         return web.json_response({'error': '无效的日志类型'}, status=400)
@@ -14,14 +27,8 @@ async def handle_get_logs(request: web.Request):
     page_size = int(request.query.get('size', '50'))
     offset = (page - 1) * page_size
 
-    shared = SharedLogService._instance
-    if log_type in ('framework', 'error') and shared:
-        rows = shared.query(log_type, f"SELECT * FROM log ORDER BY id DESC LIMIT {page_size} OFFSET {offset}")
-        total_rows = shared.query(log_type, "SELECT COUNT(*) as cnt FROM log")
-        total = total_rows[0]['cnt'] if total_rows else 0
-    else:
-        rows = []
-        total = 0
+    loop = asyncio.get_running_loop()
+    rows, total = await loop.run_in_executor(None, _query_logs_sync, log_type, page_size, offset)
 
     return web.json_response({
         'logs': rows, 'total': total,

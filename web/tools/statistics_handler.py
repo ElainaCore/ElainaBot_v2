@@ -12,6 +12,11 @@ _statistics_tasks = {}
 _task_results = {}
 _bot_manager = None
 
+# 简单内存缓存: {(date, appid_filter): (timestamp, data)} — 避免短时间内重复全表扫描
+_stats_cache = {}
+_chart_cache = {}
+_CACHE_TTL = 10  # 秒
+
 
 def set_context(bot_manager):
     global _bot_manager
@@ -59,13 +64,23 @@ def _aggregate_hourly(appid_filter, date):
 
 
 async def handle_get_statistics(request: web.Request):
-    """获取统计数据"""
+    """获取统计数据 — SQLite 查询放到 executor, 不阻塞事件循环"""
+    import time as _time
     force = request.query.get('force_refresh', 'false') == 'true'
     selected_date = request.query.get('date', '')
     appid_filter = request.query.get('appid', '')
 
+    cache_key = (selected_date, appid_filter)
+    now = _time.time()
+    if not force:
+        cached = _stats_cache.get(cache_key)
+        if cached and now - cached[0] < _CACHE_TTL:
+            return web.json_response({'success': True, 'data': cached[1]})
+
     try:
-        data = _gather_stats(force, selected_date, appid_filter)
+        loop = asyncio.get_running_loop()
+        data = await loop.run_in_executor(None, _gather_stats, force, selected_date, appid_filter)
+        _stats_cache[cache_key] = (now, data)
         return web.json_response({'success': True, 'data': data})
     except Exception as e:
         return web.json_response({'success': False, 'error': str(e)}, status=500)
@@ -91,10 +106,25 @@ async def handle_get_available_dates(request: web.Request):
 
 
 async def handle_get_chart_data(request: web.Request):
-    """返回最近 N 天的折线图数据"""
+    """返回最近 N 天的折线图数据 — SQLite 查询放到 executor"""
+    import time as _time
     days = max(1, min(30, int(request.query.get('days', '7'))))
     appid_filter = request.query.get('appid', '')
 
+    cache_key = (days, appid_filter)
+    now_ts = _time.time()
+    cached = _chart_cache.get(cache_key)
+    if cached and now_ts - cached[0] < _CACHE_TTL:
+        return web.json_response(cached[1])
+
+    loop = asyncio.get_running_loop()
+    payload = await loop.run_in_executor(None, _gather_chart_sync, days, appid_filter)
+    _chart_cache[cache_key] = (now_ts, payload)
+    return web.json_response(payload)
+
+
+def _gather_chart_sync(days, appid_filter):
+    """折线图数据同步聚合 (executor 中调用)"""
     labels = []
     # 消息统计
     msg_total = []
@@ -127,29 +157,23 @@ async def handle_get_chart_data(request: web.Request):
         is_today = (d == today_date)
         for _appid, inst in _iter_bots(appid_filter):
             if is_today:
-                # 今日: 实时读 message.db
+                # 今日: 实时读 message.db (合并查询, 一次扫表得到全部聚合)
                 try:
                     rows = inst.log_service.query(
                         'message',
                         "SELECT COUNT(*) as cnt, "
-                        "COUNT(CASE WHEN group_id = '' OR group_id = 'c2c' THEN 1 END) as priv "
+                        "COUNT(CASE WHEN group_id = '' OR group_id = 'c2c' THEN 1 END) as priv, "
+                        "COUNT(DISTINCT CASE WHEN user_id != '' THEN user_id END) as users, "
+                        "COUNT(DISTINCT CASE WHEN group_id != '' AND group_id != 'c2c' THEN group_id END) as groups_ "
                         "FROM log WHERE user_id != ''",
                         date=date_str)
                     if rows:
-                        day_total += rows[0].get('cnt', 0)
-                        day_private += rows[0].get('priv', 0)
-                    uid_rows = inst.log_service.query(
-                        'message',
-                        "SELECT DISTINCT user_id FROM log WHERE user_id != ''",
-                        date=date_str)
-                    for r in uid_rows:
-                        day_users.add(r.get('user_id', ''))
-                    gid_rows = inst.log_service.query(
-                        'message',
-                        "SELECT DISTINCT group_id FROM log WHERE group_id != '' AND group_id != 'c2c'",
-                        date=date_str)
-                    for r in gid_rows:
-                        day_groups.add(r.get('group_id', ''))
+                        r0 = rows[0]
+                        day_total += r0.get('cnt', 0)
+                        day_private += r0.get('priv', 0)
+                        # 用 range 作为占位 — set 只用于 len(), 不在意元素本身
+                        day_users.update(range(len(day_users), len(day_users) + r0.get('users', 0)))
+                        day_groups.update(range(len(day_groups), len(day_groups) + r0.get('groups_', 0)))
                 except Exception:
                     pass
             # 历史 / 事件: 从 dau.db
@@ -185,7 +209,7 @@ async def handle_get_chart_data(request: web.Request):
     total_g = _count_table(appid_filter, 'groups_users')
     total_f = _count_table(appid_filter, 'members')
 
-    return web.json_response({
+    return {
         'success': True,
         'data': {
             'labels': labels,
@@ -202,7 +226,7 @@ async def handle_get_chart_data(request: web.Request):
             'ev_friend_add': ev_friend_add,
             'ev_friend_remove': ev_friend_remove,
         }
-    })
+    }
 
 
 def _gather_stats(force=False, selected_date='', appid_filter=''):
@@ -242,16 +266,11 @@ def _gather_stats(force=False, selected_date='', appid_filter=''):
                         total_messages += r.get('cnt', 0)
                         private_messages += r.get('private', 0)
 
-                    uid_rows = inst.log_service.query(
-                        'message', "SELECT DISTINCT user_id FROM log WHERE user_id != ''",
-                        date=date)
-                    gid_rows = inst.log_service.query(
-                        'message', "SELECT DISTINCT group_id FROM log WHERE group_id != '' AND group_id != 'c2c'",
-                        date=date)
-                    for ur in uid_rows:
-                        active_users.add(ur.get('user_id', ''))
-                    for gr in gid_rows:
-                        active_groups.add(gr.get('group_id', ''))
+                    # active_users/groups 只用于 len(), 用合并查询的 DISTINCT 计数即可, 避免再扫一次表
+                    if rows:
+                        r0 = rows[0]
+                        active_users.update(range(len(active_users), len(active_users) + r0.get('users', 0)))
+                        active_groups.update(range(len(active_groups), len(active_groups) + r0.get('groups_', 0)))
 
                     # Top 群
                     g_rows = inst.log_service.query(
