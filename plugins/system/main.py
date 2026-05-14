@@ -17,6 +17,7 @@ from core.base.logger import get_logger, PLUGIN
 from plugins.system.app import basic      # noqa: F401
 from plugins.system.app import admin      # noqa: F401
 from plugins.system.app import stats      # noqa: F401
+from plugins.system.app import openapi    # noqa: F401
 
 log = get_logger(PLUGIN, "系统管理")
 

@@ -113,6 +113,55 @@ async def send_buttons(event, match):
     await event.reply("📌 按钮功能演示", buttons=buttons)
 
 
+# ==================== 分享链接功能 ====================
+
+def _get_log_service(event):
+    from core.bot.manager import _bot_manager_ref
+    bot = _bot_manager_ref.get_bot(event.appid) if _bot_manager_ref else None
+    return bot.log_service if bot else None
+
+
+@handler(r'^申请邀请链接$', name='申请邀请链接', desc='生成专属邀请链接')
+async def get_share_link(event, match):
+    link = await event.sender.get_share_link(event.user_id)
+    await event.reply(
+        f"🔗 你的专属邀请链接：\n{link}\n\n📌 当其他用户通过此链接添加机器人时，将记录为你的邀请"
+        if link else "❌ 生成邀请链接失败")
+
+
+@handler(r'^申请邀请链接\s+(.+)$', name='自定义邀请链接', desc='生成自定义回调数据的邀请链接', owner_only=True)
+async def get_share_link_custom(event, match):
+    data = match.group(1).strip()
+    link = await event.sender.get_share_link(data) if data else None
+    await event.reply(
+        f"🔗 自定义邀请链接：\n{link}\n\n📌 回调数据：{data}" if link else "❌ 生成失败")
+
+
+@handler(r'^查询邀请数量$', name='查询邀请数量', desc='查看自己邀请了多少用户')
+async def query_share_count(event, match):
+    ls = _get_log_service(event)
+    if not ls:
+        return await event.reply("❌ 服务不可用")
+    refs = await ls.share_get_referrals(event.user_id)
+    if not refs:
+        return await event.reply("📊 你还没有邀请任何用户\n\n💡 发送「申请邀请链接」获取链接")
+    lines = [f"📊 你已成功邀请 {len(refs)} 位用户：\n"]
+    for i, (oid, scene) in enumerate(refs.items(), 1):
+        lines.append(f"{i}. {oid[:8]}****{oid[-4:] if len(oid) > 12 else ''}\n   来源：{ls.get_scene_name(scene)}")
+    await event.reply('\n'.join(lines))
+
+
+@handler(r'^查询我被谁邀请$', name='查询我被谁邀请', desc='查看谁邀请了自己')
+async def query_my_sharer(event, match):
+    ls = _get_log_service(event)
+    if not ls:
+        return await event.reply("❌ 服务不可用")
+    sid = await ls.share_find_sharer(event.user_id)
+    await event.reply(
+        f"📌 分享者：{sid[:8]}****{sid[-4:] if len(sid) > 12 else ''}"
+        if sid else "📌 你不是通过邀请链接添加的")
+
+
 # ==================== 召回功能 ====================
 
 @handler(r'^指定召回\s+(\S+)$', name='指定召回', desc='向指定用户发送召回消息', owner_only=True)
@@ -133,6 +182,27 @@ async def force_wakeup_user(event, match):
         await event.reply(f"✅ 强制召回成功 {uid[:8]}**** ID:{r}")
     else:
         await event.reply(f"❌ {r}")
+
+
+# ==================== 无视@配置示例 ====================
+# ignore_at_check=True: 即使 bot 未被@, 该处理器也会匹配 GROUP_MESSAGE_CREATE 消息
+# 不受 non_at_message.enabled 和群白名单配置影响
+
+@handler(r'^全量签到$', name='签到', desc='无需@即可触发的签到指令', ignore_at_check=True)
+async def check_in(event, match):
+    await event.reply(f"✅ 签到成功！")
+
+
+@handler(r'^主动测试$', name='全量主动测试', desc='无需@即可触发, 3秒后发送主动消息', ignore_at_check=True, owner_only=True)
+async def non_at_active_test(event, match):
+    target_id = event.group_id if event.is_group else event.user_id
+    target_type = "群" if event.is_group else "用户"
+    await event.reply(f"✅ 无需@触发\n{target_type} ID: {target_id}\n\n⏰ 3秒后发送主动消息...")
+    await asyncio.sleep(3)
+    if event.is_group:
+        await event.send_to_group(event.group_id, "🎉 ignore_at_check + 主动群消息")
+    else:
+        await event.send_to_user(event.user_id, "🎉 ignore_at_check + 主动私聊消息")
 
 
 # ==================== 主动消息示例 ====================
