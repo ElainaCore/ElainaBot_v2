@@ -438,19 +438,39 @@ class PluginManager:
         event.appid = appid
         et = event.event_type
         event._sender = sender
-        # 黑名单 (纯内存查找, 无 IO)
-        bl_type = self._check_blacklist(event)
-        if bl_type:
-            tpl = 'blacklist' if bl_type == 'user' else 'group_blacklist'
-            tvars = {'user_id': user_id, 'reason': '未指明原因'} if bl_type == 'user' else None
-            asyncio.create_task(event.reply(template_name=tpl, template_vars=tvars))
-            return True
 
-        # 维护模式
-        if cfg.get_bot_setting(appid, 'maintenance.enabled', False) and not self._is_owner(event):
-            if cfg.get_bot_setting(appid, 'maintenance.reply', True):
-                asyncio.create_task(event.reply(template_name='maintenance'))
-            return True
+        # GROUP_MESSAGE_CREATE + is_at_self → 按 AT 事件正常处理
+        # GROUP_MESSAGE_CREATE + !is_at_self → 静默模式 (不触发黑名单/维护/默认回复)
+        is_non_at = (et == 'GROUP_MESSAGE_CREATE' and not getattr(event, 'is_at_self', False))
+
+        # 黑名单 (纯内存查找, 无 IO) — 非AT群消息跳过回复
+        if not is_non_at:
+            bl_type = self._check_blacklist(event)
+            if bl_type:
+                tpl = 'blacklist' if bl_type == 'user' else 'group_blacklist'
+                tvars = {'user_id': user_id, 'reason': '未指明原因'} if bl_type == 'user' else None
+                asyncio.create_task(event.reply(template_name=tpl, template_vars=tvars))
+                return True
+
+        # 维护模式 — 非AT群消息跳过回复
+        if not is_non_at:
+            if cfg.get_bot_setting(appid, 'maintenance.enabled', False) and not self._is_owner(event):
+                if cfg.get_bot_setting(appid, 'maintenance.reply', True):
+                    asyncio.create_task(event.reply(template_name='maintenance'))
+                return True
+
+        # 非AT群消息: 预计算是否允许触发插件
+        non_at_allowed = False
+        non_at_in_whitelist = False
+        if is_non_at:
+            non_at_enabled = cfg.get_bot_setting(appid, 'non_at_message.enabled', False)
+            if non_at_enabled:
+                non_at_allowed = True
+            else:
+                gid = event.group_id or ''
+                group_wl = cfg.get_bot_setting(appid, 'non_at_message.group_whitelist', []) or []
+                non_at_in_whitelist = gid and gid in group_wl
+                non_at_allowed = non_at_in_whitelist
 
         # 拦截器
         for ic in self._all_interceptors:
@@ -474,14 +494,20 @@ class PluginManager:
                         or (h['direct_only'] and not event.is_direct)\
                         or (h['channel_only'] and not event.is_channel):
                     continue
+
+                # 非AT群消息: 仅 ignore_at_check 或配置允许时才匹配
+                if is_non_at and not h.get('ignore_at_check', False) and not non_at_allowed:
+                    continue
+
                 match = h['compiled'].search(try_content)
                 if not match:
                     continue
 
                 # 权限检查
                 if h['owner_only'] and not self._is_owner(event):
-                    asyncio.create_task(event.reply(
-                        template_name='owner_only', template_vars={'user_id': user_id}))
+                    if not is_non_at:
+                        asyncio.create_task(event.reply(
+                            template_name='owner_only', template_vars={'user_id': user_id}))
                     return True
 
                 # 日志上下文绑定到 event (线程安全, 不依赖 sender 共享状态)
@@ -495,7 +521,7 @@ class PluginManager:
                     h, event, match, plugin_name, user_id, et, content))
                 return True
 
-        # 无匹配 -> 默认回复
+        # 无匹配 -> 默认回复 (GROUP_MESSAGE_CREATE 不触发默认回复)
         if et in ('GROUP_AT_MESSAGE_CREATE', 'C2C_MESSAGE_CREATE') \
                 and cfg.get_bot_setting(appid, 'message.send_default_response', True):
             excluded = cfg.get_bot_setting(appid, 'message.default_response_excluded_regex', []) or []

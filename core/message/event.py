@@ -24,6 +24,7 @@ from core.message.parsers import (
 
 # 群聊
 GROUP_AT_MESSAGE_CREATE = 'GROUP_AT_MESSAGE_CREATE'
+GROUP_MESSAGE_CREATE = 'GROUP_MESSAGE_CREATE'
 C2C_MESSAGE_CREATE = 'C2C_MESSAGE_CREATE'
 
 # 交互
@@ -48,10 +49,10 @@ MESSAGE_AUDIT_REJECT = 'MESSAGE_AUDIT_REJECT'
 
 # 分类集合
 MESSAGE_TYPES = frozenset({
-    GROUP_AT_MESSAGE_CREATE, C2C_MESSAGE_CREATE,
+    GROUP_AT_MESSAGE_CREATE, GROUP_MESSAGE_CREATE, C2C_MESSAGE_CREATE,
     AT_MESSAGE_CREATE, DIRECT_MESSAGE_CREATE, MESSAGE_CREATE,
 })
-GROUP_TYPES = frozenset({GROUP_AT_MESSAGE_CREATE})
+GROUP_TYPES = frozenset({GROUP_AT_MESSAGE_CREATE, GROUP_MESSAGE_CREATE})
 DIRECT_TYPES = frozenset({C2C_MESSAGE_CREATE, DIRECT_MESSAGE_CREATE})
 CHANNEL_TYPES = frozenset({AT_MESSAGE_CREATE, DIRECT_MESSAGE_CREATE, MESSAGE_CREATE})
 LIFECYCLE_TYPES = frozenset({
@@ -62,7 +63,7 @@ LIFECYCLE_TYPES = frozenset({
 
 # 需要 msg_id / event_id 回复的事件
 _MSG_ID_TYPES = frozenset({
-    GROUP_AT_MESSAGE_CREATE, C2C_MESSAGE_CREATE,
+    GROUP_AT_MESSAGE_CREATE, GROUP_MESSAGE_CREATE, C2C_MESSAGE_CREATE,
     AT_MESSAGE_CREATE, DIRECT_MESSAGE_CREATE,
 })
 _EVENT_ID_TYPES = frozenset({INTERACTION_CREATE, GROUP_ADD_ROBOT, FRIEND_ADD})
@@ -70,6 +71,7 @@ _EVENT_ID_TYPES = frozenset({INTERACTION_CREATE, GROUP_ADD_ROBOT, FRIEND_ADD})
 # 回复端点模板 (event_type -> lambda event: endpoint_str)
 _REPLY_ENDPOINTS = {
     GROUP_AT_MESSAGE_CREATE: lambda e: f"/v2/groups/{e.group_openid or e.group_id}/messages",
+    GROUP_MESSAGE_CREATE:    lambda e: f"/v2/groups/{e.group_openid or e.group_id}/messages",
     C2C_MESSAGE_CREATE:     lambda e: f"/v2/users/{e.raw_user_id or e.user_id}/messages",
     AT_MESSAGE_CREATE:      lambda e: f"/channels/{e.channel_id}/messages",
     DIRECT_MESSAGE_CREATE:  lambda e: f"/dms/{e.guild_id}/messages",
@@ -79,6 +81,7 @@ _REPLY_ENDPOINTS = {
 # 解析器映射表
 _PARSERS = {
     GROUP_AT_MESSAGE_CREATE: parse_group_message,
+    GROUP_MESSAGE_CREATE: parse_group_message,
     C2C_MESSAGE_CREATE: parse_direct_message,
     AT_MESSAGE_CREATE: parse_channel_message,
     DIRECT_MESSAGE_CREATE: parse_channel_direct_message,
@@ -113,6 +116,7 @@ class Event:
         'is_group', 'is_direct', 'is_channel', 'is_interaction', 'is_lifecycle',
         'interaction_data', 'chat_type_code', 'scene', 'scene_source',
         'sharer_id', 'scene_param',
+        'mentions', 'is_at_self',
         '_sender', '_reply_log_cb', '_reply_plugin_name',
     )
 
@@ -151,6 +155,8 @@ class Event:
         self.scene_source = None
         self.sharer_id = None
         self.scene_param = None
+        self.mentions = []
+        self.is_at_self = False
         self._sender = None
         self._reply_log_cb = None
         self._reply_plugin_name = ''

@@ -36,6 +36,8 @@ _BOT_DEFAULTS = {
     'blacklist.group_enabled': False,
     'blacklist.user_list': [],
     'blacklist.group_list': [],
+    'non_at_message.enabled': False,
+    'non_at_message.group_whitelist': [],
 }
 
 

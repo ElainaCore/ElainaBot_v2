@@ -84,6 +84,13 @@ def parse_message_generic(event, d):
 def parse_group_message(event, d):
     """群聊消息解析"""
     parse_message_generic(event, d)
+    mentions = d.get('mentions')
+    if isinstance(mentions, list):
+        event.mentions = mentions
+        event.is_at_self = any(
+            isinstance(m, dict) and m.get('is_you') is True
+            for m in mentions
+        )
 
 
 def parse_direct_message(event, d):
