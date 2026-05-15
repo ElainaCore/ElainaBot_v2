@@ -1,36 +1,12 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""按钮 / 键盘构建辅助
-
-纯函数, 不依赖 sender 实例。由 sender.py 调用。
-"""
+"""按钮 / 键盘构建辅助"""
 
 from core.base.config import cfg
 
 
 def build_keyboard(button_rows, appid=None):
-    """按钮行列表 -> QQ 平台 InlineKeyboard 结构
-
-    button_rows: [[btn, btn, ...], ...]
-
-    每个 btn 支持的字段:
-        text          按钮文字 (必填)
-        show          按钮按过后显示的文字 (默认同 text)
-        data          点击回调数据
-        link          链接 (设置后 type 自动变 0)
-        type          1=回填到输入框 / 2=回调 (默认 2)
-        style         按钮样式 0/1
-        enter         点击后是否自动发送 (true/false)
-        reply         是否回复消息
-        admin         仅管理员可点
-        list          指定用户列表 [openid, ...]
-        role          指定角色列表 [role_id, ...] (频道角色)
-        limit         点击次数限制 (整数)
-        tips          不支持时的提示文本
-
-    button_enter_to_send 配置 (按 appid 读取): 当 enter=True 且 type=2 时,
-        自动改为 type=1 (回填+发送), 而不是设置 action.enter
-    """
+    """按钮行列表 → QQ InlineKeyboard 结构"""
     button_enter_to_send = (
         cfg.get_bot_setting(appid, 'message.button_enter_to_send', False)
         if appid else False)
@@ -95,10 +71,7 @@ def build_keyboard(button_rows, appid=None):
 
 
 def build_prompt_keyboard(prompt_buttons):
-    """构建 prompt_keyboard 扩展按钮 (最多3个)
-
-    prompt_buttons: str | [str, ...] | [{...}, ...] | dict
-    """
+    """构建 prompt_keyboard 扩展按钮 (最多3个)"""
     if not prompt_buttons:
         return None
     if isinstance(prompt_buttons, dict):

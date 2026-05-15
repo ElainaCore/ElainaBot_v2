@@ -7,6 +7,8 @@ import uuid
 import base64
 import hashlib
 import hmac
+import asyncio
+import threading
 from datetime import datetime, timedelta
 
 from aiohttp import web
@@ -28,6 +30,7 @@ _last_ip_cleanup = 0
 _data_dir = ''
 _ip_file = ''
 _session_file = ''
+_io_lock = threading.Lock()  # 串行化文件写入, 避免内容交错损坏
 
 
 def init(base_dir: str):
@@ -52,12 +55,27 @@ def _read_json(path, default=None):
     return default or {}
 
 
+def _write_text_sync(path, text):
+    """同步写入文本 (在 executor 中调用)"""
+    with _io_lock:
+        try:
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(text)
+        except Exception:
+            pass
+
+
 def _write_json(path, data):
+    """异步友好的 JSON 写入: 主线程序列化 (一致性), executor 写盘 (不阻塞 loop)"""
     try:
-        with open(path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        text = json.dumps(data, ensure_ascii=False, indent=2, default=str)
     except Exception:
-        pass
+        return
+    try:
+        loop = asyncio.get_running_loop()
+        loop.run_in_executor(None, _write_text_sync, path, text)
+    except RuntimeError:
+        _write_text_sync(path, text)
 
 
 # ==================== IP ====================

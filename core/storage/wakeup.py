@@ -1,4 +1,4 @@
-"""唤醒系统服务 (WakeupMixin) — 由 LogService 继承, 提供 wakeup_update / wakeup_can_send"""
+"""唤醒系统服务 (WakeupMixin)"""
 
 import sqlite3
 import asyncio

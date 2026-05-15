@@ -1,8 +1,4 @@
-"""Hook 系统 — emit(广播) / pipeline(管道), 模块通过 register 监听
-
-内置 hook: before_message_dispatch / after_message_dispatch / before_send / after_send
-          on_bot_ready / on_bot_close / on_plugin_load / on_plugin_unload / on_raw_event
-"""
+"""Hook 系统 — emit(广播) / pipeline(管道)"""
 
 import asyncio
 from collections import defaultdict

@@ -22,6 +22,9 @@ _OP_HELLO = 10
 _OP_HEARTBEAT_ACK = 11
 _OP_EVENT_ACK = 12
 
+# 事件并发上限 — 避免高频事件下 create_task 无限堆积导致 OOM
+_MAX_INFLIGHT_EVENTS = 256
+
 
 class WSClient:
     """单个机器人的 WebSocket 客户端"""
@@ -46,6 +49,8 @@ class WSClient:
         self._closed = False
         self._reconnect_count = 0
         self._gateway_url = None
+        # 背压: 限制并发处理事件数, 避免下游慢导致任务堆积
+        self._event_sem = asyncio.Semaphore(_MAX_INFLIGHT_EVENTS)
 
     async def connect(self):
         """连接并开始接收事件"""
@@ -137,9 +142,17 @@ class WSClient:
         try:
             event = Event.from_websocket(self._appid, payload)
             log.debug(f"[{self._appid}] WS事件: {event}")
-            asyncio.create_task(self._on_event(event))
+            asyncio.create_task(self._dispatch_with_backpressure(event))
         except Exception as e:
             log.error(f"[{self._appid}] 事件处理异常: {e}")
+
+    async def _dispatch_with_backpressure(self, event):
+        """背压包装: Semaphore 控制并发, 满载时新事件等待空闲槽位"""
+        async with self._event_sem:
+            try:
+                await self._on_event(event)
+            except Exception as e:
+                log.error(f"[{self._appid}] 事件回调异常: {e}")
 
     async def _send_event_ack(self, payload, code=0):
         """回复事件确认 (op 12)"""
@@ -196,7 +209,7 @@ class WSClient:
         # 自定义 API 基址时, 从该基址获取网关
         url = f"{self._custom_api_base}/gateway/bot" if self._custom_api_base else _GATEWAY_URL
         token = await self._tm.get_token()
-        client = await self._tm._ensure_client()
+        client = await self._tm.get_client()
         resp = await client.get(url, headers={'Authorization': f"QQBot {token}"})
         data = resp.json()
         self._gateway_url = data.get('url', '')
@@ -206,5 +219,5 @@ class WSClient:
 
     @staticmethod
     def _get_intents():
-        """GUILDS | GUILD_MESSAGE_REACTIONS | DIRECT_MESSAGE | GROUP_AND_C2C | INTERACTION | AUDIT | GROUP_MSG_RECEIVE"""
+        """构建 intents 位掩码"""
         return (1 << 0) | (1 << 10) | (1 << 12) | (1 << 25) | (1 << 26) | (1 << 27) | (1 << 30)

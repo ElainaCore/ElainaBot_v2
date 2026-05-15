@@ -1,4 +1,4 @@
-"""分享来源服务 (ShareMixin) — 由 LogService 继承, 提供 share_record / share_get_referrals"""
+"""分享来源服务 (ShareMixin)"""
 
 import json
 import asyncio

@@ -31,7 +31,7 @@ def _get_api():
     global _api
     if _api is None:
         try:
-            from web.tools.bot_api import get_bot_api
+            from web.tools._bot.api import get_bot_api
             _api = get_bot_api()
         except ImportError:
             _api = None

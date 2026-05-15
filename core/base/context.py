@@ -1,7 +1,4 @@
-"""通用上下文基类 — data/ 目录读写、YAML 配置管理
-
-PluginContext 和 ModuleContext 均继承此类, 避免重复代码。
-"""
+"""通用上下文基类 — data/ 目录读写、YAML 配置管理"""
 
 import os
 import asyncio

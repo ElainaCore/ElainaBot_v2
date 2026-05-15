@@ -1,127 +1,66 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""消息发送器 - 异步
-
-封装消息回复、主动推送、交互回复、自动撤回等。
-媒体上传 / SILK / 分片在 media.py, 按钮构建在 keyboard.py。
-
-用法:
-    sender = MessageSender(token_manager)
-    await sender.reply(event, "你好", buttons=[[{...}]])
-    await sender.reply_image(event, image_bytes)
-"""
+"""消息发送器 — 回复、主动推送、交互、撤回"""
 
 import os
 import json
-import time
 import random
 import asyncio
-import hashlib
-from datetime import datetime
-from core.network.http_compat import AsyncHttpClient, HAS_HTTPX
-from core.base.logger import get_logger, FRAMEWORK, report_error, report_error_raw
+from core.base.logger import FRAMEWORK, report_error_raw
 from core.base.config import cfg
 from core.message.template import tpl
 from core.message.keyboard import (build_keyboard, build_prompt_keyboard,
                                     convert_simple_ark_data)
 from core.message.media import (upload_media_bytes, upload_media_via_url,
-                                 get_image_size as _get_image_size,
-                                 _resolve_upload_ep)
+                                 get_image_size as _get_image_size)
 from core.module.hook import get_hook_manager as _get_hooks
-
-log = get_logger(FRAMEWORK, "消息发送")
-
-# ==================== 常量 ====================
-
-MSG_TYPE_TEXT = 0
-MSG_TYPE_MARKDOWN = 2
-MSG_TYPE_ARK = 3
-MSG_TYPE_MEDIA = 7
-
-_API_BASE = "https://api.sgroup.qq.com"
-
-_IGNORE_ERROR_CODES = frozenset({11293, 40054002, 40054003})
-_TOKEN_EXPIRED_CODE = 11244
-_MAX_MEDIA_DOWNLOAD = 100 * 1024 * 1024  # 100MB 下载上限, 防止 OOM
+from core.message._http import (
+    _HttpMixin, _API_BASE, _IGNORE_ERROR_CODES,
+    MSG_TYPE_TEXT, MSG_TYPE_MARKDOWN, MSG_TYPE_ARK, MSG_TYPE_MEDIA,
+    log,
+)
+from core.message._media_send import (
+    _MediaSendMixin, _set_msg_or_event_id, _extract_message_id,
+)
 
 
 def _msg_seq():
     return random.randint(10000, 999999)
 
 
-class MessageSender:
+class MessageSender(_HttpMixin, _MediaSendMixin):
     """消息发送器 (每个机器人实例一个)"""
 
-    __slots__ = ('_token_mgr', '_appid', '_client', '_base_url', '_web_log_cb', '_bot_name', '_bot_qq', '_log_service', '_reply_log_cb', '_reply_plugin_name', '_custom_api_base', '_media_dir')
+    __slots__ = (
+        '_token_mgr', '_appid', '_client', '_base_url', '_custom_api_base',
+        '_web_log_cb', '_bot_name', '_bot_qq', '_media_dir',
+        '_log_service', '_reply_log_cb', '_reply_plugin_name',
+    )
 
     def __init__(self, token_manager, custom_api_base=''):
         self._token_mgr = token_manager
         self._appid = token_manager.appid
         self._custom_api_base = custom_api_base.rstrip('/') if custom_api_base else ''
         self._base_url = self._custom_api_base or _API_BASE
-        self._client = None  # 延迟创建
-        self._web_log_cb = None  # 由 BotManager 注入
-        self._bot_name = ''     # 由 BotInstance 设置
-        self._bot_qq = ''       # 由 BotInstance 设置
-        self._log_service = None # 由 BotInstance 注入, 用于持久化回复日志
-        self._reply_log_cb = None # 由 dispatch 临时注入, 记录插件回复
-        self._reply_plugin_name = '' # 由 dispatch 临时注入, 当前插件名称
-        self._media_dir = ''         # 由 BotManager 注入, data/media 绝对路径
+        self._client = None
+        self._web_log_cb = None
+        self._bot_name = ''
+        self._bot_qq = ''
+        self._log_service = None
+        self._reply_log_cb = None
+        self._reply_plugin_name = ''
+        self._media_dir = ''
 
-    async def _ensure_client(self):
-        if self._client is None or self._client.is_closed:
-            self._client = AsyncHttpClient(
-                base_url=self._base_url, timeout=30.0)
-            log.info(f"[{self._appid}] HTTP客户端: {'httpx' if HAS_HTTPX else 'aiohttp'}")
-        return self._client
-
-    async def close(self):
-        if self._client and not self._client.is_closed:
-            await self._client.aclose()
-
-    # ==================== HTTP ====================
-
-    async def _request(self, method, endpoint, **kwargs):
-        client = await self._ensure_client()
-        extra_headers = kwargs.pop('headers', None)
-        for attempt in range(2):
-            token = await self._token_mgr.get_token()
-            headers = dict(extra_headers) if extra_headers else {}
-            headers['Authorization'] = f"QQBot {token}"
-            if 'json' in kwargs:
-                headers.setdefault('Content-Type', 'application/json')
-            try:
-                _t = time.time()
-                resp = await client.request(method, endpoint, headers=headers, **kwargs)
-                body = resp.content
-                _dt = (time.time() - _t) * 1000
-                if _dt > 1500:
-                    log.warning(f"[{self._appid}] API {_dt:.0f}ms {method} {endpoint} -> {resp.status_code}")
-                if resp.status_code >= 400:
-                    try:
-                        err = json.loads(body)
-                    except Exception:
-                        err = {'message': body.decode(errors='replace'), 'code': resp.status_code}
-                    if err.get('code') == _TOKEN_EXPIRED_CODE and attempt == 0:
-                        await self._token_mgr.refresh_token()
-                        await asyncio.sleep(0.1)
-                        continue
-                    return False, err
-                if body:
-                    return True, json.loads(body)
-                return True, {}
-            except Exception as e:
-                return False, {'message': str(e), 'code': -1}
-        return False, {'message': 'max retries', 'code': -1}
-
-    async def post_json(self, endpoint, payload):
-        return await self._request('POST', endpoint, json=payload)
-
-    async def put(self, endpoint, **kwargs):
-        return await self._request('PUT', endpoint, **kwargs)
-
-    async def delete(self, endpoint):
-        return await self._request('DELETE', endpoint)
+    def bind_instance(self, *, log_service=None, bot_name='', bot_qq='', media_dir=''):
+        """由 BotInstance 调用, 注入运行时依赖"""
+        if log_service is not None:
+            self._log_service = log_service
+        if bot_name:
+            self._bot_name = bot_name
+        if bot_qq:
+            self._bot_qq = bot_qq
+        if media_dir:
+            self._media_dir = media_dir
 
     # ==================== 回复 ====================
 
@@ -226,6 +165,15 @@ class MessageSender:
         ok, data = await self.post_json(endpoint, payload)
         if ok:
             self._log_push(endpoint, payload, content, data)
+        else:
+            err_code = data.get('code', '') if isinstance(data, dict) else ''
+            err_msg = data.get('message', str(data)) if isinstance(data, dict) else str(data)
+            report_error_raw(
+                FRAMEWORK, '主动消息',
+                content=f"主动消息发送失败 [{err_code}] {err_msg}",
+                tb=f"endpoint: {endpoint}\npayload: {json.dumps(payload, ensure_ascii=False, default=str)[:500]}",
+                appid=self._appid,
+            )
         return ok, data, payload
 
     def _log_push(self, endpoint, payload, content, resp_data=None):
@@ -271,11 +219,7 @@ class MessageSender:
     # ==================== 唤醒消息 ====================
 
     async def send_wakeup(self, user_id, content='', buttons=None):
-        """发送唤醒消息 (检查是否符合条件)
-
-        Returns:
-            (success: bool, msg_or_reason: str)
-        """
+        """发送唤醒消息, 返回 (success, reason)"""
         if not self._log_service:
             return (False, "log_service 未初始化")
         can_send, stage, days = await self._log_service.wakeup_can_send(user_id)
@@ -434,119 +378,6 @@ class MessageSender:
         payload.update(kwargs)
         return payload
 
-    # ==================== 内部: 媒体发送 ====================
-
-    def _maybe_auto_recall(self, event, data, delay):
-        if delay and data:
-            mid = _extract_message_id(data)
-            if mid:
-                asyncio.create_task(self._auto_recall(event, mid, delay))
-
-    async def _send_media(self, event, data, file_type, content, *,
-                          file_name=None, auto_delete_time=None,
-                          target_user_id=None, target_group_id=None, msg_id=None):
-        upload_ep = _resolve_upload_ep(target_group_id, target_user_id, event)
-        if not upload_ep:
-            return None
-
-        # 网络地址: 直接记录 URL, 不保存到本地
-        is_url = isinstance(data, str) and data.startswith(('http://', 'https://'))
-        original_url = data if is_url else None
-
-        if is_url:
-            try:
-                client = await self._ensure_client()
-                resp = await client.get(data)
-                cl = int(resp.headers.get('content-length', 0))
-                if cl > _MAX_MEDIA_DOWNLOAD:
-                    log.warning(f"[{self._appid}] 媒体过大 ({cl} bytes), 跳过")
-                    return None
-                data = resp.content
-                if len(data) > _MAX_MEDIA_DOWNLOAD:
-                    log.warning(f"[{self._appid}] 媒体超过 {_MAX_MEDIA_DOWNLOAD} bytes, 跳过")
-                    return None
-            except Exception as e:
-                log.warning(f"[{self._appid}] 下载媒体失败: {e}")
-                return None
-        if not isinstance(data, bytes):
-            return None
-
-        type_name = self._MEDIA_TYPE_NAMES.get(file_type, '媒体')
-        if original_url:
-            media_label = f'[{type_name}]{original_url}'
-        else:
-            media_label = await self._save_media(data, file_type)
-
-        file_info = await upload_media_bytes(self, data, file_type, upload_ep,
-                                             file_name=file_name)
-        if not file_info:
-            return None
-        return await self._send_media_payload(event, file_info, content, auto_delete_time,
-                                              target_user_id=target_user_id,
-                                              target_group_id=target_group_id,
-                                              msg_id=msg_id,
-                                              media_label=media_label)
-
-    _MEDIA_TYPE_NAMES = {1: '图片', 2: '视频', 3: '语音', 4: '文件'}
-    _MEDIA_TYPE_EXTS  = {1: '.png', 2: '.mp4', 3: '.mp3', 4: '.dat'}
-
-    async def _save_media(self, data, file_type):
-        """本地 bytes → 保存到 data/media/, MD5 校验唯一 (同内容只保存一次)"""
-        type_name = self._MEDIA_TYPE_NAMES.get(file_type, '媒体')
-        if not self._media_dir:
-            return f'[{type_name}]'
-        try:
-            loop = asyncio.get_running_loop()
-            return await loop.run_in_executor(
-                None, self._save_media_sync, data, file_type, type_name)
-        except Exception as e:
-            log.debug(f'[媒体保存] {e}')
-            return f'[{type_name}]'
-
-    def _save_media_sync(self, data, file_type, type_name):
-        ext = self._MEDIA_TYPE_EXTS.get(file_type, '.dat')
-        md5 = hashlib.md5(data).hexdigest()
-        filename = f'{md5}{ext}'
-        filepath = os.path.join(self._media_dir, filename)
-        if not os.path.exists(filepath):
-            self._write_file_sync(filepath, data)
-        return f'[{type_name}]/api/media/{filename}'
-
-    @staticmethod
-    def _read_file_sync(path):
-        with open(path, 'rb') as f:
-            return f.read()
-
-    @staticmethod
-    def _write_file_sync(path, data):
-        with open(path, 'wb') as f:
-            f.write(data)
-
-    async def _send_media_payload(self, event, file_info, content, auto_delete_time=None, *,
-                                  target_user_id=None, target_group_id=None, msg_id=None,
-                                  media_label=''):
-        proactive = bool(target_user_id or target_group_id)
-        payload = {
-            'msg_type': MSG_TYPE_MEDIA, 'msg_seq': _msg_seq(),
-            'content': content or '', 'media': {'file_info': file_info},
-        }
-        if not proactive:
-            _set_msg_or_event_id(payload, event)
-        elif msg_id:
-            payload['msg_id'] = msg_id
-
-        endpoint = (f"/v2/groups/{target_group_id}/messages" if target_group_id
-                    else f"/v2/users/{target_user_id}/messages" if target_user_id
-                    else event.reply_endpoint)
-        if not endpoint:
-            return None
-
-        success, data = await self._send_with_error_handling(
-            endpoint, payload, event, content, media_label=media_label)
-        if success:
-            self._maybe_auto_recall(event, data, auto_delete_time)
-        return data
-
     # ==================== 错误处理 ====================
 
     async def _send_with_error_handling(self, endpoint, payload, event, content=None, *,
@@ -602,27 +433,21 @@ class MessageSender:
                 reply_log_cb(text, user_id, group_id, raw_msg, msg_id)
             except Exception:
                 pass
-        else:
+        # 无论是否有 reply_log_cb, 都推送到 Web 面板实时日志
+        if reply_log_cb and self._web_log_cb:
+            try:
+                self._web_log_cb('message', {
+                    'appid': self._appid,
+                    'bot_name': self._bot_name or self._appid,
+                    'bot_qq': self._bot_qq or '',
+                    'user_id': user_id, 'group_id': group_id,
+                    'content': text, 'is_bot': True,
+                    'direction': 'send',
+                    'message_id': msg_id,
+                    'plugin_name': plugin_name or 'framework',
+                })
+            except Exception:
+                pass
+        elif not reply_log_cb:
             self._emit_log(text, user_id, group_id, raw_msg, 'template', plugin_name or 'framework', message_id=msg_id)
 
-    async def _auto_recall(self, event, message_id, delay):
-        try:
-            await asyncio.sleep(delay)
-            await self.recall(event, message_id)
-        except Exception:
-            pass
-
-
-# ==================== 模块级辅助 ====================
-
-def _set_msg_or_event_id(payload, event):
-    if event.needs_msg_id and event.message_id:
-        payload['msg_id'] = event.message_id
-    elif event.needs_event_id:
-        payload['event_id'] = event.event_id or ''
-
-
-def _extract_message_id(data):
-    if isinstance(data, dict):
-        return data.get('id') or data.get('msg_id') or data.get('message_id')
-    return None

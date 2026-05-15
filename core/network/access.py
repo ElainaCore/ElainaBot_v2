@@ -67,10 +67,13 @@ class TokenManager:
     def _is_valid(self):
         return self._token and time.time() < self._expires_at - _REFRESH_BUFFER
 
-    async def _ensure_client(self):
+    async def get_client(self):
+        """获取 HTTP 客户端 (延迟创建)"""
         if self._client is None or self._client.is_closed:
             self._client = AsyncHttpClient(timeout=10.0)
         return self._client
+
+    _ensure_client = get_client  # 内部兼容
 
     async def _refresh(self):
         payload = {"appId": self.appid, "clientSecret": self.secret}

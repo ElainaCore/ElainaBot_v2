@@ -57,9 +57,8 @@ class BotInstance:
 
         # 获取昵称 + 启动日志服务
         await asyncio.gather(self._fetch_bot_name(), self.log_service.start())
-        self.sender._log_service = self.log_service
-        self.sender._bot_name = self.name
-        self.sender._bot_qq = self.robot_qq
+        self.sender.bind_instance(
+            log_service=self.log_service, bot_name=self.name, bot_qq=self.robot_qq)
 
         ws_cfg = self.bot_cfg.get('websocket', {})
         if ws_cfg.get('enabled', False):
@@ -82,7 +81,7 @@ class BotInstance:
             token = await self.token_manager.get_token()
             base = self.sender._base_url
             url = f"{base}/users/@me"
-            client = await self.token_manager._ensure_client()
+            client = await self.token_manager.get_client()
             resp = await client.get(url, headers={'Authorization': f'QQBot {token}'})
             if resp.status_code == 200:
                 data = resp.json()

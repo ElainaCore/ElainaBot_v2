@@ -1,5 +1,19 @@
 [
   "core/bot.py",
   "core/bot_instance.py",
-  "core/event_handler.py"
+  "core/event_handler.py",
+  "web/tools/bot_api.py",
+  "web/tools/bot_restart.py",
+  "web/tools/robot_info.py",
+  "web/tools/config_handler.py",
+  "web/tools/database_browser.py",
+  "web/tools/log_query.py",
+  "web/tools/message_handler.py",
+  "web/tools/openapi_handler.py",
+  "web/tools/plugin_manager.py",
+  "web/tools/plugin_market_handler.py",
+  "web/tools/statistics_handler.py",
+  "web/tools/system_info.py",
+  "web/tools/update_handler.py",
+  "web/tools/updater.py"
 ]

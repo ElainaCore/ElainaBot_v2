@@ -1,11 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""拓展模块管理器 — 自动发现、依赖安装、启停管理
-
-模块结构: modules/{name}/ → main.py(入口, 含 __module_meta__) + requirements.txt(可选) + data/(配置)
-入口函数: async def setup(ctx: ModuleContext) / async def teardown()
-安装即启用, 运行时可 disable(), 永久禁用删除目录
-"""
+"""拓展模块管理器 — 自动发现、依赖安装、启停管理"""
 
 import os
 import sys

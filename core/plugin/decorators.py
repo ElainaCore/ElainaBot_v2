@@ -13,11 +13,7 @@ _pending_interceptors = []
 def handler(pattern, *, name='', desc='', priority=0, owner_only=False,
             group_only=False, direct_only=False, channel_only=False,
             event_types=None, cooldown=0, ignore_at_check=False):
-    """注册消息处理器: async def xxx(event, match)
-
-    ignore_at_check: 为 True 时, GROUP_MESSAGE_CREATE 中即使 is_at_self=False
-                     也会匹配此处理器 (无视 non_at_message 配置)
-    """
+    """注册消息处理器"""
     def decorator(func):
         _pending_handlers.append({
             'func': func,

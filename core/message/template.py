@@ -1,15 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""模板引擎 - 消息模板 + 按钮构建, 热加载
-
-从 config/templates.yaml 加载系统消息模板,
-支持变量替换和按钮自动构建。
-
-用法:
-    from core.template import tpl
-    content, buttons = tpl.render("welcome", user_id="xxx", appid="123")
-    content, buttons = tpl.render("user_welcome", user_id="xxx", use_markdown=True)
-"""
+"""模板引擎 — 消息模板 + 按钮构建, 热加载"""
 
 from core.base.config import cfg
 from core.base.logger import get_logger, FRAMEWORK
@@ -18,32 +9,10 @@ log = get_logger(FRAMEWORK, "模板引擎")
 
 
 class TemplateEngine:
-    """消息模板引擎
-
-    模板格式:
-        纯文本: "你好 {user_id}"
-        带按钮:
-            content: "你好"
-            buttons: [[{text: "菜单", data: "/菜单", enter: true, style: 1},{text: "帮助"}],[{text: "链接", link: "..."}]]
-        MD分离:
-            markdown: "**你好**"
-            text: "你好"
-            buttons: ...
-    """
+    """消息模板引擎 — 变量替换 + 按钮构建"""
 
     def render(self, template_name, use_markdown=False, appid=None, **variables):
-        """渲染模板
-
-        Args:
-            template_name: 模板名 (templates.yaml 中的 key)
-            use_markdown:  是否优先使用 markdown 版本
-            appid:         机器人 APPID (用于匹配专属模板)
-            **variables:   变量 (user_id, user_count, reason, appid 等)
-
-        Returns:
-            (content_str, buttons_list_or_None)
-            buttons 格式: [[{text, data/link, enter, style, ...}, ...], ...]
-        """
+        """渲染模板, 返回 (content, buttons_or_None)"""
         if appid:
             variables.setdefault('appid', appid)
         raw = self._resolve_template(template_name, appid)

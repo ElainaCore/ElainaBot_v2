@@ -1,28 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""统一日志系统
-
-所有模块日志格式:
-    [ElainaBot] 04-26 14:50:31 - WARNING - [插件:自动审核][内容检测] 未知safe值: 0
-    [ElainaBot] 04-26 14:51:36 - INFO - [框架:垃圾回收]♻️ 初始化成功
-    [ElainaBot] 04-26 14:51:36 - INFO - [拓展模块:Mysql]💾 初始化成功
-
-模块类型:
-    插件 / 框架 / 拓展模块 / 服务 / 定时 / 系统
-
-用法:
-    from core.logger import get_logger
-    log = get_logger("插件", "自动审核")
-    log.info("[内容检测] 加载完成")
-    log.warning("[内容检测] 未知safe值: 0")
-
-错误上报:
-    from core.logger import report_error
-    try:
-        ...
-    except Exception as e:
-        report_error("插件", "自动审核", e, context={"user_id": "xxx"})
-"""
+"""统一日志系统 — 格式化输出、错误上报"""
 
 import os
 import sys
@@ -100,11 +78,7 @@ def _enable_colors():
 # ==================== 格式化器 ====================
 
 class ElainaFormatter(logging.Formatter):
-    """统一日志格式化器
-
-    日志器名称约定: ElainaBot.{模块类型}.{模块名}
-    输出: [ElainaBot] MM-DD HH:MM:SS - LEVEL - [模块类型:模块名]消息
-    """
+    """统一日志格式化器"""
 
     def format(self, record):
         dt = datetime.fromtimestamp(record.created).strftime('%m-%d %H:%M:%S')
@@ -149,13 +123,7 @@ _initialized = False
 
 
 def setup(framework_name=None, level=logging.INFO, log_file=None):
-    """初始化日志系统 (框架启动时调用一次)
-
-    Args:
-        framework_name: 框架名称, 默认 "ElainaBot"
-        level:          日志等级
-        log_file:       可选, 同时输出到文件
-    """
+    """初始化日志系统 (框架启动时调用一次)"""
     global _FRAMEWORK_NAME, _initialized
     if _initialized:
         return
@@ -192,20 +160,7 @@ def setup(framework_name=None, level=logging.INFO, log_file=None):
 # ==================== 获取日志器 ====================
 
 def get_logger(module_type, module_name):
-    """获取模块日志器
-
-    Args:
-        module_type: 模块类型 (PLUGIN/FRAMEWORK/EXTENSION/SERVICE/SCHEDULER/SYSTEM)
-        module_name: 模块名称
-
-    Returns:
-        logging.Logger
-
-    示例:
-        log = get_logger("插件", "自动审核")
-        log.info("[内容检测] 加载完成")          # [插件:自动审核][内容检测] 加载完成
-        log.warning("未知safe值: 0")            # [插件:自动审核]未知safe值: 0
-    """
+    """获取模块日志器"""
     return logging.getLogger(f"ElainaBot.{module_type}.{module_name}")
 
 
@@ -266,16 +221,10 @@ def report_error_raw(module_type, module_name, content='', tb='', context='', ap
 # ==================== 回调注册 ====================
 
 def on_error(callback):
-    """注册错误回调: callback(error_data_dict)
-
-    error_data 包含: timestamp, module_type, module_name, content, traceback, context
-    """
+    """注册错误回调"""
     _error_callbacks.append(callback)
 
 
 def on_framework_log(callback):
-    """注册框架日志回调: callback(log_data_dict)
-
-    log_data 包含: timestamp, content, level
-    """
+    """注册框架日志回调"""
     _framework_callbacks.append(callback)

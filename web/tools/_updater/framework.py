@@ -1,210 +1,21 @@
-"""框架更新 — 版本检查/下载/备份/覆盖 + 镜像测速"""
+"""框架更新 — FrameworkUpdater 更新流程类"""
 
 import os
 import json
-import time
 import shutil
 import zipfile
 import fnmatch
-import logging
-import asyncio
 from pathlib import Path
 from datetime import datetime
 
 import aiohttp as _aiohttp
 
-log = logging.getLogger('ElainaBot.web.updater')
-
-GITHUB_REPO = "ElainaCore/ElainaBot_v2"
-GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}"
-GITHUB_DOWNLOAD_URL = f"https://github.com/{GITHUB_REPO}/archive/main.zip"
-GITHUB_SHA_URL = f"https://codeload.github.com/{GITHUB_REPO}/zip/{{version}}"
-
-# GitHub API 代理 (能代理 api.github.com 请求)
-GITHUB_API_MIRRORS = [
-    f'https://api.github.com/repos/{GITHUB_REPO}',           # 直连
-    f'https://ghproxy.cc/https://api.github.com/repos/{GITHUB_REPO}',
-    f'https://gh-proxy.com/https://api.github.com/repos/{GITHUB_REPO}',
-    f'https://ghproxy.net/https://api.github.com/repos/{GITHUB_REPO}',
-    f'https://mirror.ghproxy.com/https://api.github.com/repos/{GITHUB_REPO}',
-    f'https://gh.api.99988866.xyz/https://api.github.com/repos/{GITHUB_REPO}',
-]
-
-
-GITHUB_FILE_MIRRORS = [
-    'https://github.chenc.dev/',
-    'https://ghproxy.cfd/',
-    'https://github.tbedu.top/',
-    'https://ghproxy.cc/',
-    'https://gh.monlor.com/',
-    'https://cdn.akaere.online/',
-    'https://gh.idayer.com/',
-    'https://gh.llkk.cc/',
-    'https://ghpxy.hwinzniej.top/',
-    'https://github-proxy.memory-echoes.cn/',
-    'https://git.yylx.win/',
-    'https://gitproxy.mrhjx.cn/',
-    'https://gh.fhjhy.top/',
-    'https://gp.zkitefly.eu.org/',
-    'https://gh-proxy.com/',
-    'https://ghfile.geekertao.top/',
-    'https://j.1lin.dpdns.org/',
-    'https://ghproxy.imciel.com/',
-    'https://github-proxy.teach-english.tech/',
-    'https://gh.927223.xyz/',
-    'https://github.ednovas.xyz/',
-    'https://ghf.xn--eqrr82bzpe.top/',
-    'https://gh.dpik.top/',
-    'https://gh.jasonzeng.dev/',
-    'https://gh.xxooo.cf/',
-    'https://gh.bugdey.us.kg/',
-    'https://ghm.078465.xyz/',
-    'https://j.1win.ggff.net/',
-    'https://tvv.tw/',
-    'https://gitproxy.127731.xyz/',
-    'https://gh.inkchills.cn/',
-    'https://ghproxy.cxkpro.top/',
-    'https://gh.sixyin.com/',
-    'https://github.geekery.cn/',
-    'https://git.669966.xyz/',
-    'https://gh.5050net.cn/',
-    'https://gh.felicity.ac.cn/',
-    'https://github.dpik.top/',
-    'https://ghp.keleyaa.com/',
-    'https://gh.wsmdn.dpdns.org/',
-    'https://ghproxy.monkeyray.net/',
-    'https://fastgit.cc/',
-    'https://gh.catmak.name/',
-    'https://gh.noki.icu/',
-]
-
-# ==================== 镜像缓存  ====================
-
-_mirror_testing = None  # asyncio.Task (防重复测速)
-
-
-def _mirror_cache_path():
-    return os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'data', 'mirror_cache.json')
-
-
-def _save_mirror_cache(mirrors):
-    try:
-        path = _mirror_cache_path()
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, 'w', encoding='utf-8') as f:
-            json.dump({'mirrors': mirrors}, f)
-    except Exception:
-        pass
-
-
-def _load_mirror_cache():
-    """读取磁盘缓存 (永久有效, 全失败时由调用方重新测速)"""
-    try:
-        path = _mirror_cache_path()
-        if not os.path.isfile(path):
-            return []
-        with open(path, 'r', encoding='utf-8') as f:
-            return json.load(f).get('mirrors', [])
-    except Exception:
-        return []
-
-
-def _build_mirror_url(original_url, mirror):
-    """拼接镜像 URL"""
-    if not mirror:
-        return original_url
-    return mirror.rstrip('/') + '/' + original_url
-
-
-async def _test_one_mirror(mirror, timeout=3):
-    """HEAD 请求测试镜像延迟, 2xx/3xx 均视为成功"""
-    test_url = _build_mirror_url('https://github.com/lengxi-root/napcat-plugin-lengxi/releases/latest', mirror)
-    start = time.time()
-    try:
-        async with _aiohttp.ClientSession() as session:
-            async with session.head(test_url,
-                                    headers={'User-Agent': 'ElainaBot-Mirror-Test'},
-                                    timeout=_aiohttp.ClientTimeout(total=timeout),
-                                    allow_redirects=False,
-                                    ssl=False) as resp:
-                latency = time.time() - start
-                # 2xx/3xx 成功, 405(不支持HEAD但镜像本身可用)也算成功
-                ok = (200 <= resp.status < 400) or resp.status == 405
-                return {'mirror': mirror, 'latency': round(latency, 3), 'success': ok, 'status': resp.status}
-    except Exception as e:
-        return {'mirror': mirror, 'latency': round(time.time() - start, 3), 'success': False, 'error': type(e).__name__}
-
-
-async def test_all_mirrors(timeout=3):
-    """并行测试所有镜像, 返回按延迟排序的结果列表"""
-    tasks = [_test_one_mirror(m, timeout) for m in GITHUB_FILE_MIRRORS]
-    # 加上 GitHub 直连
-    tasks.append(_test_one_mirror('', timeout))
-    results = await asyncio.gather(*tasks)
-    results = sorted(results, key=lambda r: (not r['success'], r['latency']))
-    return results
-
-
-async def get_fast_mirrors(force=False):
-    """获取按延迟排序的可用镜像列表 (磁盘缓存 30 分钟)"""
-    global _mirror_testing
-    if not force:
-        cached = _load_mirror_cache()
-        if cached:
-            return cached
-    if _mirror_testing and not _mirror_testing.done():
-        return await _mirror_testing
-    _mirror_testing = asyncio.ensure_future(test_all_mirrors())
-    results = await _mirror_testing
-    ok = [r for r in results if r['success']]
-    _mirror_testing = None
-    _save_mirror_cache(ok)
-    return ok
-
-
-def clear_mirror_cache():
-    try:
-        path = _mirror_cache_path()
-        if os.path.isfile(path):
-            os.remove(path)
-    except Exception:
-        pass
-
-
-# 默认跳过的路径
-DEFAULT_SKIP = ['config/', 'data/', 'plugins/', 'modules/', '.git/', '__pycache__/']
-# 白名单: 即使父目录在 skip 列表, 这些路径仍然正常更新
-DEFAULT_WHITELIST = ['plugins/system/']
-
-
-# ==================== 环境检测 ====================
-
-def detect_environment():
-    """检测运行环境, 返回 {docker, writable, warning}"""
-    info = {'docker': False, 'writable': True, 'warnings': []}
-    # Docker 检测
-    if os.path.exists('/.dockerenv'):
-        info['docker'] = True
-    else:
-        try:
-            with open('/proc/1/cgroup', 'r') as f:
-                if 'docker' in f.read() or 'containerd' in f.read():
-                    info['docker'] = True
-        except Exception:
-            pass
-    # 可写性检测
-    try:
-        test_file = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
-            os.path.abspath(__file__)))), '.write_test')
-        with open(test_file, 'w') as f:
-            f.write('test')
-        os.remove(test_file)
-    except Exception:
-        info['writable'] = False
-        info['warnings'].append('项目目录不可写, 更新将失败')
-    if info['docker']:
-        info['warnings'].append('检测到 Docker 环境, 请确保项目目录已挂载 volume 以持久化更新')
-    return info
+from web.tools._updater.shared import (
+    GITHUB_API_MIRRORS, GITHUB_DOWNLOAD_URL,
+    _build_mirror_url, _load_mirror_cache,
+    DEFAULT_SKIP, DEFAULT_WHITELIST, log,
+)
+from web.tools._updater.mirror import detect_environment
 
 
 class FrameworkUpdater:

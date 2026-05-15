@@ -42,13 +42,7 @@ _BOT_DEFAULTS = {
 
 
 class ConfigManager:
-    """YAML 配置管理器 (单例)
-
-    - 惰性热加载: 每次 get() 自动检测文件 mtime
-    - 变更回调: on_change(filename, callback)
-    - 缺失补全: ensure(filename, defaults)
-    - 线程安全
-    """
+    """YAML 配置管理器 (单例, 惰性热加载, 线程安全)"""
 
     _instance = None
     _lock = threading.Lock()
@@ -181,11 +175,10 @@ class ConfigManager:
         with self._rw_lock:
             self._cache[name] = data
             self._mtimes[name] = mtime
-
-        # bot 配置变更时清除缓存
-        if name == 'bot':
-            self._bot_cfg_map.clear()
-            self._bot_setting_cache.clear()
+            # bot 配置变更时清除缓存
+            if name == 'bot':
+                self._bot_cfg_map.clear()
+                self._bot_setting_cache.clear()
 
         if not is_first:
             logger.info(f"配置热加载: {name}")

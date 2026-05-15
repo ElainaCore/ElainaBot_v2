@@ -1,13 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""事件数据容器 + 类型常量
-
-Event 包含事件数据 + 发送代理方法, 解析逻辑在 parsers.py。
-
-用法:
-    event = Event.from_webhook(headers, body)
-    event = Event.from_websocket(appid, payload)
-"""
+"""事件数据容器 + 类型常量"""
 
 import json
 from functools import partial

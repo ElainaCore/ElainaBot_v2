@@ -132,7 +132,7 @@ class BotManager(EventHandlerMixin):
         instance = BotInstance(bot_cfg, self._log_base)
         try:
             await instance.start(self._on_event)
-            instance.sender._media_dir = self._media_dir
+            instance.sender.bind_instance(media_dir=self._media_dir)
             self._bots[appid] = instance
             if instance.ws_client:
                 asyncio.create_task(instance.ws_client.connect())

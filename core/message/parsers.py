@@ -1,9 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""事件解析器 - 每种事件类型的专属解析函数
-
-由 event.py 的 Event._parse_payload 调用, 不直接对外使用。
-"""
+"""事件解析器 — 每种事件类型的专属解析函数"""
 
 import re
 import html

@@ -16,7 +16,7 @@ _updater = None
 def set_context(base_dir: str):
     global _base_dir, _updater
     _base_dir = base_dir
-    from web.tools.updater import FrameworkUpdater
+    from web.tools._updater.framework import FrameworkUpdater
     _updater = FrameworkUpdater(base_dir)
 
 
@@ -29,7 +29,7 @@ def _get_updater():
 # ==================== 环境检测 ====================
 
 async def handle_detect_environment(request: web.Request):
-    from web.tools.updater import detect_environment
+    from web.tools._updater.mirror import detect_environment
     return web.json_response({'success': True, 'data': detect_environment()})
 
 
@@ -134,7 +134,7 @@ async def handle_start_update(request: web.Request):
 async def handle_get_mirrors(request: web.Request):
     """获取镜像列表 (含缓存的测速结果)"""
     try:
-        from web.tools.updater import GITHUB_FILE_MIRRORS, _load_mirror_cache
+        from web.tools._updater.shared import GITHUB_FILE_MIRRORS, _load_mirror_cache
         updater = _get_updater()
         cached = _load_mirror_cache()
         return web.json_response({'success': True, 'data': {
@@ -149,7 +149,8 @@ async def handle_get_mirrors(request: web.Request):
 async def handle_test_mirrors(request: web.Request):
     """SSE 流式测速所有镜像, 每完成一个立即推送"""
     import json as _json
-    from web.tools.updater import _test_one_mirror, GITHUB_FILE_MIRRORS, clear_mirror_cache
+    from web.tools._updater.mirror import _test_one_mirror, clear_mirror_cache
+    from web.tools._updater.shared import GITHUB_FILE_MIRRORS
 
     clear_mirror_cache()
     resp = web.StreamResponse()
@@ -174,7 +175,7 @@ async def handle_test_mirrors(request: web.Request):
                 return resp
 
     # 保存测速结果到磁盘
-    from web.tools.updater import _save_mirror_cache
+    from web.tools._updater.shared import _save_mirror_cache
     _save_mirror_cache(sorted(
         [r for r in all_results if r['success']],
         key=lambda r: r['latency']

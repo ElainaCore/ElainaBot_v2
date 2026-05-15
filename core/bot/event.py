@@ -20,7 +20,8 @@ log = get_logger(FRAMEWORK, "事件处理")
 _USER_CACHE_TTL = 3600
 _DEDUP_TTL = 300
 _GROUP_CACHE_MAX = 10000
-_NEW_USER_ENTRY = lambda uid, today: {'userid': uid, 'value': 1, 'last_active': today}
+def _new_user_entry(uid, today):
+    return {'userid': uid, 'value': 1, 'last_active': today}
 
 
 class _EventDedup:
@@ -141,7 +142,6 @@ class EventHandlerMixin:
         _dt = time.time() - _t0
         if _dt > 1:
             msg = (f"[性能] 事件处理耗时 {_dt*1000:.0f}ms "
-                   f"(分发={_dt*1000:.0f}ms) "
                    f"content={event.content[:50] if event.content else ''}")
             log.warning(msg)
             self._push_web_log('framework', {
@@ -276,7 +276,7 @@ class EventHandlerMixin:
         entry = user_map.get(uid)
         if entry and entry.get('last_active') == today:
             return False
-        user_map[uid] = entry or _NEW_USER_ENTRY(uid, today)
+        user_map[uid] = entry or _new_user_entry(uid, today)
         if entry:
             entry['last_active'] = today
         return True
@@ -322,7 +322,7 @@ class EventHandlerMixin:
                     "UPDATE groups_users SET users=? WHERE group_id=?",
                     (self._users_json(user_map), group_id))
             else:
-                user_map = {uid: _NEW_USER_ENTRY(uid, today)}
+                user_map = {uid: _new_user_entry(uid, today)}
                 bot.log_service.db_queue(
                     "INSERT INTO groups_users (group_id, users) VALUES (?, ?)",
                     (group_id, self._users_json(user_map)))

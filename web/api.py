@@ -8,18 +8,25 @@ from aiohttp import web
 
 import web.auth as auth
 import web.ws as panel_ws
-import web.tools.robot_info as robot_info
-import web.tools.log_query as log_query
-import web.tools.plugin_manager as plugin_manager
-import web.tools.config_handler as config_handler
-import web.tools.message_handler as message_handler
-import web.tools.statistics_handler as statistics_handler
-import web.tools.update_handler as update_handler
-import web.tools.bot_restart as bot_restart
-import web.tools.system_info as system_info
-import web.tools.plugin_market_handler as plugin_market_handler
-import web.tools.openapi_handler as openapi_handler
-import web.tools.database_browser as database_browser
+import web.tools._bot.info as robot_info
+import web.tools._bot.restart as bot_restart
+import web.tools._stats.log as log_query
+import web.tools._stats.system as system_info
+import web.tools._stats.statistics as statistics_handler
+import web.tools._config.handler as config_handler
+import web.tools._database.browser as database_browser
+import web.tools._message.handlers as message_handler
+import web.tools._openapi.handler as openapi_handler
+import web.tools._updater.handlers as update_handler
+import web.tools._plugin_mgr.shared as _plugin_mgr_shared
+import web.tools._plugin_mgr.scan as _plugin_mgr_scan
+import web.tools._plugin_mgr.files as _plugin_mgr_files
+import web.tools._plugin_mgr.module as _plugin_mgr_module
+import web.tools._plugin_mgr.config as _plugin_mgr_config
+import web.tools._market.market as _market_market
+import web.tools._market.local as _market_local
+import web.tools._market.install as _market_install
+import web.tools._market.shared as _market_shared
 
 log = logging.getLogger('ElainaBot.web.api')
 
@@ -54,28 +61,28 @@ def get_routes() -> list:
         web.get('/api/logs/{log_type}', _(log_query.handle_get_logs)),
 
         # ── 插件文件管理 ──
-        web.get('/api/plugins/scan', _(plugin_manager.handle_scan_plugins)),
-        web.get('/api/plugins/scan-dirs', _(plugin_manager.handle_scan_plugin_dirs)),
-        web.post('/api/plugins/toggle', _(plugin_manager.handle_toggle_plugin)),
-        web.post('/api/plugins/read', _(plugin_manager.handle_read_plugin)),
-        web.post('/api/plugins/save', _(plugin_manager.handle_save_plugin)),
-        web.post('/api/plugins/create', _(plugin_manager.handle_create_plugin)),
-        web.post('/api/plugins/create-folder', _(plugin_manager.handle_create_folder)),
-        web.get('/api/plugins/folders', _(plugin_manager.handle_get_folders)),
-        web.post('/api/plugins/upload', _(plugin_manager.handle_upload_plugin)),
-        web.post('/api/plugins/reload', _(plugin_manager.handle_reload_plugin)),
-        web.post('/api/plugins/config-files', _(plugin_manager.handle_plugin_config_files)),
-        web.get('/api/plugins/bots', _(plugin_manager.handle_get_plugin_bots)),
-        web.post('/api/plugins/bots', _(plugin_manager.handle_set_plugin_bots)),
+        web.get('/api/plugins/scan', _(_plugin_mgr_scan.handle_scan_plugins)),
+        web.get('/api/plugins/scan-dirs', _(_plugin_mgr_scan.handle_scan_plugin_dirs)),
+        web.post('/api/plugins/toggle', _(_plugin_mgr_files.handle_toggle_plugin)),
+        web.post('/api/plugins/read', _(_plugin_mgr_files.handle_read_plugin)),
+        web.post('/api/plugins/save', _(_plugin_mgr_files.handle_save_plugin)),
+        web.post('/api/plugins/create', _(_plugin_mgr_files.handle_create_plugin)),
+        web.post('/api/plugins/create-folder', _(_plugin_mgr_files.handle_create_folder)),
+        web.get('/api/plugins/folders', _(_plugin_mgr_files.handle_get_folders)),
+        web.post('/api/plugins/upload', _(_plugin_mgr_files.handle_upload_plugin)),
+        web.post('/api/plugins/reload', _(_plugin_mgr_files.handle_reload_plugin)),
+        web.post('/api/plugins/config-files', _(_plugin_mgr_config.handle_plugin_config_files)),
+        web.get('/api/plugins/bots', _(_plugin_mgr_config.handle_get_plugin_bots)),
+        web.post('/api/plugins/bots', _(_plugin_mgr_config.handle_set_plugin_bots)),
 
         # ── 模块管理 ──
-        web.get('/api/modules/scan', _(plugin_manager.handle_scan_modules)),
-        web.post('/api/modules/toggle', _(plugin_manager.handle_module_toggle)),
-        web.post('/api/modules/upload', _(plugin_manager.handle_module_upload)),
+        web.get('/api/modules/scan', _(_plugin_mgr_module.handle_scan_modules)),
+        web.post('/api/modules/toggle', _(_plugin_mgr_module.handle_module_toggle)),
+        web.post('/api/modules/upload', _(_plugin_mgr_module.handle_module_upload)),
 
         # ── 通用配置读写 (模块 + 插件) ──
-        web.post('/api/config-file/read', _(plugin_manager.handle_read_config)),
-        web.post('/api/config-file/save', _(plugin_manager.handle_save_config)),
+        web.post('/api/config-file/read', _(_plugin_mgr_config.handle_read_config)),
+        web.post('/api/config-file/save', _(_plugin_mgr_config.handle_save_config)),
 
         # ── 配置 ──
         web.get('/api/config', _(config_handler.handle_get_config)),
@@ -111,19 +118,19 @@ def get_routes() -> list:
         web.post('/api/bot/restart', _(bot_restart.handle_restart)),
 
         # ── 插件市场 (GitHub 插件库) ──
-        web.get('/api/market/list', _(plugin_market_handler.handle_market_list)),
-        web.get('/api/market/categories', _(plugin_market_handler.handle_market_categories)),
-        web.post('/api/market/detail', _(plugin_market_handler.handle_market_detail)),
-        web.post('/api/market/refresh', _(plugin_market_handler.handle_market_refresh)),
-        web.post('/api/market/preview', _(plugin_market_handler.handle_market_preview)),
-        web.post('/api/market/install', _(plugin_market_handler.handle_market_install)),
-        web.post('/api/market/uninstall', _(plugin_market_handler.handle_market_uninstall)),
-        web.get('/api/market/local', _(plugin_market_handler.handle_local_plugins)),
-        web.post('/api/market/local/read', _(plugin_market_handler.handle_local_plugin_read)),
-        web.post('/api/market/local/save', _(plugin_market_handler.handle_local_plugin_save)),
-        web.get('/api/market/mirror', _(plugin_market_handler.handle_market_get_mirror)),
-        web.post('/api/market/mirror', _(plugin_market_handler.handle_market_set_mirror)),
-        web.post('/api/market/mirror/test', _(plugin_market_handler.handle_market_test_mirror)),
+        web.get('/api/market/list', _(_market_market.handle_market_list)),
+        web.get('/api/market/categories', _(_market_market.handle_market_categories)),
+        web.post('/api/market/detail', _(_market_market.handle_market_detail)),
+        web.post('/api/market/refresh', _(_market_market.handle_market_refresh)),
+        web.post('/api/market/preview', _(_market_install.handle_market_preview)),
+        web.post('/api/market/install', _(_market_install.handle_market_install)),
+        web.post('/api/market/uninstall', _(_market_install.handle_market_uninstall)),
+        web.get('/api/market/local', _(_market_local.handle_local_plugins)),
+        web.post('/api/market/local/read', _(_market_local.handle_local_plugin_read)),
+        web.post('/api/market/local/save', _(_market_local.handle_local_plugin_save)),
+        web.get('/api/market/mirror', _(_market_market.handle_market_get_mirror)),
+        web.post('/api/market/mirror', _(_market_market.handle_market_set_mirror)),
+        web.post('/api/market/mirror/test', _(_market_market.handle_market_test_mirror)),
 
         # ── OpenAPI ──
         web.post('/api/openapi/start-login', _(openapi_handler.handle_start_login)),
@@ -167,15 +174,16 @@ def set_context(bot_manager, base_dir: str):
     _base_dir = base_dir
 
     robot_info.set_context(bot_manager)
-    plugin_manager.set_context(base_dir, bot_manager)
+    _plugin_mgr_shared.set_context(base_dir, bot_manager)
     config_handler.set_context(base_dir)
-    message_handler.set_context(base_dir, bot_manager)
+    from web.tools._message.shared import set_context as _msg_set_ctx
+    _msg_set_ctx(base_dir, bot_manager)
     statistics_handler.set_context(bot_manager)
     update_handler.set_context(base_dir)
     bot_restart.set_context(base_dir)
     system_info.set_context(bot_manager)
     openapi_handler.set_context(base_dir)
-    plugin_market_handler.set_context(base_dir)
+    _market_shared.set_context(base_dir)
     database_browser.set_context(bot_manager, base_dir)
 
 

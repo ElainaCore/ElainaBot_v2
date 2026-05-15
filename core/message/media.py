@@ -1,9 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""媒体上传 / 图片尺寸
-
-异步函数, 需要 sender 实例作为参数来访问 HTTP 方法和 aiohttp 客户端。
-"""
+"""媒体上传 / 图片尺寸检测"""
 
 import os
 import base64
@@ -22,10 +19,7 @@ CHUNK_THRESHOLD = 5 * 1024 * 1024  # 5MB
 # ==================== 上传 ====================
 
 async def upload_media_bytes(sender, file_bytes, file_type, endpoint, *, file_name=None):
-    """base64 上传媒体, 返回 file_info
-
-    大文件 (>5MB) 自动走分片上传。
-    """
+    """上传媒体 bytes, 返回 file_info (>5MB 自动分片)"""
     if not isinstance(file_bytes, bytes):
         return None
     # 大文件走分片
