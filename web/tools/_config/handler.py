@@ -18,52 +18,6 @@ def _config_dir():
     return os.path.join(_base_dir, 'config')
 
 
-def _default_config_dir():
-    return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'default_config')
-
-
-def _deep_merge(base, override):
-    """递归合并: base 提供默认值, override 覆盖已有值"""
-    if not isinstance(base, dict) or not isinstance(override, dict):
-        return override
-    result = dict(base)
-    for k, v in override.items():
-        if k in result and isinstance(result[k], dict) and isinstance(v, dict):
-            result[k] = _deep_merge(result[k], v)
-        else:
-            result[k] = v
-    return result
-
-
-def _merge_bot_defaults(user_yaml_text):
-    """将默认配置合并到用户配置中 (补全缺失字段), 返回合并后的 YAML 文本"""
-    default_path = os.path.join(_default_config_dir(), 'bot.yaml')
-    if not os.path.isfile(default_path):
-        return user_yaml_text
-    try:
-        user_data = yaml.safe_load(user_yaml_text) or {}
-        with open(default_path, 'r', encoding='utf-8') as f:
-            default_data = yaml.safe_load(f.read()) or {}
-    except Exception:
-        return user_yaml_text
-
-    # 合并每个 bot 的字段
-    default_bots = default_data.get('bots', [])
-    default_bot = default_bots[0] if default_bots else {}
-    user_bots = user_data.get('bots', [])
-    if not user_bots or not default_bot:
-        return user_yaml_text
-
-    merged_bots = []
-    for bot in user_bots:
-        if isinstance(bot, dict):
-            merged_bots.append(_deep_merge(default_bot, bot))
-        else:
-            merged_bots.append(bot)
-    user_data['bots'] = merged_bots
-    return yaml.dump(user_data, allow_unicode=True, default_flow_style=False, sort_keys=False)
-
-
 # ===== YAML 序列化工具 =====
 
 def _yaml_scalar(v):
@@ -234,11 +188,7 @@ async def handle_get_config(request: web.Request):
         path = os.path.join(cdir, f'{name}.yaml')
         if os.path.exists(path):
             with open(path, 'r', encoding='utf-8') as f:
-                content = f.read()
-            # bot.yaml: 合并默认配置补全缺失字段
-            if name == 'bot':
-                content = _merge_bot_defaults(content)
-            result[name] = content
+                result[name] = f.read()
         else:
             result[name] = ''
     return web.json_response({'success': True, **result})
