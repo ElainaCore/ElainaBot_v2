@@ -32,17 +32,22 @@ class WakeupMixin:
         return await loop.run_in_executor(None, self._wakeup_update_sync, openid)
 
     def _wakeup_update_sync(self, openid):
-        today = datetime.now().strftime('%Y-%m-%d')
+        now = datetime.now()
+        today = now.strftime('%Y-%m-%d')
+        now_str = now.strftime('%Y-%m-%d %H:%M:%S')
         conn, lock = self._wakeup_locked()
         with lock:
             row = conn.execute(
                 "SELECT last_msg_date FROM log WHERE openid=?", (openid,)).fetchone()
             if row and row[0] == today:
-                return  # 今天已更新过
+                conn.execute(
+                    "UPDATE log SET updated_at=? WHERE openid=?", (now_str, openid))
+                conn.commit()
+                return
             conn.execute(
-                "INSERT INTO log (openid, last_msg_date, wakeup_stage) VALUES (?,?,0) "
-                "ON CONFLICT(openid) DO UPDATE SET last_msg_date=?, wakeup_stage=0",
-                (openid, today, today))
+                "INSERT INTO log (openid, last_msg_date, wakeup_stage, updated_at) VALUES (?,?,0,?) "
+                "ON CONFLICT(openid) DO UPDATE SET last_msg_date=?, wakeup_stage=0, updated_at=?",
+                (openid, today, now_str, today, now_str))
             conn.commit()
 
     async def wakeup_can_send(self, openid):

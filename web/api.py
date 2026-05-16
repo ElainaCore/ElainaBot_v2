@@ -293,11 +293,16 @@ def _tag_direction(r):
         r['is_bot'] = True
 
 
+def _tag_lifecycle_extra(r):
+    if r.get('extra'):
+        r['raw_message'] = r['extra']
+
+
 def _gather_recent_logs_sync(appid_filter):
     """同步聚合所有日志查询 (在 executor 中执行, 避免阻塞事件循环)"""
     from core.storage.log import SharedLogService
     messages = _query_bot_logs('message', appid_filter, _tag_direction)
-    lifecycle = _query_bot_logs('lifecycle', appid_filter)
+    lifecycle = _query_bot_logs('lifecycle', appid_filter, _tag_lifecycle_extra)
     shared = SharedLogService._instance
     if shared:
         framework = shared.query('framework', _LOG_SQL)

@@ -14,7 +14,7 @@ from core.message.event import (
     GROUP_MESSAGE_CREATE,
     MESSAGE_TYPES, LIFECYCLE_TYPES, INTERACTION_CREATE,
     MESSAGE_AUDIT_PASS, MESSAGE_AUDIT_REJECT,
-    REACTION_TYPES,
+    SILENT_TYPES,
 )
 from core.message.parsers import swap_ids
 
@@ -106,22 +106,25 @@ class EventHandlerMixin:
             await self._handle_audit(bot, event, et)
             return
 
-        # 表态事件 → 记录日志 + 推送web面板事件日志，不分发插件
-        if et in REACTION_TYPES:
+        # 静默事件（表态/频道更新）→ 记录日志 + 推送web面板事件日志，不分发插件
+        if et in SILENT_TYPES:
             raw_json = json.dumps(event.raw, ensure_ascii=False)
-            bot.log_service.add_sync('event', {
-                'type': et, 'appid': appid,
-                'raw_message': raw_json,
+            bot.log_service.add_sync('lifecycle', {
+                'type': et,
+                'user_id': event.user_id or '',
+                'group_id': event.group_id or '',
+                'extra': raw_json,
             })
             self._push_web_log('event', {
                 'appid': appid, 'event_type': et,
                 'content': raw_json,
+                'raw_message': raw_json,
                 'bot_name': bot.name,
             })
             return
 
         # 未预设事件 → 记录到错误日志
-        if et not in MESSAGE_TYPES and et not in LIFECYCLE_TYPES and et != INTERACTION_CREATE:
+        if et not in MESSAGE_TYPES and et not in LIFECYCLE_TYPES and et != INTERACTION_CREATE and et not in SILENT_TYPES:
             raw_json = json.dumps(event.raw, ensure_ascii=False)
             report_error(FRAMEWORK, "未知事件", f"收到未预设事件类型: {et}",
                          context={'appid': appid, 'event_type': et, 'raw': raw_json})
@@ -238,22 +241,30 @@ class EventHandlerMixin:
 
     # ==================== 生命周期 ====================
 
-    def _log_lifecycle(self, bot, log_type, extra=None):
+    def _log_lifecycle(self, bot, log_type, extra=None, raw_event=None):
         entry = {'type': log_type, 'user_id': '', 'group_id': ''}
         if extra:
             entry.update(extra)
+        if raw_event:
+            raw_json = json.dumps(raw_event, ensure_ascii=False)
+            entry['extra'] = raw_json
         asyncio.create_task(bot.log_service.add('lifecycle', entry))
-        self._push_web_log('lifecycle', {'appid': bot.appid, 'bot_name': bot.name, **entry})
+        web_entry = {'appid': bot.appid, 'bot_name': bot.name, **entry}
+        if raw_event:
+            web_entry['raw_message'] = entry['extra']
+        self._push_web_log('lifecycle', web_entry)
 
     async def _handle_group_add(self, bot, event):
         self._log_lifecycle(bot, 'group_add', {
-            'group_id': event.group_id or '', 'user_id': event.user_id or ''})
+            'group_id': event.group_id or '', 'user_id': event.user_id or ''},
+            raw_event=event.raw)
         await self._lifecycle_reply(bot, event, 'welcome.group_welcome', 'welcome',
                                     {'group_id': event.group_id or ''})
 
     async def _handle_group_del(self, bot, event):
         self._log_lifecycle(bot, 'group_del', {
-            'group_id': event.group_id or '', 'user_id': event.user_id or ''})
+            'group_id': event.group_id or '', 'user_id': event.user_id or ''},
+            raw_event=event.raw)
 
     async def _handle_friend_add(self, bot, event):
         uid = event.user_id or ''
@@ -266,12 +277,13 @@ class EventHandlerMixin:
                 tasks.append(bot.log_service.share_record(sharer_id, uid, scene))
             await asyncio.gather(*tasks, return_exceptions=True)
         self._log_lifecycle(bot, 'friend_add', {
-            'user_id': uid, 'sharer_id': sharer_id, 'scene': scene})
+            'user_id': uid}, raw_event=event.raw)
         await self._lifecycle_reply(bot, event, 'welcome.friend_add_message', 'friend_add',
                                     {'user_id': uid})
 
     async def _handle_friend_del(self, bot, event):
-        self._log_lifecycle(bot, 'friend_del', {'user_id': event.user_id or ''})
+        self._log_lifecycle(bot, 'friend_del', {'user_id': event.user_id or ''},
+                            raw_event=event.raw)
 
     async def _lifecycle_reply(self, bot, event, cfg_key, template, tvars):
         """生命周期欢迎消息 (复用)"""
