@@ -51,37 +51,35 @@ async def handle_get_chats(request: web.Request):
     appid_filter = body.get('appid', '')
     page = max(int(body.get('page', 1)), 1)
     page_size = min(int(body.get('page_size', 50)), 100)
+    days = max(1, min(3, int(body.get('days', 1))))
 
     global _chat_list_lock
     if _chat_list_lock is None:
         _chat_list_lock = asyncio.Lock()
 
-    cache_key = (chat_type, appid_filter)
+    cache_key = (chat_type, appid_filter, days)
     now = time.time()
     cached = _chat_list_cache.get(cache_key)
     if cached and now - cached[0] < _CHAT_LIST_TTL:
         chats = cached[1]
     else:
         async with _chat_list_lock:
-            # 二次检查: 等锁期间可能已被另一个请求刷新
             cached = _chat_list_cache.get(cache_key)
             if cached and time.time() - cached[0] < _CHAT_LIST_TTL:
                 chats = cached[1]
             else:
                 loop = asyncio.get_event_loop()
                 query_type = 'group' if chat_type == 'full_access' else chat_type
-                chats = await loop.run_in_executor(None, _aggregate_chats_sync, query_type, appid_filter, 1)
+                chats = await loop.run_in_executor(None, _aggregate_chats_sync, query_type, appid_filter, days)
                 if chat_type == 'user':
                     ids = [c['chat_id'] for c in chats]
                     nicks = await loop.run_in_executor(None, _batch_get_nicknames, ids)
                     for c in chats:
                         c['nickname'] = nicks.get(c['chat_id'], f"用户{c['chat_id'][-6:]}")
-                        c['avatar'] = (c['nickname'] or '?')[0].upper()
                 else:
                     fa_ids = _get_full_access_group_ids()
                     for c in chats:
                         c['nickname'] = f"群{c['chat_id'][-6:]}"
-                        c['avatar'] = c['chat_id'][0].upper() if c['chat_id'] else '?'
                         c['is_full_access'] = c['chat_id'] in fa_ids
                     if chat_type == 'full_access':
                         chats = [c for c in chats if c['is_full_access']]
@@ -152,6 +150,8 @@ async def handle_get_chat_history(request: web.Request):
         plugin_name = r.get('plugin_name', '')
         source = 'web_panel' if plugin_name == 'WebPanel' else (
             'onebot' if msg_type in ('onebot_send', 'onebot_recv') else '')
+        raw = r.get('raw_message', '')
+        recalled = raw == '[recalled]'
         messages.append({
             'id': r.get('id', len(messages)),
             'message_id': r.get('message_id', ''),
@@ -163,6 +163,8 @@ async def handle_get_chat_history(request: web.Request):
             'timestamp': r.get('timestamp', ''),
             'is_self': is_bot,
             'source': source,
+            'raw_message': raw if not recalled else '',
+            'recalled': recalled,
         })
 
     # 取最近一条非 bot 消息的 message_id 用于发送回复 (仅初始加载)
@@ -263,7 +265,7 @@ async def handle_send_message(request: web.Request):
             need_log = False
             api_msg_type = 2 if msg_type == 'markdown' else 0
             send_fn = sender.send_to_group if is_group else sender.send_to_user
-            ok, data, _ = await send_fn(chat_id, content, msg_id=msg_id, msg_type=api_msg_type)
+            ok, data, _ = await send_fn(chat_id, content, msg_id=msg_id, msg_type=api_msg_type, skip_suffix=True)
 
         if ok:
             if need_log:
@@ -282,7 +284,7 @@ async def handle_send_message(request: web.Request):
 
 
 async def handle_recall_message(request: web.Request):
-    """撤回消息 — 仅 2 分钟内由 web 面板发出 (is_self) 的消息可撤回
+    """撤回消息
 
     参数: chat_type, chat_id, appid, message_id
     """
@@ -304,7 +306,8 @@ async def handle_recall_message(request: web.Request):
     if not bot:
         return web.json_response({'success': False, 'message': '无可用机器人'}, status=400)
 
-    endpoint = f"/v2/{'groups' if chat_type == 'group' else 'users'}/{chat_id}/messages/{message_id}"
+    from urllib.parse import quote
+    endpoint = f"/v2/{'groups' if chat_type == 'group' else 'users'}/{chat_id}/messages/{quote(message_id, safe='')}"
 
     try:
         ok, data = await bot.sender.delete(endpoint)
@@ -312,6 +315,24 @@ async def handle_recall_message(request: web.Request):
         return web.json_response({'success': False, 'message': str(e)}, status=500)
 
     if ok:
+        # 标记消息为已撤回 (raw_message 设为 [recalled])
+        try:
+            _mark_recalled(bot, message_id)
+        except Exception:
+            pass
         return web.json_response({'success': True})
     err = data.get('message', '撤回失败') if isinstance(data, dict) else str(data)
     return web.json_response({'success': False, 'message': err})
+
+
+def _mark_recalled(bot, message_id):
+    """在数据库中标记消息为已撤回"""
+    from datetime import date as _d, timedelta
+    today = _d.today()
+    dates = [(today - timedelta(days=i)).strftime('%Y-%m-%d') for i in range(3)]
+    sql = "UPDATE log SET raw_message='[recalled]' WHERE message_id=?"
+    for d in dates:
+        try:
+            bot.log_service.query('message', sql, (message_id,), date=d)
+        except Exception:
+            pass

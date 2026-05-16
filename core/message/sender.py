@@ -149,19 +149,20 @@ class MessageSender(_HttpMixin, _MediaSendMixin):
     # ==================== 主动推送 ====================
 
     async def send_to_group(self, group_id, content=None, *, msg_id=None, event_id=None,
-                            buttons=None, media=None, msg_type=None, **kwargs):
+                            buttons=None, media=None, msg_type=None, skip_suffix=False, **kwargs):
         return await self._send_push(f"/v2/groups/{group_id}/messages",
                                      content, buttons, media, msg_type,
-                                     msg_id=msg_id, event_id=event_id, **kwargs)
+                                     msg_id=msg_id, event_id=event_id, skip_suffix=skip_suffix, **kwargs)
 
     async def send_to_user(self, user_id, content=None, *, msg_id=None, event_id=None,
-                           buttons=None, media=None, msg_type=None, **kwargs):
+                           buttons=None, media=None, msg_type=None, skip_suffix=False, **kwargs):
         return await self._send_push(f"/v2/users/{user_id}/messages",
                                      content, buttons, media, msg_type,
-                                     msg_id=msg_id, event_id=event_id, **kwargs)
+                                     msg_id=msg_id, event_id=event_id, skip_suffix=skip_suffix, **kwargs)
 
     async def _send_push(self, endpoint, content, buttons, media, msg_type, **kwargs):
-        payload = self._build_core_payload(content, buttons, media, msg_type, **kwargs)
+        skip_suffix = kwargs.pop('skip_suffix', False)
+        payload = self._build_core_payload(content, buttons, media, msg_type, skip_suffix=skip_suffix, **kwargs)
         ok, data = await self.post_json(endpoint, payload)
         if ok:
             self._log_push(endpoint, payload, content, data)
@@ -352,6 +353,7 @@ class MessageSender(_HttpMixin, _MediaSendMixin):
 
     def _build_core_payload(self, content, buttons, media, msg_type, **kwargs):
         """统一载荷构建 (回复/推送共用)"""
+        skip_suffix = kwargs.pop('skip_suffix', False)
         use_md = cfg.get_bot_setting(self._appid, 'message.use_markdown', True)
         payload = {'msg_seq': _msg_seq()}
         for k in ('msg_id', 'event_id'):
@@ -367,7 +369,7 @@ class MessageSender(_HttpMixin, _MediaSendMixin):
         elif use_md and msg_type != MSG_TYPE_TEXT:
             payload['msg_type'] = MSG_TYPE_MARKDOWN
             md_content = str(content) if content is not None else ''
-            suffix = cfg.get_bot_setting(self._appid, 'message.markdown_suffix', '')
+            suffix = '' if skip_suffix else cfg.get_bot_setting(self._appid, 'message.markdown_suffix', '')
             payload['markdown'] = {'content': md_content + suffix if suffix else md_content}
         else:
             payload['msg_type'] = MSG_TYPE_TEXT
@@ -398,9 +400,10 @@ class MessageSender(_HttpMixin, _MediaSendMixin):
             code = data.get('code') if isinstance(data, dict) else None
             if code in _IGNORE_ERROR_CODES:
                 return False, None
+            raw_event = getattr(event, 'raw', None)
             report_error_raw(
                 FRAMEWORK, '消息发送',
-                content=getattr(event, 'content', '') or '',
+                content=json.dumps(raw_event, ensure_ascii=False, default=str) if raw_event else (getattr(event, 'content', '') or ''),
                 tb=json.dumps(data, ensure_ascii=False, default=str) if data else '',
                 context=json.dumps(payload, ensure_ascii=False, default=str),
                 appid=self._appid,

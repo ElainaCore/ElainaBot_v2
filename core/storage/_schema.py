@@ -155,6 +155,9 @@ _INDEXES = {
     'message': [
         "CREATE INDEX IF NOT EXISTS idx_msg_group_id ON log(group_id)",
         "CREATE INDEX IF NOT EXISTS idx_msg_user_id ON log(user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_msg_group_agg ON log(group_id, id, timestamp)",
+        "CREATE INDEX IF NOT EXISTS idx_msg_user_agg ON log(user_id, id, timestamp)",
+        "CREATE INDEX IF NOT EXISTS idx_msg_message_id ON log(message_id)",
     ],
     'lifecycle': [
         "CREATE INDEX IF NOT EXISTS idx_lc_user_id ON log(user_id)",

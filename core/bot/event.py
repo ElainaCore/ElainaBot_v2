@@ -13,6 +13,7 @@ from core.message.event import (
     GROUP_ADD_ROBOT, GROUP_DEL_ROBOT, FRIEND_ADD, FRIEND_DEL,
     GROUP_MESSAGE_CREATE,
     MESSAGE_TYPES, LIFECYCLE_TYPES, INTERACTION_CREATE,
+    MESSAGE_AUDIT_PASS, MESSAGE_AUDIT_REJECT,
 )
 from core.message.parsers import swap_ids
 
@@ -99,6 +100,11 @@ class EventHandlerMixin:
             await lc(self, bot, event)
             return
 
+        # 消息审核事件
+        if et in (MESSAGE_AUDIT_PASS, MESSAGE_AUDIT_REJECT):
+            await self._handle_audit(bot, event, et)
+            return
+
         # 未预设事件 → 记录到错误日志
         if et not in MESSAGE_TYPES and et not in LIFECYCLE_TYPES and et != INTERACTION_CREATE:
             raw_json = json.dumps(event.raw, ensure_ascii=False)
@@ -153,6 +159,39 @@ class EventHandlerMixin:
             log.warning(msg)
             self._push_web_log('framework', {
                 'appid': appid, 'source': '性能', 'content': msg,
+            })
+
+    # ==================== 消息审核 ====================
+
+    async def _handle_audit(self, bot, event, et):
+        """处理 MESSAGE_AUDIT_PASS / MESSAGE_AUDIT_REJECT"""
+        d = event.raw.get('d', {}) if isinstance(event.raw, dict) else {}
+        audit_id = d.get('audit_id', '')
+        real_msg_id = d.get('message_id', '')
+        appid = event.appid
+
+        if et == MESSAGE_AUDIT_PASS and audit_id and real_msg_id:
+            # 将数据库中 audit_id 替换为真实 message_id
+            from datetime import date as _d
+            dates = [(_d.today() - timedelta(days=i)).strftime('%Y-%m-%d') for i in range(3)]
+            sql = "UPDATE log SET message_id=? WHERE message_id=?"
+            for day in dates:
+                try:
+                    bot.log_service.query('message', sql, (real_msg_id, audit_id), date=day)
+                except Exception:
+                    pass
+            log.debug(f"[{appid}] 审核通过: {audit_id} -> {real_msg_id}")
+            # 推送到 Web 面板实时更新
+            self._push_web_log('audit', {
+                'appid': appid, 'audit_id': audit_id,
+                'message_id': real_msg_id, 'passed': True,
+            })
+
+        elif et == MESSAGE_AUDIT_REJECT and audit_id:
+            log.warning(f"[{appid}] 消息审核未通过: {audit_id}")
+            self._push_web_log('audit', {
+                'appid': appid, 'audit_id': audit_id,
+                'message_id': '', 'passed': False,
             })
 
     # ==================== 全量群记录 ====================

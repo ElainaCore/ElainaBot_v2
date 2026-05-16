@@ -84,13 +84,12 @@ def _query_older_messages_sync(chat_type, chat_id, appid_filter, before_date_str
     return [], '', False
 
 
-def _aggregate_chats_sync(chat_type, appid_filter, days=3):
-    """SQL 聚合聊天列表 — 避免下载几千条诡代反检柒"""
+def _aggregate_chats_sync(chat_type, appid_filter, days=1):
+    """SQL 聚合聊天列表 — 仅查 1 天, 30s 缓存"""
     if not _shared._bot_manager:
         return []
     dates = _recent_dates(days)
     if chat_type == 'group':
-        # 按 group_id 聚合 — 需要 idx_msg_group_id 索引加速
         agg_sql = (
             "SELECT group_id AS chat_id, MAX(id) AS last_id, MAX(timestamp) AS last_time, "
             "COUNT(*) AS msg_count FROM log WHERE group_id != '' AND group_id != 'c2c' "
@@ -102,60 +101,54 @@ def _aggregate_chats_sync(chat_type, appid_filter, days=3):
             "COUNT(*) AS msg_count FROM log WHERE user_id != '' AND (group_id = '' OR group_id = 'c2c') "
             "GROUP BY user_id"
         )
-    # 汇总: chat_key -> {appid, last_id, last_time, msg_count}
     merged = {}
     for appid, inst in _iter_bots(appid_filter):
         bot_name = getattr(inst, 'name', appid)
         for d in dates:
             try:
                 rows = inst.log_service.query('message', agg_sql, date=d)
-                for r in rows:
-                    cid = r.get('chat_id', '')
-                    if not cid:
-                        continue
-                    key = (appid, cid)
-                    item = merged.get(key)
-                    if not item:
-                        item = {'chat_id': cid, 'appid': appid, 'bot_name': bot_name,
-                                'last_id': 0, 'last_time': '', 'last_date': '',
-                                'msg_count': 0}
-                        merged[key] = item
-                    item['msg_count'] += r.get('msg_count', 0) or 0
-                    rid = r.get('last_id', 0) or 0
-                    rts = r.get('last_time', '') or ''
-                    # 在同 bot+chat 下, 选靠近的那一天作为预览来源
-                    if rid and (rid > item['last_id'] or d > item['last_date']):
-                        item['last_id'] = rid
-                        item['last_time'] = rts
-                        item['last_date'] = d
             except Exception:
-                pass
+                continue
+            for r in rows:
+                cid = r.get('chat_id', '')
+                if not cid:
+                    continue
+                key = (appid, cid)
+                item = merged.get(key)
+                if not item:
+                    item = {'chat_id': cid, 'appid': appid, 'bot_name': bot_name,
+                            'last_id': 0, 'last_time': '', 'last_date': '', 'msg_count': 0}
+                    merged[key] = item
+                item['msg_count'] += r.get('msg_count', 0) or 0
+                rid = r.get('last_id', 0) or 0
+                rts = r.get('last_time', '') or ''
+                if rid and (rid > item['last_id'] or d > item['last_date']):
+                    item['last_id'] = rid
+                    item['last_time'] = rts
+                    item['last_date'] = d
     if not merged:
         return []
-    # 拉取每个聊天的最后一条 content (仅 last_date 那天 + last_id)
-    # 按 (appid, date) 分组 — 然后多个 id IN (...) 一次查
-    by_path = {}  # (appid, date) -> [last_id]
-    for (appid, _cid), item in merged.items():
+    # 按 last_time 排序, 仅取前 200 个聊天的 last_content
+    chats = sorted(merged.values(), key=lambda c: c.get('last_time', ''), reverse=True)
+    top = chats[:200]
+    by_path = {}
+    for item in top:
         if item['last_id']:
-            by_path.setdefault((appid, item['last_date']), []).append(item['last_id'])
-    id_to_content = {}  # (appid, id) -> content
+            by_path.setdefault((item['appid'], item['last_date']), []).append(item['last_id'])
+    id_to_content = {}
     for (appid, d), ids in by_path.items():
         inst = _shared._bot_manager._bots.get(appid)
         if not inst or not ids:
             continue
-        for chunk_start in range(0, len(ids), 500):
-            chunk = ids[chunk_start:chunk_start + 500]
-            placeholders = ','.join('?' * len(chunk))
-            sql = f"SELECT id, content FROM log WHERE id IN ({placeholders})"
+        for i in range(0, len(ids), 500):
+            chunk = ids[i:i + 500]
+            ph = ','.join('?' * len(chunk))
             try:
-                rows = inst.log_service.query('message', sql, tuple(chunk), date=d)
+                rows = inst.log_service.query('message', f"SELECT id, content FROM log WHERE id IN ({ph})", tuple(chunk), date=d)
                 for r in rows:
                     id_to_content[(appid, r.get('id'))] = r.get('content', '')
             except Exception:
                 pass
-    chats = []
-    for (appid, cid), item in merged.items():
-        item['last_content'] = id_to_content.get((appid, item['last_id']), '')
-        chats.append(item)
-    chats.sort(key=lambda c: c.get('last_time', ''), reverse=True)
+    for item in top:
+        item['last_content'] = id_to_content.get((item['appid'], item['last_id']), '')
     return chats
