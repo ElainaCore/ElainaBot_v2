@@ -400,9 +400,9 @@ class MessageSender(_HttpMixin, _MediaSendMixin):
                 return False, None
             report_error_raw(
                 FRAMEWORK, '消息发送',
-                content=(getattr(event, 'content', '') or '')[:2000],
-                tb=json.dumps(data, ensure_ascii=False, default=str)[:2000] if data else '',
-                context=json.dumps(payload, ensure_ascii=False, default=str)[:2000],
+                content=getattr(event, 'content', '') or '',
+                tb=json.dumps(data, ensure_ascii=False, default=str) if data else '',
+                context=json.dumps(payload, ensure_ascii=False, default=str),
                 appid=self._appid,
             )
             return False, data
