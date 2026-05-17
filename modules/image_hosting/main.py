@@ -395,6 +395,8 @@ class ImageHosting:
                     url = data.get('data', {}).get('location', '')
                     if url:
                         return url.replace('http://', 'https://') if url.startswith('http://') else url
+                    return (False, 'B站返回成功但 location 为空')
+                return (False, f"B站业务错误: code={data.get('code')} msg={data.get('message', '')}")
             return (False, f'B站上传失败 (HTTP {resp.status_code})')
         except Exception as e:
             return (False, str(e))

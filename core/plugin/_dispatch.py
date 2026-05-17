@@ -66,6 +66,12 @@ class _DispatchMixin:
         event._sender = sender
 
         is_non_at = (et == 'GROUP_MESSAGE_CREATE' and not getattr(event, 'is_at_self', False))
+        # 全量消息中@自己时, quiet_at_self=true 则抑制系统回复但仍匹配 handler
+        suppress_reply = is_non_at or (
+            et == 'GROUP_MESSAGE_CREATE' and getattr(event, 'is_at_self', False)
+            and cfg.get_bot_setting(appid, 'non_at_message.quiet_at_self', False)
+            and (not cfg.get_bot_setting(appid, 'non_at_message.quiet_at_self_bot_only', False)
+                 or getattr(event, 'is_bot', False)))
 
         # 过滤仅@其他机器人的全量消息
         if et == 'GROUP_MESSAGE_CREATE' and getattr(event, 'is_at_other_bot', False) \
@@ -74,7 +80,7 @@ class _DispatchMixin:
             return False
 
         # 黑名单
-        if not is_non_at:
+        if not suppress_reply:
             bl = self._check_blacklist(event)
             if bl:
                 tpl = 'blacklist' if bl == 'user' else 'group_blacklist'
@@ -83,7 +89,7 @@ class _DispatchMixin:
                 return True
 
         # 维护模式
-        if not is_non_at and cfg.get_bot_setting(appid, 'maintenance.enabled', False) \
+        if not suppress_reply and cfg.get_bot_setting(appid, 'maintenance.enabled', False) \
                 and not self._is_owner(event):
             if cfg.get_bot_setting(appid, 'maintenance.reply', True):
                 asyncio.create_task(event.reply(template_name='maintenance'))
@@ -119,8 +125,9 @@ class _DispatchMixin:
                 return True
 
         # 无匹配 → 默认回复
-        should_default = (et in ('GROUP_AT_MESSAGE_CREATE', 'C2C_MESSAGE_CREATE')
-                          or (et == 'GROUP_MESSAGE_CREATE' and getattr(event, 'is_at_self', False)))
+        should_default = not suppress_reply and (
+            et in ('GROUP_AT_MESSAGE_CREATE', 'C2C_MESSAGE_CREATE')
+            or (et == 'GROUP_MESSAGE_CREATE' and getattr(event, 'is_at_self', False)))
         if should_default and cfg.get_bot_setting(appid, 'message.send_default_response', True):
             excluded = cfg.get_bot_setting(appid, 'message.default_response_excluded_regex', []) or []
             if not any(re.search(p, content) for p in excluded if p):

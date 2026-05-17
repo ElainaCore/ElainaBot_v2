@@ -181,7 +181,7 @@ class PlaywrightRenderer:
                 return False
 
     async def _idle_cleanup_loop(self):
-        """定时检查并关闭空闲浏览器"""
+        """定时检查并关闭空闲浏览器 + Playwright 进程"""
         timeout = self._cfg.get('idle_timeout', 300)
         while True:
             try:
@@ -193,7 +193,7 @@ class PlaywrightRenderer:
                     async with self._lock:
                         if self._active_pages == 0 and self._browser:
                             log.info(f"浏览器空闲超过 {timeout}s, 自动关闭")
-                            await self._close_browser()
+                            await self._shutdown_all()
             except asyncio.CancelledError:
                 break
             except Exception:
@@ -221,10 +221,12 @@ class PlaywrightRenderer:
             vw = (viewport[0] if viewport else self._cfg.get('default_viewport_width', 1280))
             vh = (viewport[1] if viewport else self._cfg.get('default_viewport_height', 720))
 
+            context = None
             try:
-                page = await self._browser.new_page(
+                context = await self._browser.new_context(
                     viewport={'width': vw, 'height': vh},
                 )
+                page = await context.new_page()
             except Exception as e:
                 if "Connection closed" in str(e) or not (self._browser and self._browser.is_connected()):
                     log.warning(f"浏览器连接已断开, 尝试重启: {e}")
@@ -232,10 +234,14 @@ class PlaywrightRenderer:
                     if not await self._ensure_browser():
                         self._active_pages -= 1
                         raise RuntimeError(f"Playwright 浏览器重启失败: {self._last_error or '未知原因'}")
-                    page = await self._browser.new_page(
+                    context = await self._browser.new_context(
                         viewport={'width': vw, 'height': vh},
                     )
+                    page = await context.new_page()
                 else:
+                    if context:
+                        try: await context.close()
+                        except Exception: pass
                     self._active_pages -= 1
                     raise
             page.set_default_timeout(self._cfg.get('default_timeout', 30000))
@@ -243,7 +249,7 @@ class PlaywrightRenderer:
                 yield page
             finally:
                 try:
-                    await page.close()
+                    await context.close()
                 except Exception:
                     pass
                 self._active_pages -= 1
@@ -251,7 +257,7 @@ class PlaywrightRenderer:
                     self._active_pages = 0
                     self._last_release = time.monotonic()
                     if self._cfg.get('close_after_use', False):
-                        await self._shutdown_all()
+                        await self._close_browser()
                     elif self._cfg.get('idle_timeout', 300) == 0:
                         await self._close_browser()
 

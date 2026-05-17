@@ -58,6 +58,9 @@ bots:
       enabled: false                   # 未@消息响应开关
       group_whitelist: []              # 群白名单 (关闭时仅白名单群触发插件)
       ignore_at_other_bot: false       # 忽略仅@其他机器人的消息 (未@自己时静默跳过)
+      ignore_bot_sender: false         # 屏蔽其他机器人发送的消息 (author.bot=true)
+      quiet_at_self: false             # 全量消息中@机器人时, 抑制黑名单/维护/默认回复 (仍匹配插件)
+      quiet_at_self_bot_only: false    # 仅抑制其他机器人的@消息 (需先开启 quiet_at_self)
 
   # 添加更多机器人只需复制上方配置块:
   # - name: "第二个机器人"
