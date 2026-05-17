@@ -22,7 +22,7 @@ log = get_logger(FRAMEWORK, "事件处理")
 
 _USER_CACHE_TTL = 3600
 _DEDUP_TTL = 300
-_GROUP_CACHE_MAX = 10000
+_GROUP_CACHE_MAX = 500
 _FULL_ACCESS_CACHE_TTL = 1800
 def _new_user_entry(uid, today):
     return {'userid': uid, 'value': 1, 'last_active': today}
@@ -431,8 +431,10 @@ class EventHandlerMixin:
                          context={'group_id': group_id, 'user_id': uid})
 
     def _set_group_cache(self, group_id, user_map):
-        """写入群缓存, 超过上限时淘汰最早条目"""
+        """写入群缓存, 超过上限时批量淘汰最旧条目"""
         if len(self._group_users_cache) >= _GROUP_CACHE_MAX and group_id not in self._group_users_cache:
-            oldest = next(iter(self._group_users_cache))
-            del self._group_users_cache[oldest]
+            # 淘汰 25% 最旧条目
+            by_expire = sorted(self._group_users_cache.items(), key=lambda x: x[1][0])
+            for k, _ in by_expire[:max(1, len(by_expire) // 4)]:
+                del self._group_users_cache[k]
         self._group_users_cache[group_id] = (self._tomorrow_ts(), user_map)
