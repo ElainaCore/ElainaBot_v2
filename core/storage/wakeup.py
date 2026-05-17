@@ -1,9 +1,8 @@
 """唤醒系统服务 (WakeupMixin)"""
 
-import sqlite3
 import asyncio
+import sqlite3
 from datetime import datetime
-
 
 # 唤醒阶段阈值: (最大不活跃天数, 目标阶段)
 _STAGE_THRESHOLDS = ((0, 1), (3, 2), (7, 3), (30, 4))
@@ -22,8 +21,8 @@ class WakeupMixin:
 
     def _wakeup_locked(self):
         """获取 wakeup.db 连接和锁"""
-        db_path = self._resolve_db_path('wakeup')
-        conn = self._get_conn(db_path, 'wakeup')
+        db_path = self._resolve_db_path("wakeup")
+        conn = self._get_conn(db_path, "wakeup")
         return conn, self._conn_locks.get(db_path)
 
     async def wakeup_update(self, openid):
@@ -33,21 +32,24 @@ class WakeupMixin:
 
     def _wakeup_update_sync(self, openid):
         now = datetime.now()
-        today = now.strftime('%Y-%m-%d')
-        now_str = now.strftime('%Y-%m-%d %H:%M:%S')
+        today = now.strftime("%Y-%m-%d")
+        now_str = now.strftime("%Y-%m-%d %H:%M:%S")
         conn, lock = self._wakeup_locked()
         with lock:
             row = conn.execute(
-                "SELECT last_msg_date FROM log WHERE openid=?", (openid,)).fetchone()
+                "SELECT last_msg_date FROM log WHERE openid=?", (openid,)
+            ).fetchone()
             if row and row[0] == today:
                 conn.execute(
-                    "UPDATE log SET updated_at=? WHERE openid=?", (now_str, openid))
+                    "UPDATE log SET updated_at=? WHERE openid=?", (now_str, openid)
+                )
                 conn.commit()
                 return
             conn.execute(
                 "INSERT INTO log (openid, last_msg_date, wakeup_stage, updated_at) VALUES (?,?,0,?) "
                 "ON CONFLICT(openid) DO UPDATE SET last_msg_date=?, wakeup_stage=0, updated_at=?",
-                (openid, today, now_str, today, now_str))
+                (openid, today, now_str, today, now_str),
+            )
             conn.commit()
 
     async def wakeup_can_send(self, openid):
@@ -61,15 +63,16 @@ class WakeupMixin:
             conn.row_factory = sqlite3.Row
             row = conn.execute(
                 "SELECT last_msg_date, wakeup_stage, last_wakeup_date FROM log WHERE openid=?",
-                (openid,)).fetchone()
+                (openid,),
+            ).fetchone()
             conn.row_factory = None
         if not row:
             return (False, 0, -1)
         today = datetime.now().date()
-        last_date = datetime.strptime(row['last_msg_date'], '%Y-%m-%d').date()
+        last_date = datetime.strptime(row["last_msg_date"], "%Y-%m-%d").date()
         days = (today - last_date).days
-        stage = row['wakeup_stage']
-        if row['last_wakeup_date'] == today.strftime('%Y-%m-%d'):
+        stage = row["wakeup_stage"]
+        if row["last_wakeup_date"] == today.strftime("%Y-%m-%d"):
             return (False, stage, days)
         target = _calc_stage(days)
         if not target:
@@ -79,39 +82,48 @@ class WakeupMixin:
     async def wakeup_mark_sent(self, openid, stage):
         """标记已发送唤醒消息"""
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, self._wakeup_mark_sent_sync, openid, stage)
+        return await loop.run_in_executor(
+            None, self._wakeup_mark_sent_sync, openid, stage
+        )
 
     def _wakeup_mark_sent_sync(self, openid, stage):
-        today = datetime.now().strftime('%Y-%m-%d')
+        today = datetime.now().strftime("%Y-%m-%d")
         conn, lock = self._wakeup_locked()
         with lock:
             conn.execute(
                 "UPDATE log SET wakeup_stage=?, last_wakeup_date=?, updated_at=? WHERE openid=?",
-                (stage, today, today, openid))
+                (stage, today, today, openid),
+            )
             conn.commit()
 
     async def wakeup_get_users(self, target_stage=None):
         """获取可唤醒用户列表"""
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, self._wakeup_get_users_sync, target_stage)
+        return await loop.run_in_executor(
+            None, self._wakeup_get_users_sync, target_stage
+        )
 
     def _wakeup_get_users_sync(self, target_stage=None):
         conn, lock = self._wakeup_locked()
         with lock:
             conn.row_factory = sqlite3.Row
-            rows = conn.execute("SELECT openid, last_msg_date, wakeup_stage, last_wakeup_date FROM log").fetchall()
+            rows = conn.execute(
+                "SELECT openid, last_msg_date, wakeup_stage, last_wakeup_date FROM log"
+            ).fetchall()
             conn.row_factory = None
         today = datetime.now().date()
-        today_str = today.strftime('%Y-%m-%d')
+        today_str = today.strftime("%Y-%m-%d")
         results = []
         for row in rows:
-            if row['last_wakeup_date'] == today_str:
+            if row["last_wakeup_date"] == today_str:
                 continue
-            days = (today - datetime.strptime(row['last_msg_date'], '%Y-%m-%d').date()).days
+            days = (
+                today - datetime.strptime(row["last_msg_date"], "%Y-%m-%d").date()
+            ).days
             stage = _calc_stage(days)
-            if not stage or row['wakeup_stage'] >= stage:
+            if not stage or row["wakeup_stage"] >= stage:
                 continue
             if target_stage is not None and stage != target_stage:
                 continue
-            results.append({'openid': row['openid'], 'days': days, 'stage': stage})
+            results.append({"openid": row["openid"], "days": days, "stage": stage})
         return results

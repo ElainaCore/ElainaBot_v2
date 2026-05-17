@@ -1,19 +1,25 @@
 #!/usr/bin/env python
-# -*- coding: utf-8 -*-
 """事件处理 Mixin — 事件分发 / 去重 / 生命周期 / 用户追踪 / 群组记录"""
 
+import asyncio
+import contextlib
 import json
 import time
-import asyncio
 from datetime import datetime, timedelta
 
 from core.base.config import cfg
-from core.base.logger import get_logger, FRAMEWORK, report_error
+from core.base.logger import FRAMEWORK, get_logger, report_error
 from core.message.event import (
-    GROUP_ADD_ROBOT, GROUP_DEL_ROBOT, FRIEND_ADD, FRIEND_DEL,
+    FRIEND_ADD,
+    FRIEND_DEL,
+    GROUP_ADD_ROBOT,
+    GROUP_DEL_ROBOT,
     GROUP_MESSAGE_CREATE,
-    MESSAGE_TYPES, LIFECYCLE_TYPES, INTERACTION_CREATE,
-    MESSAGE_AUDIT_PASS, MESSAGE_AUDIT_REJECT,
+    INTERACTION_CREATE,
+    LIFECYCLE_TYPES,
+    MESSAGE_AUDIT_PASS,
+    MESSAGE_AUDIT_REJECT,
+    MESSAGE_TYPES,
     SILENT_TYPES,
 )
 from core.message.parsers import swap_ids
@@ -22,15 +28,18 @@ log = get_logger(FRAMEWORK, "事件处理")
 
 _USER_CACHE_TTL = 3600
 _DEDUP_TTL = 300
-_GROUP_CACHE_MAX = 500
+_GROUP_CACHE_MAX = 10000
 _FULL_ACCESS_CACHE_TTL = 1800
+
+
 def _new_user_entry(uid, today):
-    return {'userid': uid, 'value': 1, 'last_active': today}
+    return {"userid": uid, "value": 1, "last_active": today}
 
 
 class _EventDedup:
     """轻量 TTL 去重"""
-    __slots__ = ('_seen', '_next_purge')
+
+    __slots__ = ("_seen", "_next_purge")
 
     def __init__(self):
         self._seen = {}
@@ -74,26 +83,35 @@ class EventHandlerMixin:
             interaction_id = event.message_id or event.event_id
             if interaction_id:
                 try:
-                    await bot.sender.ack_interaction(event, interaction_id=interaction_id)
+                    await bot.sender.ack_interaction(
+                        event, interaction_id=interaction_id
+                    )
                 except Exception as e:
                     log.warning(f"[{appid}] 交互ACK失败: {e}")
 
         # 去重 (setdefault 避免二次查找)
-        if cfg.get_bot_setting(appid, 'dedup.enabled', False):
+        if cfg.get_bot_setting(appid, "dedup.enabled", False):
             dedup = self._dedup.setdefault(appid, _EventDedup())
             if dedup.is_dup(event.message_id, event.event_id):
                 return
 
         # union_id 交换
         if event.user_id and event.union_openid:
-            need_swap = (cfg.get_bot_setting(appid, 'identity.use_union_id_for_group', False)
-                         if event.is_group else
-                         cfg.get_bot_setting(appid, 'identity.use_union_id_for_channel', True)
-                         if event.is_channel else
-                         cfg.get_bot_setting(appid, 'identity.use_union_id_for_group', False))
+            need_swap = (
+                cfg.get_bot_setting(appid, "identity.use_union_id_for_group", False)
+                if event.is_group
+                else cfg.get_bot_setting(
+                    appid, "identity.use_union_id_for_channel", True
+                )
+                if event.is_channel
+                else cfg.get_bot_setting(
+                    appid, "identity.use_union_id_for_group", False
+                )
+            )
             if need_swap:
                 event.user_id, event.union_openid, _ = swap_ids(
-                    event.raw_user_id, event.union_openid, True)
+                    event.raw_user_id, event.union_openid, True
+                )
 
         # 生命周期事件 → 提前返回
         lc = self._LIFECYCLE_HANDLERS.get(et)
@@ -109,25 +127,41 @@ class EventHandlerMixin:
         # 静默事件（表态/频道更新）→ 记录日志 + 推送web面板事件日志，不分发插件
         if et in SILENT_TYPES:
             raw_json = json.dumps(event.raw, ensure_ascii=False)
-            bot.log_service.add_sync('lifecycle', {
-                'type': et,
-                'user_id': event.user_id or '',
-                'group_id': event.group_id or '',
-                'extra': raw_json,
-            })
-            self._push_web_log('event', {
-                'appid': appid, 'event_type': et,
-                'content': raw_json,
-                'raw_message': raw_json,
-                'bot_name': bot.name,
-            })
+            bot.log_service.add_sync(
+                "lifecycle",
+                {
+                    "type": et,
+                    "user_id": event.user_id or "",
+                    "group_id": event.group_id or "",
+                    "extra": raw_json,
+                },
+            )
+            self._push_web_log(
+                "event",
+                {
+                    "appid": appid,
+                    "event_type": et,
+                    "content": raw_json,
+                    "raw_message": raw_json,
+                    "bot_name": bot.name,
+                },
+            )
             return
 
         # 未预设事件 → 记录到错误日志
-        if et not in MESSAGE_TYPES and et not in LIFECYCLE_TYPES and et != INTERACTION_CREATE and et not in SILENT_TYPES:
+        if (
+            et not in MESSAGE_TYPES
+            and et not in LIFECYCLE_TYPES
+            and et != INTERACTION_CREATE
+            and et not in SILENT_TYPES
+        ):
             raw_json = json.dumps(event.raw, ensure_ascii=False)
-            report_error(FRAMEWORK, "未知事件", f"收到未预设事件类型: {et}",
-                         context={'appid': appid, 'event_type': et, 'raw': raw_json})
+            report_error(
+                FRAMEWORK,
+                "未知事件",
+                f"收到未预设事件类型: {et}",
+                context={"appid": appid, "event_type": et, "raw": raw_json},
+            )
 
         _t0 = time.time()
 
@@ -135,21 +169,30 @@ class EventHandlerMixin:
         if et in MESSAGE_TYPES or et == INTERACTION_CREATE:
             raw_json = json.dumps(event.raw, ensure_ascii=False)
             log_entry = {
-                'type': et, 'message_id': event.message_id or '',
-                'user_id': event.user_id or '', 'group_id': event.group_id or '',
-                'content': event.content or '',
-                'raw_message': raw_json,
-                'direction': 'receive',
+                "type": et,
+                "message_id": event.message_id or "",
+                "user_id": event.user_id or "",
+                "group_id": event.group_id or "",
+                "content": event.content or "",
+                "raw_message": raw_json,
+                "direction": "receive",
             }
-            bot.log_service.add_sync('message', log_entry)
-            self._push_web_log('message', {
-                'type': et, 'message_id': event.message_id or '',
-                'user_id': event.user_id or '', 'group_id': event.group_id or '',
-                'content': event.content or '', 'direction': 'receive',
-                'appid': appid, 'bot_name': bot.name,
-                'bot_qq': getattr(bot, 'robot_qq', '') or '',
-                'event_type': et,
-            })
+            bot.log_service.add_sync("message", log_entry)
+            self._push_web_log(
+                "message",
+                {
+                    "type": et,
+                    "message_id": event.message_id or "",
+                    "user_id": event.user_id or "",
+                    "group_id": event.group_id or "",
+                    "content": event.content or "",
+                    "direction": "receive",
+                    "appid": appid,
+                    "bot_name": bot.name,
+                    "bot_qq": getattr(bot, "robot_qq", "") or "",
+                    "event_type": et,
+                },
+            )
             if event.user_id:
                 asyncio.create_task(self._track_user(bot, event, appid))
 
@@ -161,65 +204,88 @@ class EventHandlerMixin:
         if et == GROUP_MESSAGE_CREATE and event.is_at_all:
             return
 
-        # 屏蔽其他机器人发送的消息 (author.bot=true)
-        if getattr(event, 'is_bot', False) \
-                and cfg.get_bot_setting(appid, 'non_at_message.ignore_bot_sender', False):
-            return
-
         # 插件分发
         if not self._plugin_manager:
             return
         try:
             await self._plugin_manager.dispatch(event, bot.sender)
         except Exception as e:
-            report_error(FRAMEWORK, "事件分发", e,
-                         context={'appid': appid, 'event_type': et,
-                                  'user_id': event.user_id})
-            self._push_web_log('error', {
-                'appid': appid, 'source': '事件分发',
-                'content': str(e), 'event_type': et,
-            })
+            report_error(
+                FRAMEWORK,
+                "事件分发",
+                e,
+                context={"appid": appid, "event_type": et, "user_id": event.user_id},
+            )
+            self._push_web_log(
+                "error",
+                {
+                    "appid": appid,
+                    "source": "事件分发",
+                    "content": str(e),
+                    "event_type": et,
+                },
+            )
         _dt = time.time() - _t0
         if _dt > 1:
-            msg = (f"[性能] 事件处理耗时 {_dt*1000:.0f}ms "
-                   f"content={event.content[:50] if event.content else ''}")
+            msg = (
+                f"[性能] 事件处理耗时 {_dt * 1000:.0f}ms "
+                f"content={event.content[:50] if event.content else ''}"
+            )
             log.warning(msg)
-            self._push_web_log('framework', {
-                'appid': appid, 'source': '性能', 'content': msg,
-            })
+            self._push_web_log(
+                "framework",
+                {
+                    "appid": appid,
+                    "source": "性能",
+                    "content": msg,
+                },
+            )
 
     # ==================== 消息审核 ====================
 
     async def _handle_audit(self, bot, event, et):
         """处理 MESSAGE_AUDIT_PASS / MESSAGE_AUDIT_REJECT"""
-        d = event.raw.get('d', {}) if isinstance(event.raw, dict) else {}
-        audit_id = d.get('audit_id', '')
-        real_msg_id = d.get('message_id', '')
+        d = event.raw.get("d", {}) if isinstance(event.raw, dict) else {}
+        audit_id = d.get("audit_id", "")
+        real_msg_id = d.get("message_id", "")
         appid = event.appid
 
         if et == MESSAGE_AUDIT_PASS and audit_id and real_msg_id:
             # 将数据库中 audit_id 替换为真实 message_id
             from datetime import date as _d
-            dates = [(_d.today() - timedelta(days=i)).strftime('%Y-%m-%d') for i in range(3)]
+
+            dates = [
+                (_d.today() - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(3)
+            ]
             sql = "UPDATE log SET message_id=? WHERE message_id=?"
             for day in dates:
-                try:
-                    bot.log_service.query('message', sql, (real_msg_id, audit_id), date=day)
-                except Exception:
-                    pass
+                with contextlib.suppress(Exception):
+                    bot.log_service.query(
+                        "message", sql, (real_msg_id, audit_id), date=day
+                    )
             log.debug(f"[{appid}] 审核通过: {audit_id} -> {real_msg_id}")
             # 推送到 Web 面板实时更新
-            self._push_web_log('audit', {
-                'appid': appid, 'audit_id': audit_id,
-                'message_id': real_msg_id, 'passed': True,
-            })
+            self._push_web_log(
+                "audit",
+                {
+                    "appid": appid,
+                    "audit_id": audit_id,
+                    "message_id": real_msg_id,
+                    "passed": True,
+                },
+            )
 
         elif et == MESSAGE_AUDIT_REJECT and audit_id:
             log.warning(f"[{appid}] 消息审核未通过: {audit_id}")
-            self._push_web_log('audit', {
-                'appid': appid, 'audit_id': audit_id,
-                'message_id': '', 'passed': False,
-            })
+            self._push_web_log(
+                "audit",
+                {
+                    "appid": appid,
+                    "audit_id": audit_id,
+                    "message_id": "",
+                    "passed": False,
+                },
+            )
 
     # ==================== 全量群记录 ====================
 
@@ -230,10 +296,11 @@ class EventHandlerMixin:
         if expire and now < expire:
             return
         self._full_access_cache[group_id] = now + _FULL_ACCESS_CACHE_TTL
-        ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         bot.log_service.db_queue(
             "INSERT OR IGNORE INTO full_access_groups (group_id, first_seen) VALUES (?, ?)",
-            (group_id, ts))
+            (group_id, ts),
+        )
 
     def get_full_access_groups(self):
         """从 data.db 拉取所有全量群记录"""
@@ -241,61 +308,80 @@ class EventHandlerMixin:
         if not bot:
             return []
         rows = bot.log_service.query_data(
-            "SELECT group_id FROM full_access_groups ORDER BY first_seen DESC")
+            "SELECT group_id FROM full_access_groups ORDER BY first_seen DESC"
+        )
         return rows
 
     # ==================== 生命周期 ====================
 
     def _log_lifecycle(self, bot, log_type, extra=None, raw_event=None):
-        entry = {'type': log_type, 'user_id': '', 'group_id': ''}
+        entry = {"type": log_type, "user_id": "", "group_id": ""}
         if extra:
             entry.update(extra)
         if raw_event:
-            entry['extra'] = raw_event  # dict, 由 _extract_row 统一序列化
-        asyncio.create_task(bot.log_service.add('lifecycle', entry))
-        web_entry = {'appid': bot.appid, 'bot_name': bot.name, **entry}
+            raw_json = json.dumps(raw_event, ensure_ascii=False)
+            entry["extra"] = raw_json
+        asyncio.create_task(bot.log_service.add("lifecycle", entry))
+        web_entry = {"appid": bot.appid, "bot_name": bot.name, **entry}
         if raw_event:
-            web_entry['raw_message'] = json.dumps(raw_event, ensure_ascii=False)
-        self._push_web_log('lifecycle', web_entry)
+            web_entry["raw_message"] = entry["extra"]
+        self._push_web_log("lifecycle", web_entry)
 
     async def _handle_group_add(self, bot, event):
-        self._log_lifecycle(bot, 'group_add', {
-            'group_id': event.group_id or '', 'user_id': event.user_id or ''},
-            raw_event=event.raw)
-        await self._lifecycle_reply(bot, event, 'welcome.group_welcome', 'welcome',
-                                    {'group_id': event.group_id or ''})
+        self._log_lifecycle(
+            bot,
+            "group_add",
+            {"group_id": event.group_id or "", "user_id": event.user_id or ""},
+            raw_event=event.raw,
+        )
+        await self._lifecycle_reply(
+            bot,
+            event,
+            "welcome.group_welcome",
+            "welcome",
+            {"group_id": event.group_id or ""},
+        )
 
     async def _handle_group_del(self, bot, event):
-        self._log_lifecycle(bot, 'group_del', {
-            'group_id': event.group_id or '', 'user_id': event.user_id or ''},
-            raw_event=event.raw)
+        self._log_lifecycle(
+            bot,
+            "group_del",
+            {"group_id": event.group_id or "", "user_id": event.user_id or ""},
+            raw_event=event.raw,
+        )
 
     async def _handle_friend_add(self, bot, event):
-        uid = event.user_id or ''
-        sharer_id = event.sharer_id or ''
+        uid = event.user_id or ""
+        sharer_id = event.sharer_id or ""
         scene = event.scene or 0
         if uid:
-            tasks = [bot.log_service.db_execute(
-                "INSERT OR IGNORE INTO members (user_id) VALUES (?)", (uid,))]
+            tasks = [
+                bot.log_service.db_execute(
+                    "INSERT OR IGNORE INTO members (user_id) VALUES (?)", (uid,)
+                )
+            ]
             if sharer_id:
                 tasks.append(bot.log_service.share_record(sharer_id, uid, scene))
             await asyncio.gather(*tasks, return_exceptions=True)
-        self._log_lifecycle(bot, 'friend_add', {
-            'user_id': uid}, raw_event=event.raw)
-        await self._lifecycle_reply(bot, event, 'welcome.friend_add_message', 'friend_add',
-                                    {'user_id': uid})
+        self._log_lifecycle(bot, "friend_add", {"user_id": uid}, raw_event=event.raw)
+        await self._lifecycle_reply(
+            bot, event, "welcome.friend_add_message", "friend_add", {"user_id": uid}
+        )
 
     async def _handle_friend_del(self, bot, event):
-        self._log_lifecycle(bot, 'friend_del', {'user_id': event.user_id or ''},
-                            raw_event=event.raw)
+        self._log_lifecycle(
+            bot, "friend_del", {"user_id": event.user_id or ""}, raw_event=event.raw
+        )
 
     async def _lifecycle_reply(self, bot, event, cfg_key, template, tvars):
         """生命周期欢迎消息 (复用)"""
         if cfg.get_bot_setting(event.appid, cfg_key, False):
             try:
-                await bot.sender.reply(event, template_name=template, template_vars=tvars)
+                await bot.sender.reply(
+                    event, template_name=template, template_vars=tvars
+                )
             except Exception as e:
-                report_error(FRAMEWORK, cfg_key, e, context={'appid': event.appid})
+                report_error(FRAMEWORK, cfg_key, e, context={"appid": event.appid})
 
     _LIFECYCLE_HANDLERS = {
         GROUP_ADD_ROBOT: _handle_group_add,
@@ -311,15 +397,15 @@ class EventHandlerMixin:
         tasks = []
         if event.is_direct:
             tasks.append(bot.log_service.wakeup_update(event.user_id))
-        if gid and gid != 'c2c':
+        if gid and gid != "c2c":
             tasks.append(self._add_user_to_group(bot, gid, event.user_id))
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _track_user(self, bot, event, appid):
         uid = event.user_id
-        gid = event.group_id or ''
-        username = getattr(event, 'username', '') or ''
+        gid = event.group_id or ""
+        username = getattr(event, "username", "") or ""
         now = time.time()
 
         # 定期清理过期缓存
@@ -336,7 +422,8 @@ class EventHandlerMixin:
                 "INSERT INTO users (user_id, name) VALUES (?, ?) "
                 "ON CONFLICT(user_id) DO UPDATE SET name=excluded.name "
                 "WHERE users.name = '' OR users.name IS NULL",
-                (uid, username))
+                (uid, username),
+            )
 
         # 已知用户: 跳过 DB 查询
         if uid in self._known_users:
@@ -345,24 +432,33 @@ class EventHandlerMixin:
 
         # 新用户判定
         existing = await bot.log_service.db_fetch_one(
-            "SELECT user_id FROM users WHERE user_id=?", (uid,))
+            "SELECT user_id FROM users WHERE user_id=?", (uid,)
+        )
         if not existing:
             bot.log_service.db_queue(
-                "INSERT OR IGNORE INTO users (user_id) VALUES (?)", (uid,))
+                "INSERT OR IGNORE INTO users (user_id) VALUES (?)", (uid,)
+            )
 
         self._known_users[uid] = now + _USER_CACHE_TTL
         await self._run_side_tasks(bot, event, gid)
 
         # 新用户首次私聊 → 欢迎 (合并条件)
-        if not existing and event.is_direct \
-                and cfg.get_bot_setting(appid, 'welcome.new_user_welcome', False):
+        if (
+            not existing
+            and event.is_direct
+            and cfg.get_bot_setting(appid, "welcome.new_user_welcome", False)
+        ):
             try:
                 total = await bot.log_service.db_fetch_value(
-                    "SELECT COUNT(*) FROM users", default=1)
-                await bot.sender.reply(event, template_name='user_welcome',
-                                       template_vars={'user_id': uid, 'user_count': str(total)})
+                    "SELECT COUNT(*) FROM users", default=1
+                )
+                await bot.sender.reply(
+                    event,
+                    template_name="user_welcome",
+                    template_vars={"user_id": uid, "user_count": str(total)},
+                )
             except Exception as e:
-                report_error(FRAMEWORK, "新用户欢迎", e, context={'appid': appid})
+                report_error(FRAMEWORK, "新用户欢迎", e, context={"appid": appid})
 
     # ==================== 群组成员记录 ====================
 
@@ -378,11 +474,11 @@ class EventHandlerMixin:
     def _upsert_group_user(self, user_map, uid, today):
         """更新或新增群成员条目, 返回是否有变更"""
         entry = user_map.get(uid)
-        if entry and entry.get('last_active') == today:
+        if entry and entry.get("last_active") == today:
             return False
         user_map[uid] = entry or _new_user_entry(uid, today)
         if entry:
-            entry['last_active'] = today
+            entry["last_active"] = today
         return True
 
     @staticmethod
@@ -391,16 +487,16 @@ class EventHandlerMixin:
         result = {}
         for item in raw_list:
             if isinstance(item, dict):
-                uid = item.get('userid', '')
+                uid = item.get("userid", "")
                 if uid:
                     result[uid] = item
             elif item:
-                result[item] = _NEW_USER_ENTRY(item, '')
+                result[item] = _new_user_entry(item, "")
         return result
 
     async def _add_user_to_group(self, bot, group_id, user_id):
         uid = str(user_id)
-        today = datetime.now().strftime('%Y-%m-%d')
+        today = datetime.now().strftime("%Y-%m-%d")
 
         # 1. 内存缓存命中
         cached = self._group_users_cache.get(group_id)
@@ -410,36 +506,47 @@ class EventHandlerMixin:
                 if self._upsert_group_user(user_map, uid, today):
                     bot.log_service.db_queue(
                         "UPDATE groups_users SET users=? WHERE group_id=?",
-                        (self._users_json(user_map), group_id))
+                        (self._users_json(user_map), group_id),
+                    )
                 return
             del self._group_users_cache[group_id]
 
         # 2. DB 加载
         try:
             rows = await asyncio.get_running_loop().run_in_executor(
-                None, bot.log_service.query_data,
-                "SELECT users FROM groups_users WHERE group_id=?", (group_id,))
+                None,
+                bot.log_service.query_data,
+                "SELECT users FROM groups_users WHERE group_id=?",
+                (group_id,),
+            )
             if rows:
-                user_map = self._parse_user_map(json.loads(rows[0].get('users', '[]')))
+                user_map = self._parse_user_map(json.loads(rows[0].get("users", "[]")))
                 self._upsert_group_user(user_map, uid, today)
                 bot.log_service.db_queue(
                     "UPDATE groups_users SET users=? WHERE group_id=?",
-                    (self._users_json(user_map), group_id))
+                    (self._users_json(user_map), group_id),
+                )
             else:
                 user_map = {uid: _new_user_entry(uid, today)}
                 bot.log_service.db_queue(
                     "INSERT INTO groups_users (group_id, users) VALUES (?, ?)",
-                    (group_id, self._users_json(user_map)))
+                    (group_id, self._users_json(user_map)),
+                )
             self._set_group_cache(group_id, user_map)
         except Exception as e:
-            report_error(FRAMEWORK, "群用户列表更新", e,
-                         context={'group_id': group_id, 'user_id': uid})
+            report_error(
+                FRAMEWORK,
+                "群用户列表更新",
+                e,
+                context={"group_id": group_id, "user_id": uid},
+            )
 
     def _set_group_cache(self, group_id, user_map):
-        """写入群缓存, 超过上限时批量淘汰最旧条目"""
-        if len(self._group_users_cache) >= _GROUP_CACHE_MAX and group_id not in self._group_users_cache:
-            # 淘汰 25% 最旧条目
-            by_expire = sorted(self._group_users_cache.items(), key=lambda x: x[1][0])
-            for k, _ in by_expire[:max(1, len(by_expire) // 4)]:
-                del self._group_users_cache[k]
+        """写入群缓存, 超过上限时淘汰最早条目"""
+        if (
+            len(self._group_users_cache) >= _GROUP_CACHE_MAX
+            and group_id not in self._group_users_cache
+        ):
+            oldest = next(iter(self._group_users_cache))
+            del self._group_users_cache[oldest]
         self._group_users_cache[group_id] = (self._tomorrow_ts(), user_map)

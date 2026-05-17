@@ -1,28 +1,28 @@
 """日志 Schema 定义 — 表结构、INSERT SQL、索引、迁移"""
 
-import re
+import contextlib
 import json
-import logging
+import re
 
-from core.base.logger import get_logger, SERVICE
+from core.base.logger import SERVICE, get_logger
 
 log = get_logger(SERVICE, "日志")
 
 _QUEUE_MAXSIZE = 50000
 
 
-def _json_field(data, key, default=''):
+def _json_field(data, key, default=""):
     """将 dict/list 字段序列化为 JSON, 其它直接转 str"""
     v = data.get(key, default)
-    return json.dumps(v, ensure_ascii=False) if isinstance(v, (dict, list)) else str(v)
+    return json.dumps(v, ensure_ascii=False) if isinstance(v, dict | list) else str(v)
 
 
 # ==================== 日志类型定义 ====================
 
 # 按日期分目录的类型
-DAILY_TYPES = frozenset({'message', 'framework', 'error', 'lifecycle'})
+DAILY_TYPES = frozenset({"message", "framework", "error", "lifecycle"})
 # 不分日期的类型
-STATIC_TYPES = frozenset({'data', 'dau', 'share', 'wakeup'})
+STATIC_TYPES = frozenset({"data", "dau", "share", "wakeup"})
 ALL_TYPES = DAILY_TYPES | STATIC_TYPES
 
 # DAU 表结构 (公开常量, dau.py 复用)
@@ -46,7 +46,7 @@ DAU_TABLE_SQL = """
 
 # 表结构 (类型 -> CREATE TABLE SQL)
 _SCHEMAS = {
-    'message': """
+    "message": """
         CREATE TABLE IF NOT EXISTS log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             timestamp TEXT NOT NULL,
@@ -60,7 +60,7 @@ _SCHEMAS = {
             direction TEXT DEFAULT ''
         )
     """,
-    'framework': """
+    "framework": """
         CREATE TABLE IF NOT EXISTS log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             timestamp TEXT NOT NULL,
@@ -68,7 +68,7 @@ _SCHEMAS = {
             level TEXT DEFAULT 'INFO'
         )
     """,
-    'error': """
+    "error": """
         CREATE TABLE IF NOT EXISTS log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             timestamp TEXT NOT NULL,
@@ -80,8 +80,8 @@ _SCHEMAS = {
             context TEXT DEFAULT ''
         )
     """,
-    'dau': DAU_TABLE_SQL,
-    'share': """
+    "dau": DAU_TABLE_SQL,
+    "share": """
         CREATE TABLE IF NOT EXISTS log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             openid TEXT UNIQUE NOT NULL,
@@ -90,7 +90,7 @@ _SCHEMAS = {
             updated_at TEXT
         )
     """,
-    'wakeup': """
+    "wakeup": """
         CREATE TABLE IF NOT EXISTS log (
             openid TEXT PRIMARY KEY,
             last_msg_date TEXT NOT NULL,
@@ -99,7 +99,7 @@ _SCHEMAS = {
             updated_at TEXT
         )
     """,
-    'lifecycle': """
+    "lifecycle": """
         CREATE TABLE IF NOT EXISTS log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             timestamp TEXT NOT NULL,
@@ -109,7 +109,7 @@ _SCHEMAS = {
             extra TEXT DEFAULT ''
         )
     """,
-    'data': """
+    "data": """
         CREATE TABLE IF NOT EXISTS users (
             user_id TEXT PRIMARY KEY,
             name TEXT DEFAULT '',
@@ -131,11 +131,11 @@ _SCHEMAS = {
 
 # INSERT SQL
 _INSERTS = {
-    'message': "INSERT INTO log (timestamp, type, message_id, user_id, group_id, content, raw_message, plugin_name, direction) VALUES (?,?,?,?,?,?,?,?,?)",
-    'framework': "INSERT INTO log (timestamp, content, level) VALUES (?,?,?)",
-    'error': "INSERT INTO log (timestamp, appid, module_type, module_name, content, traceback, context) VALUES (?,?,?,?,?,?,?)",
-    'lifecycle': "INSERT INTO log (timestamp, type, user_id, group_id, extra) VALUES (?,?,?,?,?)",
-    'dau': """INSERT INTO log (date, active_users, active_groups, total_messages, private_messages,
+    "message": "INSERT INTO log (timestamp, type, message_id, user_id, group_id, content, raw_message, plugin_name, direction) VALUES (?,?,?,?,?,?,?,?,?)",
+    "framework": "INSERT INTO log (timestamp, content, level) VALUES (?,?,?)",
+    "error": "INSERT INTO log (timestamp, appid, module_type, module_name, content, traceback, context) VALUES (?,?,?,?,?,?,?)",
+    "lifecycle": "INSERT INTO log (timestamp, type, user_id, group_id, extra) VALUES (?,?,?,?,?)",
+    "dau": """INSERT INTO log (date, active_users, active_groups, total_messages, private_messages,
               group_join_count, group_leave_count, friend_add_count, friend_remove_count,
               message_stats_detail, user_stats_detail, command_stats_detail)
               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
@@ -152,14 +152,14 @@ _INSERTS = {
 
 # 表索引 (类型 -> [CREATE INDEX SQL]) — 显著加速 Web 面板的聊天列表/历史查询
 _INDEXES = {
-    'message': [
+    "message": [
         "CREATE INDEX IF NOT EXISTS idx_msg_group_id ON log(group_id)",
         "CREATE INDEX IF NOT EXISTS idx_msg_user_id ON log(user_id)",
         "CREATE INDEX IF NOT EXISTS idx_msg_group_agg ON log(group_id, id, timestamp)",
         "CREATE INDEX IF NOT EXISTS idx_msg_user_agg ON log(user_id, id, timestamp)",
         "CREATE INDEX IF NOT EXISTS idx_msg_message_id ON log(message_id)",
     ],
-    'lifecycle': [
+    "lifecycle": [
         "CREATE INDEX IF NOT EXISTS idx_lc_user_id ON log(user_id)",
         "CREATE INDEX IF NOT EXISTS idx_lc_group_id ON log(group_id)",
     ],
@@ -169,14 +169,17 @@ _INDEXES = {
 # ==================== 迁移 ====================
 
 _DATA_MIGRATIONS = [
-    ('users', 'state', 'INTEGER DEFAULT 0'),
+    ("users", "state", "INTEGER DEFAULT 0"),
 ]
+
 
 def _migrate_data_tables(conn):
     """为 data 库的旧表补齐缺失列"""
     for table, col, col_def in _DATA_MIGRATIONS:
         try:
-            existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+            existing = {
+                row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+            }
             if col in existing:
                 continue
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_def}")
@@ -184,23 +187,24 @@ def _migrate_data_tables(conn):
             log.info(f"自动迁移: {table} 表新增列 {col}")
         except Exception as e:
             log.warning(f"迁移列 {table}.{col} 失败: {e}")
-    try: conn.execute("ALTER TABLE full_access_groups DROP COLUMN last_seen"); conn.commit()
-    except Exception: pass
+    with contextlib.suppress(Exception):
+        conn.execute("ALTER TABLE full_access_groups DROP COLUMN last_seen")
+        conn.commit()
 
 
 def _migrate_missing_columns(conn, log_type):
     """为旧表补齐缺失列"""
     schema = _SCHEMAS.get(log_type)
-    if not schema or log_type == 'data':
+    if not schema or log_type == "data":
         return
     try:
         existing = {row[1] for row in conn.execute("PRAGMA table_info(log)").fetchall()}
     except Exception:
         return
-    col_pattern = re.compile(r'^\s+(\w+)\s+(TEXT|INTEGER|REAL)(.*)$', re.MULTILINE)
+    col_pattern = re.compile(r"^\s+(\w+)\s+(TEXT|INTEGER|REAL)(.*)$", re.MULTILINE)
     for m in col_pattern.finditer(schema):
         col_name = m.group(1)
-        if col_name in existing or col_name == 'id':
+        if col_name in existing or col_name == "id":
             continue
         col_def = f"{m.group(2)}{m.group(3).rstrip().rstrip(',')}"
         try:
@@ -218,7 +222,5 @@ def _ensure_indexes(conn, log_type):
             conn.execute(sql)
         except Exception as e:
             log.warning(f"创建索引失败 ({log_type}): {e}")
-    try:
+    with contextlib.suppress(Exception):
         conn.commit()
-    except Exception:
-        pass

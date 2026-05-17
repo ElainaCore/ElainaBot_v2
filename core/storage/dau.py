@@ -1,15 +1,15 @@
 #!/usr/bin/env python
-# -*- coding: utf-8 -*-
 """DAU 统计 — 每日凌晨自动扫描 SQLite 消息日志, 计算昨日统计并写入 dau.db"""
 
-import os
-import json
-import sqlite3
 import asyncio
+import contextlib
+import json
+import os
+import sqlite3
 from datetime import datetime, timedelta
-from core.base.config import cfg as app_cfg
-from core.base.logger import get_logger, FRAMEWORK
-from core.storage.log import DAU_TABLE_SQL
+
+from core.base.logger import FRAMEWORK, get_logger
+from core.storage._schema import DAU_TABLE_SQL
 
 log = get_logger(FRAMEWORK, "DAU统计")
 
@@ -21,11 +21,14 @@ _SCHEDULE_MINUTE = 10
 class DAUService:
     """DAU 统计服务 — 异步调度 + SQLite 直读"""
 
-    __slots__ = ('_log_dir', '_running', '_task',
-                 '_schedule_hour', '_schedule_minute')
+    __slots__ = ("_log_dir", "_running", "_task", "_schedule_hour", "_schedule_minute")
 
-    def __init__(self, log_base_dir, schedule_hour=_SCHEDULE_HOUR,
-                 schedule_minute=_SCHEDULE_MINUTE):
+    def __init__(
+        self,
+        log_base_dir,
+        schedule_hour=_SCHEDULE_HOUR,
+        schedule_minute=_SCHEDULE_MINUTE,
+    ):
         self._log_dir = os.path.abspath(log_base_dir)
         self._schedule_hour = schedule_hour
         self._schedule_minute = schedule_minute
@@ -43,10 +46,8 @@ class DAUService:
         self._running = False
         if self._task:
             self._task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
                 await self._task
-            except (asyncio.CancelledError, Exception):
-                pass
             self._task = None
 
     async def _scheduler_loop(self):
@@ -67,14 +68,17 @@ class DAUService:
 
     def _next_run_time(self):
         now = datetime.now()
-        today_run = now.replace(hour=self._schedule_hour,
-                                minute=self._schedule_minute,
-                                second=0, microsecond=0)
+        today_run = now.replace(
+            hour=self._schedule_hour,
+            minute=self._schedule_minute,
+            second=0,
+            microsecond=0,
+        )
         return today_run if today_run > now else today_run + timedelta(days=1)
 
     async def regenerate_yesterday(self):
         """重算所有机器人昨日 DAU"""
-        yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
         return await self.regenerate_date(yesterday)
 
     async def regenerate_date(self, date_str):
@@ -111,17 +115,20 @@ class DAUService:
         """列出所有有日志记录的 appid"""
         if not os.path.isdir(self._log_dir):
             return []
-        return [name for name in os.listdir(self._log_dir)
-                if os.path.isdir(os.path.join(self._log_dir, name))]
+        return [
+            name
+            for name in os.listdir(self._log_dir)
+            if os.path.isdir(os.path.join(self._log_dir, name))
+        ]
 
     def _message_db_path(self, appid, date_str):
-        return os.path.join(self._log_dir, appid, date_str, 'message.db')
+        return os.path.join(self._log_dir, appid, date_str, "message.db")
 
     def _lifecycle_db_path(self, appid, date_str):
-        return os.path.join(self._log_dir, appid, date_str, 'lifecycle.db')
+        return os.path.join(self._log_dir, appid, date_str, "lifecycle.db")
 
     def _dau_db_path(self, appid):
-        return os.path.join(self._log_dir, appid, 'dau.db')
+        return os.path.join(self._log_dir, appid, "dau.db")
 
     def _regenerate_sync(self, appid, date_str):
         msg_db = self._message_db_path(appid, date_str)
@@ -137,8 +144,10 @@ class DAUService:
         event_stats = self._compute_lifecycle_stats(appid, date_str)
 
         self._save_dau(appid, date_str, msg_stats, event_stats)
-        log.info(f"[{appid}] {date_str} 已统计: 消息 {msg_stats['total_messages']}, "
-                 f"用户 {msg_stats['active_users']}, 群 {msg_stats['active_groups']}")
+        log.info(
+            f"[{appid}] {date_str} 已统计: 消息 {msg_stats['total_messages']}, "
+            f"用户 {msg_stats['active_users']}, 群 {msg_stats['active_groups']}"
+        )
         return True
 
     def _compute_message_stats(self, db_path):
@@ -159,14 +168,14 @@ class DAUService:
                 FROM log
             """)
             row = cur.fetchone()
-            if not row or row['total'] == 0:
+            if not row or row["total"] == 0:
                 return None
 
             stats = {
-                'total_messages': row['total'],
-                'active_users': row['users'],
-                'active_groups': row['groups_'],
-                'private_messages': row['private'],
+                "total_messages": row["total"],
+                "active_users": row["users"],
+                "active_groups": row["groups_"],
+                "private_messages": row["private"],
             }
 
             cur.execute("""
@@ -174,32 +183,37 @@ class DAUService:
                 FROM log GROUP BY hr ORDER BY c DESC LIMIT 1
             """)
             r = cur.fetchone()
-            stats['peak_hour'] = int(r['hr']) if r and r['hr'] else 0
-            stats['peak_hour_count'] = r['c'] if r else 0
+            stats["peak_hour"] = int(r["hr"]) if r and r["hr"] else 0
+            stats["peak_hour_count"] = r["c"] if r else 0
 
             cur.execute("""
                 SELECT group_id, COUNT(*) AS c FROM log
                 WHERE group_id != '' AND group_id != 'c2c'
                 GROUP BY group_id ORDER BY c DESC LIMIT 10
             """)
-            stats['top_groups'] = [{'group_id': r['group_id'], 'message_count': r['c']}
-                                    for r in cur.fetchall()]
+            stats["top_groups"] = [
+                {"group_id": r["group_id"], "message_count": r["c"]}
+                for r in cur.fetchall()
+            ]
 
             cur.execute("""
                 SELECT user_id, COUNT(*) AS c FROM log
                 WHERE user_id != ''
                 GROUP BY user_id ORDER BY c DESC LIMIT 10
             """)
-            stats['top_users'] = [{'user_id': r['user_id'], 'message_count': r['c']}
-                                   for r in cur.fetchall()]
+            stats["top_users"] = [
+                {"user_id": r["user_id"], "message_count": r["c"]}
+                for r in cur.fetchall()
+            ]
 
             cur.execute("""
                 SELECT plugin_name, COUNT(*) AS c FROM log
                 WHERE plugin_name != ''
                 GROUP BY plugin_name ORDER BY c DESC LIMIT 10
             """)
-            stats['top_commands'] = [{'command': r['plugin_name'], 'count': r['c']}
-                                     for r in cur.fetchall()]
+            stats["top_commands"] = [
+                {"command": r["plugin_name"], "count": r["c"]} for r in cur.fetchall()
+            ]
             return stats
         except Exception as e:
             log.warning(f"计算统计失败: {e}")
@@ -208,8 +222,10 @@ class DAUService:
             conn.close()
 
     _EMPTY_LIFECYCLE = {
-        'group_join_count': 0, 'group_leave_count': 0,
-        'friend_add_count': 0, 'friend_remove_count': 0,
+        "group_join_count": 0,
+        "group_leave_count": 0,
+        "friend_add_count": 0,
+        "friend_remove_count": 0,
     }
 
     def _compute_lifecycle_stats(self, appid, date_str):
@@ -218,12 +234,12 @@ class DAUService:
             return dict(self._EMPTY_LIFECYCLE)
         try:
             cur = conn.execute("SELECT type, COUNT(*) AS c FROM log GROUP BY type")
-            counts = {row['type']: row['c'] for row in cur.fetchall()}
+            counts = {row["type"]: row["c"] for row in cur.fetchall()}
             return {
-                'group_join_count': counts.get('group_add', 0),
-                'group_leave_count': counts.get('group_del', 0),
-                'friend_add_count': counts.get('friend_add', 0),
-                'friend_remove_count': counts.get('friend_del', 0),
+                "group_join_count": counts.get("group_add", 0),
+                "group_leave_count": counts.get("group_del", 0),
+                "friend_add_count": counts.get("friend_add", 0),
+                "friend_remove_count": counts.get("friend_del", 0),
             }
         except Exception as e:
             log.debug(f"[{appid}] 读取 lifecycle 统计失败: {e}")
@@ -237,7 +253,8 @@ class DAUService:
         conn = sqlite3.connect(dau_path, timeout=10)
         try:
             conn.execute(DAU_TABLE_SQL)
-            conn.execute("""
+            conn.execute(
+                """
                 INSERT INTO log (date, active_users, active_groups, total_messages,
                                  private_messages, group_join_count, group_leave_count,
                                  friend_add_count, friend_remove_count,
@@ -255,17 +272,28 @@ class DAUService:
                     message_stats_detail=excluded.message_stats_detail,
                     user_stats_detail=excluded.user_stats_detail,
                     command_stats_detail=excluded.command_stats_detail
-            """, (
-                date_str,
-                msg_stats['active_users'], msg_stats['active_groups'],
-                msg_stats['total_messages'], msg_stats['private_messages'],
-                event_stats['group_join_count'], event_stats['group_leave_count'],
-                event_stats['friend_add_count'], event_stats['friend_remove_count'],
-                json.dumps({k: v for k, v in msg_stats.items()
-                            if k not in ('top_users',)}, ensure_ascii=False),
-                json.dumps({'top_users': msg_stats.get('top_users', [])}, ensure_ascii=False),
-                json.dumps(msg_stats.get('top_commands', []), ensure_ascii=False),
-            ))
+            """,
+                (
+                    date_str,
+                    msg_stats["active_users"],
+                    msg_stats["active_groups"],
+                    msg_stats["total_messages"],
+                    msg_stats["private_messages"],
+                    event_stats["group_join_count"],
+                    event_stats["group_leave_count"],
+                    event_stats["friend_add_count"],
+                    event_stats["friend_remove_count"],
+                    json.dumps(
+                        {k: v for k, v in msg_stats.items() if k not in ("top_users",)},
+                        ensure_ascii=False,
+                    ),
+                    json.dumps(
+                        {"top_users": msg_stats.get("top_users", [])},
+                        ensure_ascii=False,
+                    ),
+                    json.dumps(msg_stats.get("top_commands", []), ensure_ascii=False),
+                ),
+            )
             conn.commit()
         finally:
             conn.close()
@@ -298,12 +326,13 @@ class DAUService:
             return []
         try:
             rows = conn.execute(
-                "SELECT * FROM log ORDER BY date DESC LIMIT ?", (days,)).fetchall()
+                "SELECT * FROM log ORDER BY date DESC LIMIT ?", (days,)
+            ).fetchall()
             return [self._row_to_dict(r) for r in rows]
         finally:
             conn.close()
 
-    _JSON_KEYS = ('message_stats_detail', 'user_stats_detail', 'command_stats_detail')
+    _JSON_KEYS = ("message_stats_detail", "user_stats_detail", "command_stats_detail")
 
     @staticmethod
     def _row_to_dict(row):
@@ -312,8 +341,6 @@ class DAUService:
             v = d.get(k)
             if not isinstance(v, str) or not v:
                 continue
-            try:
+            with contextlib.suppress(Exception):
                 d[k] = json.loads(v)
-            except Exception:
-                pass
         return d

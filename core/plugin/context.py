@@ -1,8 +1,9 @@
 """插件上下文、数据模型与辅助函数"""
 
 import asyncio
-from core.base.logger import PLUGIN
+
 from core.base.context import BaseContext
+from core.base.logger import PLUGIN
 
 # 当前正在加载的插件上下文 (由 PluginManager 在加载期间赋值)
 ctx = None
@@ -23,9 +24,22 @@ class PluginContext(BaseContext):
 
 class PluginInfo:
     """已加载插件的信息"""
-    __slots__ = ('name', 'plugin_dir', 'module', 'handlers', 'on_load_funcs',
-                 'on_unload_funcs', 'interceptors', 'enabled', 'load_time',
-                 'error', 'ctx', 'is_large', 'meta')
+
+    __slots__ = (
+        "name",
+        "plugin_dir",
+        "module",
+        "handlers",
+        "on_load_funcs",
+        "on_unload_funcs",
+        "interceptors",
+        "enabled",
+        "load_time",
+        "error",
+        "ctx",
+        "is_large",
+        "meta",
+    )
 
     def __init__(self, name, plugin_dir):
         self.name = name
@@ -45,13 +59,23 @@ class PluginInfo:
 
 def _make_reply_log_cb(plugin_name, log_service):
     """创建插件回复日志回调 (避免在匹配循环中反复定义闭包)"""
-    def cb(text, uid, gid, raw_message='', message_id=''):
+
+    def cb(text, uid, gid, raw_message="", message_id=""):
         if log_service:
-            asyncio.ensure_future(log_service.add('message', {
-                'type': 'plugin',
-                'message_id': message_id,
-                'user_id': uid, 'group_id': gid,
-                'content': text, 'plugin_name': plugin_name,
-                'raw_message': raw_message, 'direction': 'send',
-            }))
+            asyncio.ensure_future(
+                log_service.add(
+                    "message",
+                    {
+                        "type": "plugin",
+                        "message_id": message_id,
+                        "user_id": uid,
+                        "group_id": gid,
+                        "content": text,
+                        "plugin_name": plugin_name,
+                        "raw_message": raw_message,
+                        "direction": "send",
+                    },
+                )
+            )
+
     return cb

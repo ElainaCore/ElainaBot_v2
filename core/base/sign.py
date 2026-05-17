@@ -1,16 +1,16 @@
 #!/usr/bin/env python
-# -*- coding: utf-8 -*-
 """HTTP 回调签名验证"""
 
 import json
+
 from cryptography.hazmat.primitives.asymmetric import ed25519
 
 
 def verify_and_respond(raw_body, bot_secret):
     """验证 QQ 开放平台回调签名, 返回响应 JSON 或 None"""
-    data = json.loads(raw_body) if isinstance(raw_body, (bytes, str)) else raw_body
-    d = data.get('d') or {}
-    token, ts = d.get('plain_token'), d.get('event_ts')
+    data = json.loads(raw_body) if isinstance(raw_body, bytes | str) else raw_body
+    d = data.get("d") or {}
+    token, ts = d.get("plain_token"), d.get("event_ts")
     if not token or ts is None:
         return None
     return json.dumps(generate_signature(bot_secret, str(ts), token))

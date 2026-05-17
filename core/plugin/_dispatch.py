@@ -1,11 +1,11 @@
 """事件分发 (性能热路径) — PluginManager 的 Mixin"""
 
+import asyncio
 import re
 import time
-import asyncio
 
-from core.base.logger import get_logger, PLUGIN, FRAMEWORK, report_error
 from core.base.config import cfg
+from core.base.logger import FRAMEWORK, PLUGIN, get_logger, report_error
 from core.plugin.context import _make_reply_log_cb
 
 log = get_logger(FRAMEWORK, "插件管理")
@@ -14,27 +14,25 @@ log = get_logger(FRAMEWORK, "插件管理")
 
 _S_GROUP, _S_DIRECT, _S_CHANNEL = 1, 2, 4
 
-# 需要走完整检查链的事件类型
-_FULL_CHECK_TYPES = frozenset({
-    'GROUP_AT_MESSAGE_CREATE', 'GROUP_MESSAGE_CREATE',
-    'C2C_MESSAGE_CREATE', 'AT_MESSAGE_CREATE',
-    'DIRECT_MESSAGE_CREATE', 'MESSAGE_CREATE',
-})
-
 
 def _scene_mask(h):
-    return ((_S_GROUP if h['group_only'] else 0)
-            | (_S_DIRECT if h['direct_only'] else 0)
-            | (_S_CHANNEL if h['channel_only'] else 0))
+    return (
+        (_S_GROUP if h["group_only"] else 0)
+        | (_S_DIRECT if h["direct_only"] else 0)
+        | (_S_CHANNEL if h["channel_only"] else 0)
+    )
 
 
 def _event_scene(event):
-    return ((_S_GROUP if event.is_group else 0)
-            | (_S_DIRECT if event.is_direct else 0)
-            | (_S_CHANNEL if event.is_channel else 0))
+    return (
+        (_S_GROUP if event.is_group else 0)
+        | (_S_DIRECT if event.is_direct else 0)
+        | (_S_CHANNEL if event.is_channel else 0)
+    )
 
 
 # ==================== Mixin ====================
+
 
 class _DispatchMixin:
     """高性能事件分发"""
@@ -46,9 +44,9 @@ class _DispatchMixin:
         by_et: dict[str, list] = {}
         any_et: list = []
         for h in self._all_handlers:
-            h['_smask'] = _scene_mask(h)
-            if h['event_types']:
-                for et in h['event_types']:
+            h["_smask"] = _scene_mask(h)
+            if h["event_types"]:
+                for et in h["event_types"]:
                     by_et.setdefault(et, []).append(h)
             else:
                 any_et.append(h)
@@ -65,186 +63,233 @@ class _DispatchMixin:
     # ---------- 分发 ----------
 
     async def dispatch(self, event, sender):
-        content = event.content or ''
-        user_id = event.user_id or ''
+        content = event.content or ""
+        user_id = event.user_id or ""
         appid = event.appid or self._appid
         event.appid = appid
         et = event.event_type
         event._sender = sender
 
-        # ── 非消息事件 (lifecycle/reaction) 快速路径: 跳过所有检查直接匹配 handler ──
-        if et not in _FULL_CHECK_TYPES:
-            handlers = self._handlers_for(et)
-            if not handlers:
-                return False
-            scene = _event_scene(event)
-            for h in handlers:
-                ab = h['_allowed_bots']
-                if ab is not None and appid not in ab:
-                    continue
-                m = h['compiled'].search(content) if content else h['compiled'].search('')
-                if not m:
-                    continue
-                if h['_smask'] & ~scene:
-                    continue
-                plugin_name = h['name'] or h.get('_plugin', '')
-                log_service = self._get_log_service(event)
-                event._reply_log_cb = _make_reply_log_cb(plugin_name, log_service)
-                event._reply_plugin_name = plugin_name or ''
-                asyncio.create_task(self._run_handler(h, event, m, plugin_name, user_id, et, content))
-                return True
-            return False
-
-        # ── 消息事件: 一次性读取配置 ──
-        _get = cfg.get_bot_setting
-        is_group_msg = (et == 'GROUP_MESSAGE_CREATE')
-        is_at_self = event.is_at_self
-
-        is_non_at = is_group_msg and not is_at_self
-        suppress_reply = is_non_at or (
-            is_group_msg and is_at_self and _get(appid, 'non_at_message.quiet_at_self', False))
-        if not suppress_reply and event.is_bot \
-                and _get(appid, 'message.suppress_bot_system_reply', False):
-            suppress_reply = True
+        is_non_at = et == "GROUP_MESSAGE_CREATE" and not getattr(
+            event, "is_at_self", False
+        )
 
         # 过滤仅@其他机器人的全量消息
-        if is_group_msg and event.is_at_other_bot and not is_at_self \
-                and _get(appid, 'non_at_message.ignore_at_other_bot', False):
+        if (
+            et == "GROUP_MESSAGE_CREATE"
+            and getattr(event, "is_at_other_bot", False)
+            and not getattr(event, "is_at_self", False)
+            and cfg.get_bot_setting(appid, "non_at_message.ignore_at_other_bot", False)
+        ):
             return False
 
         # 黑名单
-        if not suppress_reply:
+        if not is_non_at:
             bl = self._check_blacklist(event)
             if bl:
-                tpl = 'blacklist' if bl == 'user' else 'group_blacklist'
-                tvars = {'user_id': user_id, 'reason': '未指明原因'} if bl == 'user' else None
+                tpl = "blacklist" if bl == "user" else "group_blacklist"
+                tvars = (
+                    {"user_id": user_id, "reason": "未指明原因"}
+                    if bl == "user"
+                    else None
+                )
                 asyncio.create_task(event.reply(template_name=tpl, template_vars=tvars))
                 return True
 
         # 维护模式
-        if not suppress_reply and _get(appid, 'maintenance.enabled', False) \
-                and not self._is_owner(event):
-            if _get(appid, 'maintenance.reply', True):
-                asyncio.create_task(event.reply(template_name='maintenance'))
+        if (
+            not is_non_at
+            and cfg.get_bot_setting(appid, "maintenance.enabled", False)
+            and not self._is_owner(event)
+        ):
+            if cfg.get_bot_setting(appid, "maintenance.reply", True):
+                asyncio.create_task(event.reply(template_name="maintenance"))
             return True
 
         # 非AT群消息权限
         non_at_ok = False
         if is_non_at:
-            if _get(appid, 'non_at_message.enabled', False):
+            if cfg.get_bot_setting(appid, "non_at_message.enabled", False):
                 non_at_ok = True
             else:
-                gid = event.group_id or ''
-                wl = _get(appid, 'non_at_message.group_whitelist', []) or []
+                gid = event.group_id or ""
+                wl = (
+                    cfg.get_bot_setting(appid, "non_at_message.group_whitelist", [])
+                    or []
+                )
                 non_at_ok = bool(gid and gid in wl)
 
         # 拦截器
         for ic in self._all_interceptors:
             try:
-                r = await ic['func'](event) if ic['is_coro'] else \
-                    await asyncio.get_running_loop().run_in_executor(None, ic['func'], event)
+                r = (
+                    await ic["func"](event)
+                    if ic["is_coro"]
+                    else await asyncio.get_running_loop().run_in_executor(
+                        None, ic["func"], event
+                    )
+                )
                 if r is True:
                     return True
             except Exception as e:
-                report_error(PLUGIN, ic.get('_plugin', '?'), e)
+                report_error(PLUGIN, ic.get("_plugin", "?"), e)
 
         # 处理器匹配 (原文优先, 再试加/去 / 的变体)
         scene = _event_scene(event)
         handlers = self._handlers_for(et)
-        variants = (content, content[1:]) if content[:1] == '/' else (content, '/' + content)
+        variants = (
+            (content, content[1:]) if content[:1] == "/" else (content, "/" + content)
+        )
         for v in variants:
-            if self._match_handlers(handlers, v, event, appid, is_non_at,
-                                    non_at_ok, scene, user_id, et, content):
+            if self._match_handlers(
+                handlers,
+                v,
+                event,
+                appid,
+                is_non_at,
+                non_at_ok,
+                scene,
+                user_id,
+                et,
+                content,
+            ):
                 return True
 
         # 无匹配 → 默认回复
-        if not suppress_reply and (
-                et in ('GROUP_AT_MESSAGE_CREATE', 'C2C_MESSAGE_CREATE')
-                or (is_group_msg and is_at_self)):
-            if _get(appid, 'message.send_default_response', True):
-                excluded = _get(appid, 'message.default_response_excluded_regex', []) or []
-                if not any(re.search(p, content) for p in excluded if p):
-                    asyncio.create_task(event.reply(
-                        template_name='default', template_vars={'user_id': user_id}))
+        should_default = et in ("GROUP_AT_MESSAGE_CREATE", "C2C_MESSAGE_CREATE") or (
+            et == "GROUP_MESSAGE_CREATE" and getattr(event, "is_at_self", False)
+        )
+        if should_default and cfg.get_bot_setting(
+            appid, "message.send_default_response", True
+        ):
+            excluded = (
+                cfg.get_bot_setting(
+                    appid, "message.default_response_excluded_regex", []
+                )
+                or []
+            )
+            if not any(re.search(p, content) for p in excluded if p):
+                asyncio.create_task(
+                    event.reply(
+                        template_name="default", template_vars={"user_id": user_id}
+                    )
+                )
         return False
 
-    def _match_handlers(self, handlers, try_content, event, appid, is_non_at,
-                        non_at_ok, scene, user_id, et, content):
+    def _match_handlers(
+        self,
+        handlers,
+        try_content,
+        event,
+        appid,
+        is_non_at,
+        non_at_ok,
+        scene,
+        user_id,
+        et,
+        content,
+    ):
         """内循环: 遍历 handler 尝试匹配, 匹配成功则 fire-and-forget 并返回 True"""
         for h in handlers:
             # 快速过滤: bot 白名单
-            ab = h['_allowed_bots']
+            ab = h["_allowed_bots"]
             if ab is not None and appid not in ab:
                 continue
             # 非AT群消息过滤
-            if is_non_at and not h.get('ignore_at_check', False) and not non_at_ok:
+            if is_non_at and not h.get("ignore_at_check", False) and not non_at_ok:
                 continue
             # 正则匹配
-            m = h['compiled'].search(try_content)
+            m = h["compiled"].search(try_content)
             if not m:
                 continue
             # 场景过滤 (位掩码): handler 要求的场景位 & 事件不具备的场景位 → 不匹配
-            if h['_smask'] & ~scene:
+            if h["_smask"] & ~scene:
                 # 群聊专属指令在私聊环境 → 明确告知用户
-                if h['group_only'] and not is_non_at:
-                    asyncio.create_task(event.reply(
-                        template_name='group_only', template_vars={'user_id': user_id}))
+                if h["group_only"] and not is_non_at:
+                    asyncio.create_task(
+                        event.reply(
+                            template_name="group_only",
+                            template_vars={"user_id": user_id},
+                        )
+                    )
                     return True
                 continue
             # 权限
-            if h['owner_only'] and not self._is_owner(event):
+            if h["owner_only"] and not self._is_owner(event):
                 if not is_non_at:
-                    asyncio.create_task(event.reply(
-                        template_name='owner_only', template_vars={'user_id': user_id}))
+                    asyncio.create_task(
+                        event.reply(
+                            template_name="owner_only",
+                            template_vars={"user_id": user_id},
+                        )
+                    )
                 return True
             # 日志绑定
-            plugin_name = h['name'] or h.get('_plugin', '')
+            plugin_name = h["name"] or h.get("_plugin", "")
             log_service = self._get_log_service(event)
             event._reply_log_cb = _make_reply_log_cb(plugin_name, log_service)
-            event._reply_plugin_name = plugin_name or ''
-            asyncio.create_task(self._run_handler(h, event, m, plugin_name, user_id, et, content))
+            event._reply_plugin_name = plugin_name or ""
+            asyncio.create_task(
+                self._run_handler(h, event, m, plugin_name, user_id, et, content)
+            )
             return True
         return False
 
     async def _run_handler(self, h, event, match, plugin_name, user_id, et, content):
         t0 = time.time()
         try:
-            fn = h['func']
-            coro = fn(event, match) if h['is_coro'] else \
-                asyncio.get_running_loop().run_in_executor(None, fn, event, match)
+            fn = h["func"]
+            coro = (
+                fn(event, match)
+                if h["is_coro"]
+                else asyncio.get_running_loop().run_in_executor(None, fn, event, match)
+            )
             await asyncio.wait_for(coro, timeout=300)
-        except asyncio.TimeoutError:
-            report_error(PLUGIN, plugin_name or '?', f"处理器 [{h['name']}] 超时(300s)",
-                         context={'handler': h['name'], 'user_id': user_id,
-                                  'event_type': et, 'content': content[:200]})
+        except TimeoutError:
+            report_error(
+                PLUGIN,
+                plugin_name or "?",
+                f"处理器 [{h['name']}] 超时(300s)",
+                context={
+                    "handler": h["name"],
+                    "user_id": user_id,
+                    "event_type": et,
+                    "content": content[:200],
+                },
+            )
         except Exception as e:
-            report_error(PLUGIN, plugin_name or '?', e,
-                         context={'handler': h['name'], 'user_id': user_id,
-                                  'group_id': event.group_id or '',
-                                  'event_type': et, 'content': content[:200]})
+            report_error(
+                PLUGIN,
+                plugin_name or "?",
+                e,
+                context={
+                    "handler": h["name"],
+                    "user_id": user_id,
+                    "group_id": event.group_id or "",
+                    "event_type": et,
+                    "content": content[:200],
+                },
+            )
         finally:
             dt = time.time() - t0
             if dt > 3:
-                log.warning(f"[性能] 处理器 [{plugin_name}] 耗时 {dt*1000:.0f}ms content={content[:50]}")
+                log.warning(
+                    f"[性能] 处理器 [{plugin_name}] 耗时 {dt * 1000:.0f}ms content={content[:50]}"
+                )
             event.raw = event._reply_log_cb = None
 
     # ---------- 日志服务 ----------
 
-    _bot_manager_ref = None
-
     def _get_log_service(self, event):
-        bm = self._bot_manager_ref
-        if bm is None:
-            try:
-                from core.bot.manager import _bot_manager_ref
-                bm = _bot_manager_ref
-                if bm is not None:
-                    type(self)._bot_manager_ref = bm
-            except Exception:
-                return None
-        if not bm:
+        try:
+            from core.application import get_app
+
+            app = get_app()
+        except Exception:
             return None
-        bot = bm.get_bot(event.appid)
+        if not app:
+            return None
+        bot = app.get_bot(event.appid)
         return bot.log_service if bot else None
 
 
@@ -253,11 +298,15 @@ def _merge_by_priority(a, b):
     ia = ib = 0
     la, lb = len(a), len(b)
     while ia < la and ib < lb:
-        if a[ia]['priority'] >= b[ib]['priority']:
-            yield a[ia]; ia += 1
+        if a[ia]["priority"] >= b[ib]["priority"]:
+            yield a[ia]
+            ia += 1
         else:
-            yield b[ib]; ib += 1
+            yield b[ib]
+            ib += 1
     while ia < la:
-        yield a[ia]; ia += 1
+        yield a[ia]
+        ia += 1
     while ib < lb:
-        yield b[ib]; ib += 1
+        yield b[ib]
+        ib += 1

@@ -1,9 +1,10 @@
 """文件监视 (代码变更自动热重载) — PluginManager 的 Mixin"""
 
-import os
 import asyncio
+import contextlib
+import os
 
-from core.base.logger import get_logger, FRAMEWORK, PLUGIN, report_error
+from core.base.logger import FRAMEWORK, PLUGIN, get_logger, report_error
 
 log = get_logger(FRAMEWORK, "插件管理")
 
@@ -14,12 +15,10 @@ class _WatcherMixin:
     def _scan_plugin_mtimes(self, pdir):
         for root, _, files in os.walk(pdir):
             for f in files:
-                if f.endswith('.py') and not f.startswith('_'):
+                if f.endswith(".py") and not f.startswith("_"):
                     fp = os.path.join(root, f)
-                    try:
+                    with contextlib.suppress(OSError):
                         self._file_mtimes[fp] = os.path.getmtime(fp)
-                    except OSError:
-                        pass
 
     def _snapshot_all_mtimes(self):
         self._file_mtimes.clear()
@@ -46,9 +45,12 @@ class _WatcherMixin:
                 continue
             for root, _, files in os.walk(pdir):
                 for f in files:
-                    if f.endswith('.py') and not f.startswith('_'):
-                        if os.path.join(root, f) not in self._file_mtimes:
-                            changed.add(name)
+                    if (
+                        f.endswith(".py")
+                        and not f.startswith("_")
+                        and os.path.join(root, f) not in self._file_mtimes
+                    ):
+                        changed.add(name)
         return changed
 
     async def _watcher_loop(self):

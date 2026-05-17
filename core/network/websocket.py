@@ -1,11 +1,13 @@
 #!/usr/bin/env python
-# -*- coding: utf-8 -*-
 """WebSocket 客户端 — 异步, 每个机器人独立 WS 连接接收事件"""
 
-import json
 import asyncio
+import contextlib
+import json
+
 import websockets
-from core.base.logger import get_logger, SERVICE
+
+from core.base.logger import SERVICE, get_logger
 from core.message.event import Event
 
 log = get_logger(SERVICE, "WebSocket")
@@ -29,16 +31,26 @@ _MAX_INFLIGHT_EVENTS = 256
 class WSClient:
     """单个机器人的 WebSocket 客户端"""
 
-    def __init__(self, appid, token_manager, on_event, *,
-                 reconnect_interval=5, max_reconnects=-1,
-                 custom_url='', custom_api_base=''):
+    def __init__(
+        self,
+        appid,
+        token_manager,
+        on_event,
+        *,
+        reconnect_interval=5,
+        max_reconnects=-1,
+        custom_url="",
+        custom_api_base="",
+    ):
         self._appid = str(appid)
         self._tm = token_manager
         self._on_event = on_event
         self._reconnect_interval = reconnect_interval
         self._max_reconnects = max_reconnects
-        self._custom_url = custom_url.strip() if custom_url else ''
-        self._custom_api_base = custom_api_base.strip().rstrip('/') if custom_api_base else ''
+        self._custom_url = custom_url.strip() if custom_url else ""
+        self._custom_api_base = (
+            custom_api_base.strip().rstrip("/") if custom_api_base else ""
+        )
 
         self._ws = None
         self._session_id = None
@@ -60,7 +72,12 @@ class WSClient:
                 url = await self._get_gateway_url()
                 log.info(f"[{self._appid}] 正在连接 WebSocket: {url}")
                 import ssl as _ssl_mod
-                _ssl = _ssl_mod.create_default_context() if url.startswith('wss://') else None
+
+                _ssl = (
+                    _ssl_mod.create_default_context()
+                    if url.startswith("wss://")
+                    else None
+                )
                 async with websockets.connect(url, ssl=_ssl) as ws:
                     self._ws = ws
                     self._reconnect_count = 0
@@ -72,10 +89,14 @@ class WSClient:
                     break
                 self._reconnect_count += 1
                 if 0 < self._max_reconnects <= self._reconnect_count:
-                    log.error(f"[{self._appid}] 达到最大重连次数 {self._max_reconnects}")
+                    log.error(
+                        f"[{self._appid}] 达到最大重连次数 {self._max_reconnects}"
+                    )
                     break
-                log.warning(f"[{self._appid}] 连接断开: {e}, {self._reconnect_interval}s 后重连 "
-                            f"({self._reconnect_count})")
+                log.warning(
+                    f"[{self._appid}] 连接断开: {e}, {self._reconnect_interval}s 后重连 "
+                    f"({self._reconnect_count})"
+                )
                 await asyncio.sleep(self._reconnect_interval)
 
     async def close(self):
@@ -86,15 +107,15 @@ class WSClient:
             await self._ws.close()
 
     async def _handle_connection(self):
-        """ 处理 WS 消息循环"""
+        """处理 WS 消息循环"""
         async for message in self._ws:
             try:
                 payload = json.loads(message)
             except json.JSONDecodeError:
                 continue
-            op = payload.get('op')
-            if payload.get('s') is not None:
-                self._seq = payload['s']
+            op = payload.get("op")
+            if payload.get("s") is not None:
+                self._seq = payload["s"]
             if op == _OP_HELLO:
                 await self._on_hello(payload)
             elif op == _OP_DISPATCH:
@@ -105,7 +126,7 @@ class WSClient:
                 log.info(f"[{self._appid}] 收到重连请求")
                 break
             elif op == _OP_INVALID_SESSION:
-                resumable = payload.get('d', False) and self._session_id
+                resumable = payload.get("d", False) and self._session_id
                 if not resumable:
                     log.warning(f"[{self._appid}] 会话无效, 重新鉴权")
                     self._session_id = None
@@ -118,7 +139,9 @@ class WSClient:
 
     async def _on_hello(self, payload):
         """Hello → 启动心跳 + 鉴权/恢复"""
-        self._heartbeat_interval = payload.get('d', {}).get('heartbeat_interval', 45000) / 1000
+        self._heartbeat_interval = (
+            payload.get("d", {}).get("heartbeat_interval", 45000) / 1000
+        )
         if self._heartbeat_task and not self._heartbeat_task.done():
             self._heartbeat_task.cancel()
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
@@ -129,14 +152,14 @@ class WSClient:
 
     async def _on_dispatch(self, payload):
         """事件分发 → 构造 Event 并回调"""
-        event_type = payload.get('t', '')
-        if event_type == 'INTERACTION_CREATE':
+        event_type = payload.get("t", "")
+        if event_type == "INTERACTION_CREATE":
             await self._send_event_ack(payload)
-        if event_type == 'READY':
-            self._session_id = payload.get('d', {}).get('session_id')
+        if event_type == "READY":
+            self._session_id = payload.get("d", {}).get("session_id")
             log.info(f"[{self._appid}] WebSocket 已就绪 (session={self._session_id})")
             return
-        if event_type == 'RESUMED':
+        if event_type == "RESUMED":
             log.info(f"[{self._appid}] 会话已恢复")
             return
         try:
@@ -156,40 +179,52 @@ class WSClient:
 
     async def _send_event_ack(self, payload, code=0):
         """回复事件确认 (op 12)"""
-        try:
-            await self._ws.send(json.dumps({'op': _OP_EVENT_ACK, 'code': code}))
-        except Exception:
-            pass
+        with contextlib.suppress(Exception):
+            await self._ws.send(json.dumps({"op": _OP_EVENT_ACK, "code": code}))
 
-    async def _send_op(self, op, data, label=''):
+    async def _send_op(self, op, data, label=""):
         """发送 WS 操作帧"""
-        await self._ws.send(json.dumps({'op': op, 'd': data}))
+        await self._ws.send(json.dumps({"op": op, "d": data}))
         if label:
             log.info(f"[{self._appid}] {label}")
 
     async def _send_identify(self):
         token = await self._tm.get_token()
-        await self._send_op(_OP_IDENTIFY, {
-            'token': f"QQBot {token}",
-            'intents': self._get_intents(),
-            'shard': [0, 1],
-            'properties': {'$os': 'python', '$browser': 'elaina-bot', '$device': 'elaina-bot'},
-        }, '已发送鉴权')
+        await self._send_op(
+            _OP_IDENTIFY,
+            {
+                "token": f"QQBot {token}",
+                "intents": self._get_intents(),
+                "shard": [0, 1],
+                "properties": {
+                    "$os": "python",
+                    "$browser": "elaina-bot",
+                    "$device": "elaina-bot",
+                },
+            },
+            "已发送鉴权",
+        )
 
     async def _send_resume(self):
         token = await self._tm.get_token()
-        await self._send_op(_OP_RESUME, {
-            'token': f"QQBot {token}",
-            'session_id': self._session_id,
-            'seq': self._seq,
-        }, f'已发送恢复 (seq={self._seq})')
+        await self._send_op(
+            _OP_RESUME,
+            {
+                "token": f"QQBot {token}",
+                "session_id": self._session_id,
+                "seq": self._seq,
+            },
+            f"已发送恢复 (seq={self._seq})",
+        )
 
     async def _heartbeat_loop(self):
         while not self._closed:
             try:
                 await asyncio.sleep(self._heartbeat_interval)
                 if self._ws and not self._closed:
-                    await self._ws.send(json.dumps({'op': _OP_HEARTBEAT, 'd': self._seq}))
+                    await self._ws.send(
+                        json.dumps({"op": _OP_HEARTBEAT, "d": self._seq})
+                    )
             except asyncio.CancelledError:
                 break
             except Exception:
@@ -207,12 +242,16 @@ class WSClient:
             return self._gateway_url
 
         # 自定义 API 基址时, 从该基址获取网关
-        url = f"{self._custom_api_base}/gateway/bot" if self._custom_api_base else _GATEWAY_URL
+        url = (
+            f"{self._custom_api_base}/gateway/bot"
+            if self._custom_api_base
+            else _GATEWAY_URL
+        )
         token = await self._tm.get_token()
         client = await self._tm.get_client()
-        resp = await client.get(url, headers={'Authorization': f"QQBot {token}"})
+        resp = await client.get(url, headers={"Authorization": f"QQBot {token}"})
         data = resp.json()
-        self._gateway_url = data.get('url', '')
+        self._gateway_url = data.get("url", "")
         if not self._gateway_url:
             raise RuntimeError(f"获取网关失败: {data}")
         return self._gateway_url
@@ -220,4 +259,12 @@ class WSClient:
     @staticmethod
     def _get_intents():
         """构建 intents 位掩码"""
-        return (1 << 0) | (1 << 10) | (1 << 12) | (1 << 25) | (1 << 26) | (1 << 27) | (1 << 30)
+        return (
+            (1 << 0)
+            | (1 << 10)
+            | (1 << 12)
+            | (1 << 25)
+            | (1 << 26)
+            | (1 << 27)
+            | (1 << 30)
+        )

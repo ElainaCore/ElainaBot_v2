@@ -3,21 +3,23 @@
 # ==================== 插件元数据 ====================
 # 插件作者可在此处填写信息, 将在 Web 面板中展示
 __plugin_meta__ = {
-    'name': '系统管理',
-    'author': 'ElainaBot',
-    'description': '框架内置系统插件, 提供基础信息、管理、查询、示例等功能',
-    'version': '1.0.0',
-    'github': 'https://github.com/ElainaCore/ElainaBot_v2',
+    "name": "系统管理",
+    "author": "ElainaBot",
+    "description": "框架内置系统插件, 提供基础信息、管理、查询、示例等功能",
+    "version": "1.0.0",
+    "github": "https://github.com/ElainaCore/ElainaBot_v2",
 }
 
+from core.base.logger import PLUGIN, get_logger
 from core.plugin.decorators import on_load, on_unload
-from core.base.logger import get_logger, PLUGIN
 
 # 导入 app 子模块, 触发 @handler / 侧边栏页面等注册
-from plugins.system.app import basic      # noqa: F401
-from plugins.system.app import admin      # noqa: F401
-from plugins.system.app import stats      # noqa: F401
-from plugins.system.app import openapi    # noqa: F401
+from plugins.system.app import (
+    admin,  # noqa: F401
+    basic,  # noqa: F401
+    openapi,  # noqa: F401
+    stats,  # noqa: F401
+)
 
 log = get_logger(PLUGIN, "系统管理")
 
