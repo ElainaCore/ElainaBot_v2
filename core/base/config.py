@@ -312,6 +312,17 @@ class ConfigManager:
                 added += ConfigManager._merge_defaults(current[k], v, f"{_prefix}{k}.")
         return added
 
+    @staticmethod
+    def _resolve_env_vars(text: str) -> str:
+        """解析 ${VAR_NAME:default} 环境变量占位符"""
+        import re
+        _ENV_PATTERN = re.compile(r'\$\{(\w+)(?::([^}]*))?}')
+        def _replacer(m):
+            var = m.group(1)
+            default = m.group(2) if m.group(2) is not None else ''
+            return os.environ.get(var, default)
+        return _ENV_PATTERN.sub(_replacer, text)
+
     def reload_all(self):
         """强制重新加载所有已缓存的配置"""
         with self._rw_lock:
