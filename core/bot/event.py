@@ -67,6 +67,7 @@ class EventHandlerMixin:
         self._known_users = {}
         self._cache_clean_ts = 0
         self._group_users_cache = {}
+        self._group_locks = {}
         self._full_access_cache = {}  # {group_id: expire_ts}
 
     # ==================== 事件入口 ====================
@@ -381,7 +382,9 @@ class EventHandlerMixin:
             self._cache_clean_ts = now
             self._known_users = {k: v for k, v in self._known_users.items() if v > now}
             # 清理过期群缓存 (expire_ts < now), 避免不活跃群的 user_map 一直占用内存
-            self._group_users_cache = {k: v for k, v in self._group_users_cache.items() if v[0] > now}
+            active = {k: v for k, v in self._group_users_cache.items() if v[0] > now}
+            self._group_users_cache = active
+            self._group_locks = {k: v for k, v in self._group_locks.items() if k in active}
 
         if username:
             bot.log_service.db_queue(
@@ -425,7 +428,10 @@ class EventHandlerMixin:
 
     @staticmethod
     def _users_json(user_map):
-        return json.dumps(list(user_map.values()), ensure_ascii=False)
+        try:
+            return json.dumps(list(user_map.values()), ensure_ascii=False)
+        except RuntimeError:
+            return json.dumps(list(dict(user_map).values()), ensure_ascii=False)
 
     def _upsert_group_user(self, user_map, uid, today):
         """更新或新增群成员条目, 返回是否有变更"""
@@ -454,6 +460,15 @@ class EventHandlerMixin:
         uid = str(user_id)
         today = datetime.now().strftime('%Y-%m-%d')
 
+        lock = self._group_locks.get(group_id)
+        if not lock:
+            lock = asyncio.Lock()
+            self._group_locks[group_id] = lock
+
+        async with lock:
+            await self._add_user_to_group_inner(bot, group_id, uid, today)
+
+    async def _add_user_to_group_inner(self, bot, group_id, uid, today):
         # 1. 内存缓存命中
         cached = self._group_users_cache.get(group_id)
         if cached:
@@ -476,7 +491,14 @@ class EventHandlerMixin:
                 (group_id,),
             )
             if rows:
-                user_map = self._parse_user_map(json.loads(rows[0].get('users', '[]')))
+                raw_str = rows[0].get('users', '[]')
+                try:
+                    raw = json.loads(raw_str)
+                except (json.JSONDecodeError, TypeError) as e:
+                    p = getattr(e, 'pos', 0) or 0
+                    log.warning(f'[群用户列表] group={group_id} JSON损坏: {e}, 上下文: ...{raw_str[max(0,p-50):p+50]}...')
+                    raw = []
+                user_map = self._parse_user_map(raw)
                 self._upsert_group_user(user_map, uid, today)
                 bot.log_service.db_queue(
                     'UPDATE groups_users SET users=? WHERE group_id=?',

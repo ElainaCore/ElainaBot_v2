@@ -34,8 +34,10 @@ async def _shutdown_tasks(tasks, stop_event):
 
 
 def _close_all_conns(conns):
-    """关闭并清空所有 SQLite 连接"""
+    """WAL checkpoint + 关闭并清空所有 SQLite 连接"""
     for conn in conns.values():
+        with contextlib.suppress(Exception):
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         with contextlib.suppress(Exception):
             conn.close()
     conns.clear()
