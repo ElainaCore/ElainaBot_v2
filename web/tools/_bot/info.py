@@ -2,6 +2,7 @@
 
 import ssl
 import urllib.parse
+
 import aiohttp as _aiohttp
 from aiohttp import web
 
@@ -67,9 +68,16 @@ async def handle_get_robot_info(request: web.Request):
     }
 
     try:
-        async with _aiohttp.ClientSession() as session:
-            async with session.get(_API_URL.format(appid), headers=_HEADERS, ssl=_SSL_CTX, timeout=_aiohttp.ClientTimeout(total=10)) as resp:
-                api_resp = await resp.json()
+        async with (
+            _aiohttp.ClientSession() as session,
+            session.get(
+                _API_URL.format(appid),
+                headers=_HEADERS,
+                ssl=_SSL_CTX,
+                timeout=_aiohttp.ClientTimeout(total=10),
+            ) as resp,
+        ):
+            api_resp = await resp.json()
 
         if api_resp.get('retcode') != 0:
             raise Exception(api_resp.get('msg', 'API 错误'))
@@ -114,9 +122,15 @@ async def handle_get_robot_qrcode(request: web.Request):
         return web.json_response({'success': False, 'error': '缺少 URL'}, status=400)
     try:
         qr_url = _QR_API.format(urllib.parse.quote(url, safe=''))
-        async with _aiohttp.ClientSession() as session:
-            async with session.get(qr_url, ssl=_SSL_CTX, timeout=_aiohttp.ClientTimeout(total=10)) as resp:
-                data = await resp.read()
-                return web.Response(body=data, content_type='image/png', headers={'Cache-Control': 'public, max-age=3600'})
+        async with (
+            _aiohttp.ClientSession() as session,
+            session.get(qr_url, ssl=_SSL_CTX, timeout=_aiohttp.ClientTimeout(total=10)) as resp,
+        ):
+            data = await resp.read()
+            return web.Response(
+                body=data,
+                content_type='image/png',
+                headers={'Cache-Control': 'public, max-age=3600'},
+            )
     except Exception as e:
         return web.json_response({'success': False, 'error': str(e)}, status=500)

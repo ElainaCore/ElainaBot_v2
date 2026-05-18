@@ -2,31 +2,30 @@
 
 import asyncio
 import logging
-from datetime import datetime
 
 from aiohttp import web
 
 import web.auth as auth
-import web.ws as panel_ws
 import web.tools._bot.info as robot_info
 import web.tools._bot.restart as bot_restart
-import web.tools._stats.log as log_query
-import web.tools._stats.system as system_info
-import web.tools._stats.statistics as statistics_handler
 import web.tools._config.handler as config_handler
 import web.tools._database.browser as database_browser
+import web.tools._market.install as _market_install
+import web.tools._market.local as _market_local
+import web.tools._market.market as _market_market
+import web.tools._market.shared as _market_shared
 import web.tools._message.handlers as message_handler
 import web.tools._openapi.handler as openapi_handler
-import web.tools._updater.handlers as update_handler
-import web.tools._plugin_mgr.shared as _plugin_mgr_shared
-import web.tools._plugin_mgr.scan as _plugin_mgr_scan
+import web.tools._plugin_mgr.config as _plugin_mgr_config
 import web.tools._plugin_mgr.files as _plugin_mgr_files
 import web.tools._plugin_mgr.module as _plugin_mgr_module
-import web.tools._plugin_mgr.config as _plugin_mgr_config
-import web.tools._market.market as _market_market
-import web.tools._market.local as _market_local
-import web.tools._market.install as _market_install
-import web.tools._market.shared as _market_shared
+import web.tools._plugin_mgr.scan as _plugin_mgr_scan
+import web.tools._plugin_mgr.shared as _plugin_mgr_shared
+import web.tools._stats.log as log_query
+import web.tools._stats.statistics as statistics_handler
+import web.tools._stats.system as system_info
+import web.tools._updater.handlers as update_handler
+import web.ws as panel_ws
 
 log = logging.getLogger('ElainaBot.web.api')
 
@@ -64,9 +63,7 @@ def get_routes() -> list:
         web.post('/api/plugins/read', _(_plugin_mgr_files.handle_read_plugin)),
         web.post('/api/plugins/save', _(_plugin_mgr_files.handle_save_plugin)),
         web.post('/api/plugins/create', _(_plugin_mgr_files.handle_create_plugin)),
-        web.post(
-            '/api/plugins/create-folder', _(_plugin_mgr_files.handle_create_folder)
-        ),
+        web.post('/api/plugins/create-folder', _(_plugin_mgr_files.handle_create_folder)),
         web.get('/api/plugins/folders', _(_plugin_mgr_files.handle_get_folders)),
         web.post('/api/plugins/upload', _(_plugin_mgr_files.handle_upload_plugin)),
         web.post('/api/plugins/reload', _(_plugin_mgr_files.handle_reload_plugin)),
@@ -91,9 +88,7 @@ def get_routes() -> list:
         web.post('/api/message/history', _(message_handler.handle_get_chat_history)),
         web.post('/api/message/send', _(message_handler.handle_send_message)),
         web.post('/api/message/nickname', _(message_handler.handle_get_nickname)),
-        web.post(
-            '/api/message/nicknames', _(message_handler.handle_get_nicknames_batch)
-        ),
+        web.post('/api/message/nicknames', _(message_handler.handle_get_nicknames_batch)),
         web.post('/api/message/recall', _(message_handler.handle_recall_message)),
         # ── 统计 ──
         web.get('/api/statistics', _(statistics_handler.handle_get_statistics)),
@@ -102,9 +97,7 @@ def get_routes() -> list:
             '/api/statistics/task/{task_id}',
             _(statistics_handler.handle_get_task_status),
         ),
-        web.get(
-            '/api/statistics/dates', _(statistics_handler.handle_get_available_dates)
-        ),
+        web.get('/api/statistics/dates', _(statistics_handler.handle_get_available_dates)),
         # ── 更新 ──
         web.get('/api/update/changelog', _(update_handler.handle_get_changelog)),
         web.get('/api/update/version', _(update_handler.handle_get_current_version)),
@@ -131,31 +124,19 @@ def get_routes() -> list:
         web.post('/api/market/local/save', _(_market_local.handle_local_plugin_save)),
         web.get('/api/market/mirror', _(_market_market.handle_market_get_mirror)),
         web.post('/api/market/mirror', _(_market_market.handle_market_set_mirror)),
-        web.post(
-            '/api/market/mirror/test', _(_market_market.handle_market_test_mirror)
-        ),
+        web.post('/api/market/mirror/test', _(_market_market.handle_market_test_mirror)),
         # ── OpenAPI ──
         web.post('/api/openapi/start-login', _(openapi_handler.handle_start_login)),
         web.post('/api/openapi/check-login', _(openapi_handler.handle_check_login)),
-        web.post(
-            '/api/openapi/login-status', _(openapi_handler.handle_get_login_status)
-        ),
-        web.post(
-            '/api/openapi/verify-login', _(openapi_handler.handle_verify_saved_login)
-        ),
+        web.post('/api/openapi/login-status', _(openapi_handler.handle_get_login_status)),
+        web.post('/api/openapi/verify-login', _(openapi_handler.handle_verify_saved_login)),
         web.post('/api/openapi/logout', _(openapi_handler.handle_logout)),
         web.post('/api/openapi/botlist', _(openapi_handler.handle_get_botlist)),
         web.post('/api/openapi/botdata', _(openapi_handler.handle_get_botdata)),
-        web.post(
-            '/api/openapi/notifications', _(openapi_handler.handle_get_notifications)
-        ),
+        web.post('/api/openapi/notifications', _(openapi_handler.handle_get_notifications)),
         web.post('/api/openapi/whitelist', _(openapi_handler.handle_get_whitelist)),
-        web.post(
-            '/api/openapi/whitelist/update', _(openapi_handler.handle_update_whitelist)
-        ),
-        web.post(
-            '/api/openapi/whitelist/delete-qr', _(openapi_handler.handle_get_delete_qr)
-        ),
+        web.post('/api/openapi/whitelist/update', _(openapi_handler.handle_update_whitelist)),
+        web.post('/api/openapi/whitelist/delete-qr', _(openapi_handler.handle_get_delete_qr)),
         web.post(
             '/api/openapi/whitelist/check-delete-auth',
             _(openapi_handler.handle_check_delete_auth),
@@ -219,26 +200,20 @@ async def handle_login(request: web.Request):
     try:
         body = await request.json()
     except Exception:
-        return web.json_response(
-            {'success': False, 'error': '请求格式错误'}, status=400
-        )
+        return web.json_response({'success': False, 'error': '请求格式错误'}, status=400)
 
     password = body.get('password', '')
     from core.base.config import cfg
 
     admin_pwd = cfg.get('settings', 'web.admin_password', '')
     if not admin_pwd:
-        return web.json_response(
-            {'success': False, 'error': '未配置管理员密码'}, status=500
-        )
+        return web.json_response({'success': False, 'error': '未配置管理员密码'}, status=500)
 
     if not auth.verify_password(password, admin_pwd):
         auth.record_ip_access(ip, 'fail')
         remaining = auth.get_remaining_attempts(ip)
         if remaining <= 0:
-            return web.json_response(
-                {'success': False, 'error': 'IP 已被封禁，12小时后解除'}, status=403
-            )
+            return web.json_response({'success': False, 'error': 'IP 已被封禁，12小时后解除'}, status=403)
         return web.json_response(
             {
                 'success': False,

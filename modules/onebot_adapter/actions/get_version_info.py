@@ -10,9 +10,7 @@ from modules.onebot_adapter.base_action import BaseAction
 class GetVersionInfoAction(BaseAction):
     """get_version_info — 返回版本信息"""
 
-    async def execute(
-        self, params: dict[str, Any], echo: str | None = None
-    ) -> dict[str, Any]:
+    async def execute(self, params: dict[str, Any], echo: str | None = None) -> dict[str, Any]:
         return self._ok(
             {
                 'app_name': 'Elaina-OneBot-Adapter',

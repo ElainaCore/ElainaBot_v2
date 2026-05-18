@@ -13,9 +13,7 @@ class OneBotConfig:
     """
 
     ws_path: str = '/onebot'
-    reverse_ws_urls: list[dict] = field(
-        default_factory=lambda: [{'url': '', 'appid': ''}]
-    )
+    reverse_ws_urls: list[dict] = field(default_factory=lambda: [{'url': '', 'appid': ''}])
     reconnect_interval: int = 5
     access_token: str = ''
     heartbeat_interval: int = 30

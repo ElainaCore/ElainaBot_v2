@@ -23,56 +23,56 @@ def sample_config_dir():
     with tempfile.TemporaryDirectory() as tmpdir:
         # settings.yaml
         settings = {
-            "server": {"host": "0.0.0.0", "port": 15200},
-            "web": {"access_token": "test_token", "admin_password": "test_pass"},
-            "logging": {
-                "dir": "log",
-                "insert_interval": 2,
-                "batch_size": 0,
-                "retention_days": 5,
-                "wal_mode": True,
+            'server': {'host': '0.0.0.0', 'port': 15200},
+            'web': {'access_token': 'test_token', 'admin_password': 'test_pass'},
+            'logging': {
+                'dir': 'log',
+                'insert_interval': 2,
+                'batch_size': 0,
+                'retention_days': 5,
+                'wal_mode': True,
             },
-            "pip": {"auto_install": False, "mirror": ""},
+            'pip': {'auto_install': False, 'mirror': ''},
         }
-        with open(os.path.join(tmpdir, "settings.yaml"), "w") as f:
+        with open(os.path.join(tmpdir, 'settings.yaml'), 'w') as f:
             yaml.dump(settings, f)
 
         # bot.yaml
         bots = {
-            "bots": [
+            'bots': [
                 {
-                    "appid": "123456",
-                    "secret": "test_secret_123",
-                    "robot_qq": "987654321",
-                    "owner_ids": [""],
-                    "websocket": {"enabled": False},
-                    "message": {"use_markdown": True},
-                    "identity": {
-                        "use_union_id_for_group": False,
-                        "use_union_id_for_channel": False,
+                    'appid': '123456',
+                    'secret': 'test_secret_123',
+                    'robot_qq': '987654321',
+                    'owner_ids': [''],
+                    'websocket': {'enabled': False},
+                    'message': {'use_markdown': True},
+                    'identity': {
+                        'use_union_id_for_group': False,
+                        'use_union_id_for_channel': False,
                     },
-                    "welcome": {
-                        "group_welcome": False,
-                        "new_user_welcome": False,
-                        "friend_add_message": False,
+                    'welcome': {
+                        'group_welcome': False,
+                        'new_user_welcome': False,
+                        'friend_add_message': False,
                     },
-                    "maintenance": {"enabled": False},
-                    "dedup": {"enabled": False},
-                    "blacklist": {
-                        "user_enabled": False,
-                        "group_enabled": False,
-                        "user_list": [],
-                        "group_list": [],
+                    'maintenance': {'enabled': False},
+                    'dedup': {'enabled': False},
+                    'blacklist': {
+                        'user_enabled': False,
+                        'group_enabled': False,
+                        'user_list': [],
+                        'group_list': [],
                     },
-                    "non_at_message": {
-                        "enabled": False,
-                        "group_whitelist": [],
-                        "ignore_at_other_bot": False,
+                    'non_at_message': {
+                        'enabled': False,
+                        'group_whitelist': [],
+                        'ignore_at_other_bot': False,
                     },
                 }
             ],
         }
-        with open(os.path.join(tmpdir, "bot.yaml"), "w") as f:
+        with open(os.path.join(tmpdir, 'bot.yaml'), 'w') as f:
             yaml.dump(bots, f)
 
         yield tmpdir
@@ -97,19 +97,19 @@ def config_manager(sample_config_dir):
 def sample_group_at_payload():
     """群聊 @ 消息原始 payload"""
     return {
-        "id": "evt_001",
-        "op": 0,
-        "d": {
-            "id": "msg_001",
-            "author": {
-                "id": "user_abc",
-                "member_openid": "member_xyz",
+        'id': 'evt_001',
+        'op': 0,
+        'd': {
+            'id': 'msg_001',
+            'author': {
+                'id': 'user_abc',
+                'member_openid': 'member_xyz',
             },
-            "content": "/help",
-            "timestamp": "2026-05-17T10:00:00+08:00",
-            "group_openid": "group_001",
-            "message_reference": {},
-            "attachments": [],
+            'content': '/help',
+            'timestamp': '2026-05-17T10:00:00+08:00',
+            'group_openid': 'group_001',
+            'message_reference': {},
+            'attachments': [],
         },
     }
 
@@ -118,17 +118,17 @@ def sample_group_at_payload():
 def sample_c2c_payload():
     """私聊消息原始 payload"""
     return {
-        "id": "evt_002",
-        "op": 0,
-        "d": {
-            "id": "msg_002",
-            "author": {
-                "id": "user_def",
+        'id': 'evt_002',
+        'op': 0,
+        'd': {
+            'id': 'msg_002',
+            'author': {
+                'id': 'user_def',
             },
-            "content": "hello",
-            "timestamp": "2026-05-17T10:01:00+08:00",
-            "message_reference": {},
-            "attachments": [],
+            'content': 'hello',
+            'timestamp': '2026-05-17T10:01:00+08:00',
+            'message_reference': {},
+            'attachments': [],
         },
     }
 
@@ -139,18 +139,18 @@ def sample_event():
     from core.message.event import Event
 
     evt = Event()
-    evt.event_type = "GROUP_AT_MESSAGE_CREATE"
-    evt.appid = "123456"
-    evt.message_id = "msg_001"
-    evt.user_id = "user_abc"
-    evt.content = "/help"
-    evt.group_id = "group_001"
-    evt.timestamp = "2026-05-17T10:00:00+08:00"
+    evt.event_type = 'GROUP_AT_MESSAGE_CREATE'
+    evt.appid = '123456'
+    evt.message_id = 'msg_001'
+    evt.user_id = 'user_abc'
+    evt.content = '/help'
+    evt.group_id = 'group_001'
+    evt.timestamp = '2026-05-17T10:00:00+08:00'
     evt.is_at_self = True
     evt.is_group = True
     evt.is_direct = False
-    evt.raw_content = "/help"
-    evt.member_openid = "member_xyz"
+    evt.raw_content = '/help'
+    evt.member_openid = 'member_xyz'
     return evt
 
 
@@ -161,8 +161,8 @@ def sample_event():
 def mock_token_response():
     """模拟 QQ Bot API Token 响应"""
     return {
-        "access_token": "mock_access_token_xxx",
-        "expires_in": 7200,
+        'access_token': 'mock_access_token_xxx',
+        'expires_in': 7200,
     }
 
 

@@ -26,13 +26,9 @@ class ActionContext:
 
     log: Any  # 日志器 (来自框架, 接口不透明)
     senders: dict[int, MessageSender] = field(default_factory=dict)  # {appid: sender}
-    log_services: dict[int, LogService] = field(
-        default_factory=dict
-    )  # {appid: LogService}
+    log_services: dict[int, LogService] = field(default_factory=dict)  # {appid: LogService}
     id_mapper: IDMapper | None = None
-    msg_id_cache: OrderedDict[tuple[int, int | str], int | str] = field(
-        default_factory=OrderedDict
-    )  # {(appid, chat_id): msg_id}
+    msg_id_cache: OrderedDict[tuple[int, int | str], int | str] = field(default_factory=OrderedDict)  # {(appid, chat_id): msg_id}
     qq_map: dict[str, int] = field(default_factory=dict)  # {appid_str: robot_qq_int}
     default_qq: int = 0
     current_appid: str = ''  # 当前 action 上下文的 appid
@@ -48,9 +44,7 @@ class ActionContext:
     def get_log_service(self, appid: str = '') -> LogService | None:
         """获取 LogService"""
         aid = appid or self.current_appid
-        return self.log_services.get(aid) or next(
-            iter(self.log_services.values()), None
-        )
+        return self.log_services.get(aid) or next(iter(self.log_services.values()), None)
 
     def find_msg_id(self, chat_id: int | str) -> int | str | None:
         """从缓存查找 msg_id"""
@@ -129,9 +123,7 @@ class ActionContext:
             direction='send',
         )
 
-    async def log_recv(
-        self, appid: str, event: Event, ob_event: dict[str, Any]
-    ) -> None:
+    async def log_recv(self, appid: str, event: Event, ob_event: dict[str, Any]) -> None:
         """记录接收的 OneBot 事件 JSON 到 SQLite (不推实时日志)"""
         if ob_event.get('post_type') != 'message':
             return

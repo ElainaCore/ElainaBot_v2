@@ -21,9 +21,7 @@ class BaseAction(ABC):
         self._ctx = ctx
 
     @abstractmethod
-    async def execute(
-        self, params: dict[str, Any], echo: str | None = None
-    ) -> dict[str, Any]:
+    async def execute(self, params: dict[str, Any], echo: str | None = None) -> dict[str, Any]:
         """执行 action 并返回 OneBot 11 格式响应"""
         ...
 
@@ -34,7 +32,5 @@ class BaseAction(ABC):
         return ResponseBuilder.ok(data, echo)
 
     @staticmethod
-    def _fail(
-        msg: str = '', echo: str | None = None, retcode: int = 1
-    ) -> dict[str, Any]:
+    def _fail(msg: str = '', echo: str | None = None, retcode: int = 1) -> dict[str, Any]:
         return ResponseBuilder.fail(msg, echo, retcode)

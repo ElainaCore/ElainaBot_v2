@@ -41,9 +41,7 @@ class IDMapper:
         self._db.executescript(_DDL)
         self._db.commit()
         # 预热缓存
-        for openid, qq_id, id_type in self._db.execute(
-            'SELECT openid, qq_id, id_type FROM id_map'
-        ).fetchall():
+        for openid, qq_id, id_type in self._db.execute('SELECT openid, qq_id, id_type FROM id_map').fetchall():
             self._cache_fwd[(openid, id_type)] = qq_id
             self._cache_rev[qq_id] = (openid, id_type)
 
@@ -63,9 +61,7 @@ class IDMapper:
             return cached
 
         # 查库
-        row = self._db.execute(
-            'SELECT qq_id FROM id_map WHERE openid=? AND id_type=?', (openid, id_type)
-        ).fetchone()
+        row = self._db.execute('SELECT qq_id FROM id_map WHERE openid=? AND id_type=?', (openid, id_type)).fetchone()
         if row:
             qq_id = row[0]
             self._cache_fwd[key] = qq_id
@@ -95,9 +91,7 @@ class IDMapper:
         if cached is not None:
             return cached
 
-        row = self._db.execute(
-            'SELECT openid, id_type FROM id_map WHERE qq_id=?', (qq_id,)
-        ).fetchone()
+        row = self._db.execute('SELECT openid, id_type FROM id_map WHERE qq_id=?', (qq_id,)).fetchone()
         if row:
             openid, id_type = row
             key = (openid, id_type)
@@ -112,7 +106,5 @@ class IDMapper:
         if result and result[1] == id_type:
             return result[0]
         # 类型不匹配时尝试精确查询
-        row = self._db.execute(
-            'SELECT openid FROM id_map WHERE qq_id=? AND id_type=?', (qq_id, id_type)
-        ).fetchone()
+        row = self._db.execute('SELECT openid FROM id_map WHERE qq_id=? AND id_type=?', (qq_id, id_type)).fetchone()
         return row[0] if row else None

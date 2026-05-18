@@ -37,13 +37,9 @@ class MessageSenderService:
         prefix = 'groups' if group_id else 'users'
 
         if image_bytes:
-            return await MessageSenderService._send_media(
-                sender, target, prefix, payload, image_bytes, msg_id
-            )
+            return await MessageSenderService._send_media(sender, target, prefix, payload, image_bytes, msg_id)
 
-        return await MessageSenderService._send_text(
-            sender, group_id, user_id, target, payload, msg_id
-        )
+        return await MessageSenderService._send_text(sender, group_id, user_id, target, payload, msg_id)
 
     @staticmethod
     async def _send_media(
@@ -54,9 +50,7 @@ class MessageSenderService:
         image_bytes: bytes,
         msg_id: int | str | None,
     ) -> tuple[bool, Any]:
-        file_info = await upload_media_bytes(
-            sender, image_bytes, 1, f'/v2/{prefix}/{target}/files'
-        )
+        file_info = await upload_media_bytes(sender, image_bytes, 1, f'/v2/{prefix}/{target}/files')
         if not file_info:
             return False, '图片上传失败'
         media_payload: dict[str, Any] = {

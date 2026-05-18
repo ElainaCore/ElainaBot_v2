@@ -74,8 +74,12 @@ class _DispatchMixin:
             return False
 
         # 过滤仅@其他用户的全量消息
-        if is_group_msg and event.is_at_other_user and not is_at_self \
-                and _get(appid, 'non_at_message.ignore_at_other_user', False):
+        if (
+            et == 'GROUP_MESSAGE_CREATE'
+            and getattr(event, 'is_at_other_user', False)
+            and not getattr(event, 'is_at_self', False)
+            and cfg.get_bot_setting(appid, 'non_at_message.ignore_at_other_user', False)
+        ):
             return False
 
         # 黑名单

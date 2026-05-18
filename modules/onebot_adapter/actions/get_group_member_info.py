@@ -10,9 +10,7 @@ from modules.onebot_adapter.base_action import BaseAction
 class GetGroupMemberInfoAction(BaseAction):
     """get_group_member_info — 返回群成员信息 (最小实现)"""
 
-    async def execute(
-        self, params: dict[str, Any], echo: str | None = None
-    ) -> dict[str, Any]:
+    async def execute(self, params: dict[str, Any], echo: str | None = None) -> dict[str, Any]:
         gid = params.get('group_id', 0)
         uid = params.get('user_id', 0)
         return self._ok(

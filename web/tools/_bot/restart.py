@@ -67,10 +67,7 @@ async def handle_restart(request: web.Request):
     restarter = os.path.join(_base_dir, 'bot_restarter.py')
 
     try:
-        if _IS_WINDOWS:
-            script = _WIN_TEMPLATE.format(main_py=main_py)
-        else:
-            script = _UNIX_TEMPLATE.format(main_py=main_py, port=port)
+        script = _WIN_TEMPLATE.format(main_py=main_py) if _IS_WINDOWS else _UNIX_TEMPLATE.format(main_py=main_py, port=port)
 
         with open(restarter, 'w', encoding='utf-8') as f:
             f.write(script)

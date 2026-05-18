@@ -124,9 +124,7 @@ class OneBotWSServer:
             app.router.add_get(self._ws_path, self._forward_ws_handler)
             self._log.info(f'正向 WS 路由已挂载: {self._ws_path}')
         except (RuntimeError, ValueError):
-            self._log.warning(
-                f'正向 WS 路由注册跳过 (路由器已冻结, 需重启框架生效): {self._ws_path}'
-            )
+            self._log.warning(f'正向 WS 路由注册跳过 (路由器已冻结, 需重启框架生效): {self._ws_path}')
 
     # ==================== 反向 WS (客户端) ====================
 
@@ -168,16 +166,10 @@ class OneBotWSServer:
             headers['X-Client-Role'] = 'Universal'
             try:
                 self._log.info(f'反向 WS 正在连接: {url}')
-                async with self._reverse_session.ws_connect(
-                    url, headers=headers, ssl=False
-                ) as ws:
-                    wrapper = _WSWrapper(
-                        ws, remote=url, is_client=True, appid=appid, self_qq=self_qq
-                    )
+                async with self._reverse_session.ws_connect(url, headers=headers, ssl=False) as ws:
+                    wrapper = _WSWrapper(ws, remote=url, is_client=True, appid=appid, self_qq=self_qq)
                     self._clients.add(wrapper)
-                    self._log.info(
-                        f'反向 WS 已连接: {url} (self_qq={self_qq}, 当前 {len(self._clients)} 个)'
-                    )
+                    self._log.info(f'反向 WS 已连接: {url} (self_qq={self_qq}, 当前 {len(self._clients)} 个)')
                     await wrapper.send_str(self._lifecycle_json(self_qq))
 
                     async for msg in ws:
@@ -256,9 +248,7 @@ class OneBotWSServer:
         self_qq = self._default_qq
         wrapper = _WSWrapper(ws, remote=str(request.remote), self_qq=self_qq)
         self._clients.add(wrapper)
-        self._log.info(
-            f'正向 WS 客户端已连接: {request.remote} (当前 {len(self._clients)} 个)'
-        )
+        self._log.info(f'正向 WS 客户端已连接: {request.remote} (当前 {len(self._clients)} 个)')
         await wrapper.send_str(self._lifecycle_json(self_qq))
 
         try:
@@ -271,9 +261,7 @@ class OneBotWSServer:
             self._log.warning(f'正向 WS 连接异常: {e}')
         finally:
             self._clients.discard(wrapper)
-            self._log.info(
-                f'正向 WS 客户端已断开: {request.remote} (剩余 {len(self._clients)} 个)'
-            )
+            self._log.info(f'正向 WS 客户端已断开: {request.remote} (剩余 {len(self._clients)} 个)')
 
         return ws
 
@@ -295,9 +283,7 @@ class OneBotWSServer:
             return
 
         if self._debug:
-            self._log.info(
-                f'[WS←] action={action} params={_mask_b64(json.dumps(params, ensure_ascii=False))}'
-            )
+            self._log.info(f'[WS←] action={action} params={_mask_b64(json.dumps(params, ensure_ascii=False))}')
 
         try:
             result = await self._on_action(action, params, echo, ws.appid)

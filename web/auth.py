@@ -1,14 +1,14 @@
 """会话管理与鉴权"""
 
-import os
-import json
-import time
-import uuid
+import asyncio
 import base64
 import hashlib
 import hmac
-import asyncio
+import json
+import os
 import threading
+import time
+import uuid
 from datetime import datetime, timedelta
 
 from aiohttp import web
@@ -51,7 +51,7 @@ def _load_or_create_secret() -> str:
     """从文件加载 cookie secret, 不存在则随机生成并持久化"""
     if os.path.exists(_secret_file):
         try:
-            with open(_secret_file, 'r', encoding='utf-8') as f:
+            with open(_secret_file, encoding='utf-8') as f:
                 secret = f.read().strip()
                 if len(secret) >= 32:
                     return secret
@@ -103,7 +103,7 @@ def is_hashed(stored: str) -> bool:
 def _read_json(path, default=None):
     try:
         if os.path.exists(path):
-            with open(path, 'r', encoding='utf-8') as f:
+            with open(path, encoding='utf-8') as f:
                 return json.load(f)
     except Exception:
         pass
@@ -216,7 +216,7 @@ def cleanup_expired_ip_bans():
         return
     _last_ip_cleanup = now
     now_dt = datetime.now()
-    for ip, d in list(ip_access_data.items()):
+    for _ip, d in list(ip_access_data.items()):
         if d.get('is_banned') and d.get('ban_time'):
             try:
                 if (now_dt - datetime.fromisoformat(d['ban_time'])).total_seconds() >= _BAN_DURATION:
@@ -227,7 +227,10 @@ def cleanup_expired_ip_bans():
                 pass
     # 超限时淘汰最旧的无封禁记录
     if len(ip_access_data) > _MAX_IP_RECORDS:
-        unbanned = sorted(((k, v) for k, v in ip_access_data.items() if not v.get('is_banned')), key=lambda x: x[1].get('last_access', ''))
+        unbanned = sorted(
+            ((k, v) for k, v in ip_access_data.items() if not v.get('is_banned')),
+            key=lambda x: x[1].get('last_access', ''),
+        )
         for k, _ in unbanned[: len(ip_access_data) - _MAX_IP_RECORDS]:
             del ip_access_data[k]
     _save_ip_data()

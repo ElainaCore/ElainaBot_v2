@@ -193,13 +193,8 @@ async def handle_query_table(request: web.Request):
         # 总数
         total = conn.execute(f'SELECT COUNT(*) as c FROM "{table}"').fetchone()['c']
 
-        # 排序
-        order_clause = ''
-        if order_by and re.match(r'^[\w]+$', order_by):
-            order_clause = f'ORDER BY "{order_by}" {order_dir}'
-        else:
-            # 默认按 id 或 rowid 倒序
-            order_clause = 'ORDER BY rowid DESC'
+        # 排序 (默认按 rowid 倒序)
+        order_clause = f'ORDER BY "{order_by}" {order_dir}' if order_by and re.match(r'^[\w]+$', order_by) else 'ORDER BY rowid DESC'
 
         offset = (page - 1) * page_size
         rows = conn.execute(

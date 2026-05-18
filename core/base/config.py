@@ -1,18 +1,18 @@
 #!/usr/bin/env python
-# -*- coding: utf-8 -*-
 """配置管理器"""
 
-import os
-import time
+import asyncio
+import contextlib
 import copy
 import logging
-import asyncio
+import os
 import threading
+import time
 
 try:
     import yaml
-except ImportError:
-    raise ImportError('需要安装 pyyaml: pip install pyyaml')
+except ImportError as err:
+    raise ImportError('需要安装 pyyaml: pip install pyyaml') from err
 
 logger = logging.getLogger('ElainaBot.config')
 
@@ -185,7 +185,7 @@ class ConfigManager:
     def _do_reload(self, name, filepath, mtime, is_first=False):
         """实际加载配置文件 (可在后台线程执行)"""
         try:
-            with open(filepath, 'r', encoding='utf-8') as f:
+            with open(filepath, encoding='utf-8') as f:
                 data = yaml.safe_load(f) or {}
         except Exception as e:
             logger.error(f'解析配置失败 [{name}]: {e}')
@@ -271,15 +271,19 @@ class ConfigManager:
         tmp = filepath + '.tmp'
         try:
             with open(tmp, 'w', encoding='utf-8') as f:
-                yaml.dump(data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+                yaml.dump(
+                    data,
+                    f,
+                    default_flow_style=False,
+                    allow_unicode=True,
+                    sort_keys=False,
+                )
             os.replace(tmp, filepath)
             self._mtimes[name] = os.path.getmtime(filepath)
         except Exception as e:
             logger.error(f'写入配置失败 [{name}]: {e}')
-            try:
+            with contextlib.suppress(OSError):
                 os.remove(tmp)
-            except OSError:
-                pass
 
     # ------ 工具方法 ------
 
@@ -319,14 +323,14 @@ class ConfigManager:
         """解析 ${VAR_NAME:default} 环境变量占位符"""
         import re
 
-        _ENV_PATTERN = re.compile(r'\$\{(\w+)(?::([^}]*))?}')
+        _env_pattern = re.compile(r'\$\{(\w+)(?::([^}]*))?}')
 
         def _replacer(m):
             var = m.group(1)
             default = m.group(2) if m.group(2) is not None else ''
             return os.environ.get(var, default)
 
-        return _ENV_PATTERN.sub(_replacer, text)
+        return _env_pattern.sub(_replacer, text)
 
     def reload_all(self):
         """强制重新加载所有已缓存的配置"""

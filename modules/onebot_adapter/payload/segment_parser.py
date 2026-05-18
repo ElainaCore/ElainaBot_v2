@@ -42,9 +42,7 @@ class SegmentParser:
         return cls.handle_normal_msg([message])
 
     @classmethod
-    def handle_normal_msg(
-        cls, message: list[dict[str, Any]]
-    ) -> tuple[str | bytes, bytes | None]:
+    def handle_normal_msg(cls, message: list[dict[str, Any]]) -> tuple[str | bytes, bytes | None]:
         "兼容传统消息"
         texts: list[str] = []
         image_bytes: bytes | None = None

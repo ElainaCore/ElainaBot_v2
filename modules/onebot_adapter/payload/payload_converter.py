@@ -32,11 +32,7 @@ class PayloadConverter:
         # keyboard 结构扁平化
         if 'keyboard' in payload:
             buttons = payload.pop('keyboard')
-            payload['buttons'] = (
-                (buttons.get('rows') or [])
-                if isinstance(buttons, dict)
-                else (buttons or [])
-            )
+            payload['buttons'] = (buttons.get('rows') or []) if isinstance(buttons, dict) else (buttons or [])
         # markdown 子字段提升到顶层
         if 'markdown' in payload:
             md = payload.pop('markdown')

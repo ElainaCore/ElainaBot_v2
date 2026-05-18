@@ -30,9 +30,7 @@ class SendMessageAction(BaseAction):
         super().__init__(ctx)
         self._force_type = force_type
 
-    async def execute(
-        self, params: dict[str, Any], echo: str | None = None
-    ) -> dict[str, Any]:
+    async def execute(self, params: dict[str, Any], echo: str | None = None) -> dict[str, Any]:
         msg_type = self._force_type or params.get('message_type', '')
         group_id = params.get('group_id')
         user_id = params.get('user_id')
@@ -59,9 +57,7 @@ class SendMessageAction(BaseAction):
         else:
             real_id = raw_id
         if not real_id:
-            return self._fail(
-                f'未知{"群号" if is_group else "用户"}: {raw_id}', echo=echo
-            )
+            return self._fail(f'未知{"群号" if is_group else "用户"}: {raw_id}', echo=echo)
 
         label = str(payload)[:200] if payload else '[image]'
         self._ctx.log.info(f'{"群" if is_group else "私聊"} {raw_id}: {label}')
@@ -90,7 +86,5 @@ class SendMessageAction(BaseAction):
         if ok:
             return self._ok({'message_id': hash(str(data)) & 0x7FFFFFFF}, echo=echo)
 
-        self._ctx.log.warning(
-            f'{"群" if is_group else "私聊"} {raw_id} 发送失败: {data}'
-        )
+        self._ctx.log.warning(f'{"群" if is_group else "私聊"} {raw_id} 发送失败: {data}')
         return self._fail(str(data), echo=echo)

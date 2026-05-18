@@ -88,14 +88,9 @@ class OneBotAdapter:
         """启动适配器: 配置 → ID 映射 → Hook → WS → Action 路由"""
 
         # 1. 加载配置
-        raw_config = self._mctx.ensure_config(
-            OneBotConfig.defaults(), comments=OneBotConfig.comments()
-        )
+        raw_config = self._mctx.ensure_config(OneBotConfig.defaults(), comments=OneBotConfig.comments())
         self.cfg = OneBotConfig.from_dict(raw_config)
-        self.log.info(
-            f'配置: path={self.cfg.ws_path}, '
-            f'token={"***" if self.cfg.has_token else "(无)"}'
-        )
+        self.log.info(f'配置: path={self.cfg.ws_path}, token={"***" if self.cfg.has_token else "(无)"}')
 
         # 2. 初始化 ID 映射器
         db_path = self._mctx.get_data_path('id_mapping.db')
@@ -277,9 +272,7 @@ class OneBotAdapter:
                     self._actx.default_qq = int(rq)
                     self.ws_server._default_qq = self._actx.default_qq
 
-        self_qq = (
-            self._actx.qq_map.get(aid, self._actx.default_qq) or self._actx.default_qq
-        )
+        self_qq = self._actx.qq_map.get(aid, self._actx.default_qq) or self._actx.default_qq
 
         # 缓存 msg_id (用于后续回复 quote)
         self._cache_msg_id(event, appid)

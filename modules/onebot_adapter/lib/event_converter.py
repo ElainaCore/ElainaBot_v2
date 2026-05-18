@@ -96,9 +96,7 @@ async def convert_message_event(event, id_mapper, self_qq: int) -> dict | None:
 
     qq_user = await id_mapper.to_qq(user_id, 'user')
     is_group = event.is_group or bool(group_id and et != 'C2C_MESSAGE_CREATE')
-    qq_group = (
-        await id_mapper.to_qq(group_id, 'group') if (is_group and group_id) else 0
-    )
+    qq_group = await id_mapper.to_qq(group_id, 'group') if (is_group and group_id) else 0
 
     segments = _build_segments(event)
 

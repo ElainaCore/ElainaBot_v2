@@ -28,10 +28,10 @@ class TestGetApp:
         def my_cb(data):
             called.append(data)
 
-        hm.register("test_hook", my_cb)
-        assert hm.has("test_hook")
-        hm.unregister("test_hook", my_cb)
-        assert not hm.has("test_hook")
+        hm.register('test_hook', my_cb)
+        assert hm.has('test_hook')
+        hm.unregister('test_hook', my_cb)
+        assert not hm.has('test_hook')
 
 
 class TestErrorCallbacks:
@@ -56,9 +56,9 @@ class TestErrorCallbacks:
         app = Application()
         caught = []
         app.on_error(lambda d: caught.append(d))
-        app._fire_error_callbacks({"test": True})
+        app._fire_error_callbacks({'test': True})
         assert len(caught) == 1
-        assert caught[0] == {"test": True}
+        assert caught[0] == {'test': True}
 
     def test_callback_exception_does_not_crash(self):
         """回调异常不中断其他回调"""
@@ -66,16 +66,16 @@ class TestErrorCallbacks:
         results = []
 
         def bad_cb(_):
-            raise RuntimeError("boom")
+            raise RuntimeError('boom')
 
         def good_cb(d):
             results.append(d)
 
         app.on_error(bad_cb)
         app.on_error(good_cb)
-        app._fire_error_callbacks({"ok": True})
+        app._fire_error_callbacks({'ok': True})
         assert len(results) == 1
-        assert results[0] == {"ok": True}
+        assert results[0] == {'ok': True}
 
 
 class TestHookManagerCompat:
@@ -88,8 +88,8 @@ class TestHookManagerCompat:
         reset_hook_manager()
         hm = get_hook_manager()
         assert hm is not None
-        hm.register("fallback_test", lambda: None)
-        assert hm.has("fallback_test")
+        hm.register('fallback_test', lambda: None)
+        assert hm.has('fallback_test')
         reset_hook_manager()
 
     def test_reset_hook_manager(self):
