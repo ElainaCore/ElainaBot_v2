@@ -496,14 +496,14 @@ class EventHandlerMixin:
                 (group_id,),
             )
             if rows:
+                raw_str = rows[0].get('users', '[]')
                 try:
-                    users_str = rows[0].get('users')
-                    users = json.loads(users_str) if users_str else []
+                    raw = json.loads(raw_str)
                 except (json.JSONDecodeError, TypeError) as e:
                     p = getattr(e, 'pos', 0) or 0
-                    log.warning(f'[群用户列表] group={group_id} JSON损坏: {e}, 上下文: ...{users_str[max(0,p-50):p+50]}...')
-                    users = []
-                user_map = self._parse_user_map(users)
+                    log.warning(f'[群用户列表] group={group_id} JSON损坏: {e}, 上下文: ...{raw_str[max(0,p-50):p+50]}...')
+                    raw = []
+                user_map = self._parse_user_map(raw)
                 self._upsert_group_user(user_map, uid, today)
                 bot.log_service.db_queue(
                     'UPDATE groups_users SET users=? WHERE group_id=?',

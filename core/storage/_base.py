@@ -89,7 +89,7 @@ class _BaseLogService:
             conn = sqlite3.connect(db_path, check_same_thread=False)
             if self._wal:
                 conn.execute('PRAGMA journal_mode=WAL')
-            conn.execute(f'PRAGMA synchronous={"FULL" if log_type == "data" else "NORMAL"}')
+            conn.execute('PRAGMA synchronous=NORMAL')
             if db_path not in self._initialized:
                 schema = _SCHEMAS.get(log_type)
                 if schema:

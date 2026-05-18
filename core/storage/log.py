@@ -50,54 +50,11 @@ class LogService(_BaseLogService, ShareMixin, WakeupMixin):
 
     async def start(self):
         """启动日志服务"""
-        self._check_db_integrity()
         LogService._all_instances.append(self)
         if not LogService._global_callbacks_registered:
             LogService._global_callbacks_registered = True
             on_error(LogService._global_error_dispatch)
         await self._start_tasks()
-
-    def _check_db_integrity(self):
-        """启动时检查 data.db 完整性, 损坏则尝试恢复, 恢复失败才重建"""
-        db_path = self._resolve_db_path('data')
-        if not os.path.isfile(db_path):
-            return
-        try:
-            conn = sqlite3.connect(db_path, check_same_thread=False)
-            result = conn.execute('PRAGMA integrity_check(1)').fetchone()
-            if result and result[0] == 'ok':
-                conn.close()
-                return
-            conn.close()
-        except Exception:
-            pass
-        # 尝试通过 dump/restore 恢复可读数据
-        log.warning(f'[{self._appid}] data.db 完整性检查失败, 尝试恢复')
-        ts = datetime.now().strftime('%Y%m%d_%H%M%S')
-        backup = db_path + f'.corrupted.{ts}'
-        recovered = db_path + '.recovered'
-        try:
-            src = sqlite3.connect(db_path, check_same_thread=False)
-            dst = sqlite3.connect(recovered, check_same_thread=False)
-            for line in src.iterdump():
-                with contextlib.suppress(Exception):
-                    dst.execute(line)
-            dst.commit()
-            dst.close()
-            src.close()
-            os.rename(db_path, backup)
-            os.rename(recovered, db_path)
-            log.info(f'[{self._appid}] data.db 已恢复 (损坏备份: {os.path.basename(backup)})')
-        except Exception:
-            # 恢复失败, 备份并重建
-            log.warning(f'[{self._appid}] data.db 恢复失败, 备份并重建')
-            with contextlib.suppress(OSError):
-                os.remove(recovered)
-            with contextlib.suppress(OSError):
-                os.rename(db_path, backup)
-        for ext in ('-wal', '-shm'):
-            with contextlib.suppress(OSError):
-                os.remove(db_path + ext)
 
     async def shutdown(self):
         """关闭日志服务, 刷写缓冲"""
@@ -193,21 +150,15 @@ class LogService(_BaseLogService, ShareMixin, WakeupMixin):
     def _flush_data_queue_sync(self, ops):
         conn = self._data_conn
         lock = self._data_lock
-        failed = 0
-        with lock:
-            for sql, params in ops:
-                try:
+        try:
+            with lock:
+                for sql, params in ops:
                     conn.execute(sql, params)
-                except sqlite3.Error:
-                    failed += 1
-            try:
                 conn.commit()
-            except sqlite3.Error as e:
-                log.error(f'[{self._appid}] data.db 批量提交失败: {e}')
-                with contextlib.suppress(Exception):
-                    conn.rollback()
-        if failed:
-            log.warning(f'[{self._appid}] data.db 批量写入: {failed}/{len(ops)} 条失败')
+        except Exception as e:
+            log.error(f'[{self._appid}] data.db 批量写入失败: {e}')
+            with contextlib.suppress(Exception):
+                conn.rollback()
 
     @property
     def _data_conn(self):
