@@ -67,20 +67,20 @@ plugins/
 ```
 plugins/
 └── my_plugin/
-    ├── main.py            # 入口（要求必须main app index）
-    ├── app/               # 子模块目录
-    │   ├── __init__.py
-    │   └── handlers.py
-    ├── mod/               # 业务模块（可自己想用什么目录都可以）
-    │   └── core.py
+    ├── main.py            # 入口（以下入口仅作推荐命名，不强制）
+    ├── app/               # 子插件目录
+    │   └── **.py
+    ├── mod/               # 业务模块
+    │   └── **.py
     ├── data/              # 数据存储
-    │   └── config.yaml
-    ├── necessary/         # 资源文件（可自己想用什么目录都可以）
+    │   └── **.yaml
+    ├── necessary/         # 资源文件
     └── requirements.txt
 ```
 
 > **入口文件命名**: `index.py` / `app.py` / `main.py` 任选其一  
-> **子目录访问**: `from plugins.my_plugin.mod.core import xxx`
+> **子目录访问**: `from .mod.core import xxx`  
+> **自由组织**: 框架只识别入口文件，内部目录结构、文件数量和命名完全自由，只需在入口文件中 import 即可生效。
 
 ---
 
@@ -128,7 +128,9 @@ from core.plugin.decorators import handler, on_load, on_unload, interceptor
 | `MESSAGE_CREATE` | 频道公开消息 |
 | `INTERACTION_CREATE` | 按钮/交互回调 |
 | `GROUP_ADD_ROBOT` / `GROUP_DEL_ROBOT` | 加群/退群 |
+| `GROUP_MSG_REJECT` / `GROUP_MSG_RECEIVE` | 群消息拒绝/恢复 |
 | `FRIEND_ADD` / `FRIEND_DEL` | 加好友/删好友 |
+| `MESSAGE_REACTION_ADD` / `MESSAGE_REACTION_REMOVE` | 表态(表情回应)添加/移除 |
 
 **示例**:
 
@@ -207,6 +209,11 @@ async def filter_keywords(event):
 | `event.appid` | `str` | 机器人 AppID |
 | `event.attachments` | `list` | 附件列表 (图片/文件等) |
 | `event.image_url` | `str` | 图片 URL (若消息含图片) |
+| `event.raw` | `dict` | 原始 payload 字典 |
+| `event.timestamp` | `str` | 消息时间戳 |
+| `event.event_id` | `str` | 事件 ID |
+| `event.guild_id` | `str` | 频道服务器 ID (频道场景) |
+| `event.interaction_data` | `dict` | 交互回调数据 (仅 INTERACTION 事件) |
 
 ### 4.2 场景标识 (布尔属性)
 
@@ -234,6 +241,8 @@ async def filter_keywords(event):
 | 属性 | 说明 |
 | --- | --- |
 | `event.chat_id` | 自动返回 `group_id` / `user_id` / `channel_id` |
+| `event.chat_type` | 返回 `'group'` / `'direct'` / `'channel'` / `'unknown'` |
+| `event.get(path)` | JSON 路径取值, 如 `event.get('d/author/id')` |
 | `event.sender` | 底层 `MessageSender` 实例 (高级用法) |
 
 ---
@@ -367,7 +376,15 @@ await event.reply(template_name='maintenance',
                   template_vars={'user_id': event.user_id})
 ```
 
-### 5.5 主动消息推送
+### 5.5 主动推送图片
+
+```python
+# 主动推送图片到指定群/用户 (不关联消息)
+await event.send_image('group', event.group_id, "https://...", "图片说明")
+await event.send_image('user', event.user_id, image_bytes, "说明")
+```
+
+### 5.6 主动消息推送
 
 ```python
 # ---- 向当前会话发送主动消息 (自动从 event 获取目标) ----
@@ -396,7 +413,7 @@ await event.send_to_channel("指定频道ID", "频道消息")
 
 > **`event.reply()` vs `event.send_to_*()`**: `reply` 是被动回复 (关联当前消息 msg_id), `send_to_*` 是主动推送 (不关联消息)。日常使用 `reply` 即可, 延迟场景 (如定时任务、sleep 后) 可以用 `send_to_*`。
 
-### 5.6 撤回与交互
+### 5.7 撤回与交互
 
 ```python
 # 撤回当前消息
@@ -409,7 +426,7 @@ await event.recall(message_id="xxx")
 await event.ack_interaction(code=0)
 ```
 
-### 5.7 唤醒消息 (召回功能)
+### 5.8 唤醒消息 (召回功能)
 
 ```python
 # 智能召回 (按规则发送)
@@ -417,6 +434,20 @@ ok, reason = await event.send_wakeup(user_id, "📢 召回提示")
 
 # 强制召回 (跳过条件)
 ok, result = await event.sender.force_wakeup(user_id, "强制召回")
+```
+
+### 5.9 高级工具方法 (通过 `event.sender`)
+
+```python
+# 生成分享链接
+url = await event.sender.get_share_link(callback_data='my_data')
+
+# 获取图片尺寸 (URL 或 bytes)
+width, height = await event.sender.get_image_size("https://...")
+
+# 手动上传媒体文件 (返回 file_info)
+file_info = await event.sender.upload_media(event, file_bytes, file_type=1)
+# file_type: 1=图片, 2=视频, 3=语音, 4=文件
 ```
 
 ---
@@ -506,6 +537,7 @@ register_page(
     source='plugin',        # 来源类型
     source_name='my_plugin',
     html='<h1>Hello Panel</h1>',
+    icon='settings',        # 侧边栏图标 (可选)
 )
 
 # 或指定 HTML 文件
@@ -559,6 +591,18 @@ value = cfg.get_bot_setting(event.appid, 'message.use_markdown', True)
 
 # 读取全局 settings
 port = cfg.get('settings', 'server.port', 5200)
+
+# 获取单个机器人完整配置
+bot_cfg = cfg.get_bot_config(event.appid)
+
+# 写入配置
+cfg.set_value('bot', 'bots.0.message.use_markdown', False)
+
+# 监听配置变更
+def on_bot_changed(new_data):
+    print('配置已变更', new_data)
+cfg.on_change('bot', on_bot_changed)
+# cfg.off_change('bot', on_bot_changed)  # 移除监听
 ```
 
 ---
