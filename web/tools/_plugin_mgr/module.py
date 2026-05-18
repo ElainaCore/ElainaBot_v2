@@ -8,9 +8,9 @@ import shutil
 import tempfile
 import zipfile
 from datetime import datetime
-
-from aiohttp import web, BodyPartReader
 from typing import cast
+
+from aiohttp import BodyPartReader, web
 
 from web.tools._plugin_mgr.shared import (
     bot_manager,

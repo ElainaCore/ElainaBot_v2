@@ -12,7 +12,6 @@ import uuid
 from datetime import datetime, timedelta
 
 from aiohttp import web
-from typing import cast
 
 _COOKIE_SECRET = ''
 _BAN_DURATION = 43200

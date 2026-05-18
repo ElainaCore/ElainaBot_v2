@@ -11,7 +11,7 @@ from web.tools._updater.shared import (
     _build_mirror_url,
     _load_mirror_cache,
     _save_mirror_cache,
-    clear_mirror_cache,
+    clear_mirror_cache,  # noqa: F401  # re-export for handlers.py
 )
 
 _mirror_testing = None  # asyncio.Task (防重复测速)

@@ -119,15 +119,6 @@ def _build_mirror_url(original_url, mirror):
     return mirror.rstrip('/') + '/' + original_url
 
 
-def clear_mirror_cache():
-    try:
-        path = _mirror_cache_path()
-        if os.path.isfile(path):
-            os.remove(path)
-    except Exception:
-        pass
-
-
 # 默认跳过的路径
 DEFAULT_SKIP = ['config/', 'data/', 'plugins/', 'modules/', '.git/', '__pycache__/']
 # 白名单: 即使父目录在 skip 列表, 这些路径仍然正常更新

@@ -4,9 +4,9 @@ import asyncio
 import logging
 import os
 from datetime import datetime
-
-from aiohttp import web, BodyPartReader
 from typing import cast
+
+from aiohttp import BodyPartReader, web
 
 log = logging.getLogger('ElainaBot.web.updater')
 

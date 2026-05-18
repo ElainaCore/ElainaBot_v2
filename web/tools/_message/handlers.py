@@ -5,8 +5,7 @@ import contextlib
 import time
 from datetime import date as _date
 
-from aiohttp import web, BodyPartReader
-from typing import cast
+from aiohttp import web
 
 import web.tools._message.shared as _shared
 from web.tools._message.log_utils import (
