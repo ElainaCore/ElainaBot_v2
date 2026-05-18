@@ -15,7 +15,7 @@ log = logging.getLogger('ElainaBot.registry')
 class BotRegistry:
     """管理多个 BotInstance 的生命周期和配置热重载"""
 
-    def __init__(self, log_base: str, on_event=None, push_web_log=None):
+    def __init__(self, log_base: str, on_event=None, push_web_log=None, media_dir=''):
         self._bots: dict[str, object] = {}  # {appid: BotInstance}
         self._log_base = log_base
         self._on_event = on_event

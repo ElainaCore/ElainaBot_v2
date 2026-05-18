@@ -14,11 +14,16 @@ log = get_logger(FRAMEWORK, '插件管理')
 
 _S_GROUP, _S_DIRECT, _S_CHANNEL = 1, 2, 4
 
-_FULL_CHECK_TYPES = frozenset({
-    'GROUP_AT_MESSAGE_CREATE', 'GROUP_MESSAGE_CREATE',
-    'C2C_MESSAGE_CREATE', 'AT_MESSAGE_CREATE',
-    'DIRECT_MESSAGE_CREATE', 'MESSAGE_CREATE',
-})
+_FULL_CHECK_TYPES = frozenset(
+    {
+        'GROUP_AT_MESSAGE_CREATE',
+        'GROUP_MESSAGE_CREATE',
+        'C2C_MESSAGE_CREATE',
+        'AT_MESSAGE_CREATE',
+        'DIRECT_MESSAGE_CREATE',
+        'MESSAGE_CREATE',
+    }
+)
 
 
 def _scene_mask(h):
@@ -93,24 +98,20 @@ class _DispatchMixin:
 
         # ── 消息事件: 完整检查链 ──
         _get = cfg.get_bot_setting
-        is_group_msg = (et == 'GROUP_MESSAGE_CREATE')
+        is_group_msg = et == 'GROUP_MESSAGE_CREATE'
         is_at_self = getattr(event, 'is_at_self', False)
         is_non_at = is_group_msg and not is_at_self
 
-        suppress_reply = is_non_at or (
-            is_group_msg and is_at_self and _get(appid, 'non_at_message.quiet_at_self', False))
-        if not suppress_reply and getattr(event, 'is_bot', False) \
-                and _get(appid, 'message.suppress_bot_system_reply', False):
+        suppress_reply = is_non_at or (is_group_msg and is_at_self and _get(appid, 'non_at_message.quiet_at_self', False))
+        if not suppress_reply and getattr(event, 'is_bot', False) and _get(appid, 'message.suppress_bot_system_reply', False):
             suppress_reply = True
 
         # 过滤仅@其他机器人的全量消息
-        if is_group_msg and getattr(event, 'is_at_other_bot', False) and not is_at_self \
-                and _get(appid, 'non_at_message.ignore_at_other_bot', False):
+        if is_group_msg and getattr(event, 'is_at_other_bot', False) and not is_at_self and _get(appid, 'non_at_message.ignore_at_other_bot', False):
             return False
 
         # 过滤仅@其他用户的全量消息
-        if is_group_msg and getattr(event, 'is_at_other_user', False) and not is_at_self \
-                and _get(appid, 'non_at_message.ignore_at_other_user', False):
+        if is_group_msg and getattr(event, 'is_at_other_user', False) and not is_at_self and _get(appid, 'non_at_message.ignore_at_other_user', False):
             return False
 
         # 黑名单
@@ -156,13 +157,12 @@ class _DispatchMixin:
                 return True
 
         # 无匹配 → 默认回复
-        if not suppress_reply and (
-                et in ('GROUP_AT_MESSAGE_CREATE', 'C2C_MESSAGE_CREATE')
-                or (is_group_msg and is_at_self)):
-            if _get(appid, 'message.send_default_response', True):
-                excluded = _get(appid, 'message.default_response_excluded_regex', []) or []
-                if not any(re.search(p, content) for p in excluded if p):
-                    asyncio.create_task(event.reply(template_name='default', template_vars={'user_id': user_id}))
+        if not suppress_reply and (et in ('GROUP_AT_MESSAGE_CREATE', 'C2C_MESSAGE_CREATE') or (is_group_msg and is_at_self)):
+            if not _get(appid, 'message.send_default_response', True):
+                return False
+            excluded = _get(appid, 'message.default_response_excluded_regex', []) or []
+            if not any(re.search(p, content) for p in excluded if p):
+                asyncio.create_task(event.reply(template_name='default', template_vars={'user_id': user_id}))
         return False
 
     def _match_handlers(
