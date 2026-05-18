@@ -5,6 +5,7 @@ import asyncio
 import contextlib
 import json
 import os
+import re
 import sqlite3
 from datetime import datetime, timedelta
 
@@ -111,11 +112,18 @@ class DAUService:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._recent_sync, appid, days)
 
+    # 日期目录格式 (SharedLogService 的 framework/error 日志), 不是 bot appid
+    _DATE_DIR_PATTERN = re.compile(r'^\d{4}-\d{2}-\d{2}$')
+
     def list_appids(self):
-        """列出所有有日志记录的 appid"""
+        """列出所有有日志记录的 appid (排除 SharedLogService 的日期目录)"""
         if not os.path.isdir(self._log_dir):
             return []
-        return [name for name in os.listdir(self._log_dir) if os.path.isdir(os.path.join(self._log_dir, name))]
+        return [
+            name
+            for name in os.listdir(self._log_dir)
+            if os.path.isdir(os.path.join(self._log_dir, name)) and not self._DATE_DIR_PATTERN.match(name)
+        ]
 
     def _message_db_path(self, appid, date_str):
         return os.path.join(self._log_dir, appid, date_str, 'message.db')
