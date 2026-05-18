@@ -149,8 +149,8 @@ async def handle_get_mirrors(request: web.Request):
 async def handle_test_mirrors(request: web.Request):
     """SSE 流式测速所有镜像, 每完成一个立即推送"""
     import json as _json
-    from web.tools._updater.mirror import _test_one_mirror, clear_mirror_cache
-    from web.tools._updater.shared import GITHUB_FILE_MIRRORS
+    from web.tools._updater.mirror import _test_one_mirror
+    from web.tools._updater.shared import GITHUB_FILE_MIRRORS, clear_mirror_cache
 
     clear_mirror_cache()
     resp = web.StreamResponse()
