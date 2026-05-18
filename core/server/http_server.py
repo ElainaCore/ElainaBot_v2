@@ -24,15 +24,20 @@ class HttpServer:
         return cast(web.Application, self._app)
 
     def init_app(self) -> web.Application:
-        """初始化 aiohttp Application"""
+        """初始化 aiohttp Application (仅注册核心路由, Web 面板需在 bot_registry 就绪后调用 mount_web_panel)"""
         self._app = web.Application(client_max_size=20 * 1024 * 1024)
-
-        # 核心路由
         assert self._app is not None
         self._app.router.add_post('/', self._bot_manager._handle_webhook)
         self._app.router.add_get('/health', self._bot_manager._handle_health)
-
         return self._app
+
+    def mount_web_panel(self):
+        """挂载 Web 面板 (路由 + 静态资源 + 鉴权), 需在 bot_registry 创建后调用以正确绑定 sender 回调"""
+        try:
+            from web.setup import setup_web
+            setup_web(self._app, self._bot_manager, self._base_dir)
+        except Exception as e:
+            log.warning(f'Web 面板加载失败: {e}')
 
     async def start(self):
         """启动 HTTP 服务器"""

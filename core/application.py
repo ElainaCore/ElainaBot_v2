@@ -173,10 +173,13 @@ class Application(EventHandlerMixin):
         self._dau_service = DAUService(log_base)
         await self._dau_service.start()
 
-        # 8) HTTP 服务器
+        # 8) 挂载 Web 面板 (bot_registry 就绪后, 才能正确绑定 sender 回调)
+        self._http_server.mount_web_panel()
+
+        # 9) HTTP 服务器
         await self._http_server.start()
 
-        # 9) 后台服务
+        # 10) 后台服务
         self._config_watcher = ConfigWatcherService(interval=5.0)
         self._media_cleanup = MediaCleanupService(media_dir=self._media_dir, max_age_days=3, interval=3600)
         self._restart_scheduler = RestartScheduler(on_restart=self._trigger_restart)
