@@ -81,11 +81,10 @@ class WSBroadcast:
         SSE: 清空队列集合（handler 在下一次 queue 操作时自然退出）
         """
         for ws in list(self._clients):
-            with contextlib.suppress(Exception):
-                with contextlib.suppress(RuntimeError):
-                    asyncio.get_running_loop().create_task(
-                        ws.close(code=1001, message=b'Server shutdown')
-                    )
+            with contextlib.suppress(Exception, RuntimeError):
+                asyncio.get_running_loop().create_task(
+                    ws.close(code=1001, message=b'Server shutdown')
+                )
         self._clients.clear()
         self._sse_queues.clear()
 
