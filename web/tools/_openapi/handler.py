@@ -10,8 +10,8 @@ from aiohttp import web
 
 log = logging.getLogger('ElainaBot.web.openapi')
 
-_openapi_user_data = {}
-_openapi_login_tasks = {}
+_openapi_user_data: dict = {}
+_openapi_login_tasks: dict = {}
 _data_file = ''
 _bot_api = None
 

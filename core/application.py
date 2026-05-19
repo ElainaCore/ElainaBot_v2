@@ -256,7 +256,7 @@ class Application(EventHandlerMixin):
                 await coro
 
         if self._http_server:
-            await self._http_server.shutdown(timeout=5)
+            await self._http_server.stop(timeout=5)
 
         log.info('已关闭')
 

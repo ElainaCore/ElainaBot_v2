@@ -23,7 +23,7 @@ def main():
     time.sleep(3)
     main_path = r"{main_py}"
     os.chdir(os.path.dirname(main_path))
-    subprocess.Popen([sys.executable, main_path], creationflags=subprocess.CREATE_NEW_CONSOLE,
+    subprocess.Popen([sys.executable, main_path], creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),  # 旧版Python没有这个字段，进行兼容
                      cwd=os.path.dirname(main_path))
     time.sleep(1)
     try: os.remove(__file__)
@@ -89,9 +89,14 @@ async def handle_restart(request: web.Request):
             subprocess.Popen(
                 [sys.executable, restarter],
                 cwd=_base_dir,
-                creationflags=subprocess.CREATE_NEW_CONSOLE,
+                creationflags=getattr(subprocess, 'CREATE_NEW_CONSOLE', 0), # 旧版Python没有这个字段，进行兼容
             )
-            threading.Thread(target=lambda: (time.sleep(1), os._exit(0)), daemon=True).start()
+
+            def _delayed_exit():
+                time.sleep(1)
+                os._exit(0)
+
+            threading.Thread(target=_delayed_exit, daemon=True).start()
         else:
             subprocess.Popen([sys.executable, restarter], cwd=_base_dir, start_new_session=True)
         return web.json_response({'success': True, 'message': '正在重启...'})

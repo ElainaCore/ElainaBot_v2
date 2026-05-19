@@ -1,0 +1,82 @@
+# CI-friendly shorter scenarios for smoke testing
+# Run with: python -m tests.stress run --config configs/ci_scenarios.yaml
+
+global:
+  output_dir: "tests/stress/results"
+  mock_mode: "simulate"
+  report_formats: ["console", "json"]
+  fail_on_error_rate: 0.10
+  fail_on_memory_leak_mb: 200
+
+suites:
+  webhook_flood:
+    enabled: true
+    levels:
+      smoke:
+        concurrent_users: 10
+        rate_per_second: 50
+        duration_seconds: 10
+
+  websocket_flood:
+    enabled: true
+    overrides:
+      semaphore_size: 256
+      rates: [100, 500]
+      duration_per_rate: 10
+
+  plugin_dispatch:
+    enabled: true
+    overrides:
+      handler_counts: [10, 50]
+      match_positions: ["first", "last"]
+      rate_per_second: 50
+      duration_per_scenario: 5
+
+  interceptor_pipeline:
+    enabled: true
+    overrides:
+      interceptor_counts: [1, 10]
+      interceptor_work_types: ["noop", "check_10ms"]
+      events_per_scenario: 50
+
+  message_reply:
+    enabled: true
+    overrides:
+      rates: [50, 100]
+      log_queue_sizes: [500]
+      before_send_hooks: [0, 1]
+      after_send_hooks: [0]
+      duration_per_rate: 10
+
+  mixed_endurance:
+    enabled: true
+    overrides:
+      durations: [30]
+      rate_per_second: 20
+      sample_interval: 5
+      bot_count: 1
+      handler_count: 20
+      interceptor_count: 2
+
+  dedup_pressure:
+    enabled: true
+    overrides:
+      duplicate_rate: 0.3
+      rate_per_second: 100
+      duration_seconds: 10
+
+  log_queue_pressure:
+    enabled: true
+    overrides:
+      queue_sizes: [100, 500, 2000]
+      rate_per_second: 100
+      duration_per_size: 5
+
+  message_receive:
+    enabled: true
+    overrides:
+      rates: [100, 500]
+      scenarios: ["baseline", "with_dedup"]
+      bot_count: 1
+      handler_count: 10
+      duration_per_scenario: 8

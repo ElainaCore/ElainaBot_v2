@@ -4,6 +4,7 @@ import logging
 from typing import cast
 
 from aiohttp import web
+from aiohttp.web import AppRunner, TCPSite
 
 from core.base.config import cfg
 
@@ -17,7 +18,8 @@ class HttpServer:
         self._bot_manager = bot_manager
         self._base_dir = base_dir
         self._app: web.Application | None = None
-        self._runner = None
+        self._runner: AppRunner | None = None
+        self._site: TCPSite | None = None
 
     @property
     def app(self) -> web.Application:
@@ -44,16 +46,34 @@ class HttpServer:
         host = cfg.get('settings', 'server.host', '0.0.0.0')
         port = cfg.get('settings', 'server.port', 5200)
 
-        from aiohttp.web import AppRunner, TCPSite
-
         self._runner = AppRunner(self._app)
         await self._runner.setup()
-        site = TCPSite(self._runner, host, port)
-        await site.start()
+        self._site = TCPSite(self._runner, host, port)
+        await self._site.start()
         log.info(f'HTTP 服务器已启动: http://{host}:{port}')
 
-    async def stop(self):
-        """关闭 HTTP 服务器"""
+    async def stop(self, timeout: float = 5):
+        """关闭 HTTP 服务器
+
+        根因修复说明:
+        - aiohttp 3.13 的 cleanup() 内部已包含完整 shutdown 序列
+          (site.stop → on_shutdown 信号 → server.shutdown(timeout) → 释放资源)
+        - 原先卡死是因为: _shutdown_timeout 默认 60s + 面板 WS/SSE 长连接未主动断开
+        - 修复: ①提前关闭面板长连接 ②将 timeout 注入 runner._shutdown_timeout
+        """
+        try:
+            from web.ws import get_broadcast
+
+            get_broadcast().shutdown()
+        except Exception:
+            pass
+
+        if self._site:
+            await self._site.stop()
         if self._runner:
+            self._runner._shutdown_timeout = timeout
             await self._runner.cleanup()
-            log.info('HTTP 服务器已关闭')
+
+        self._runner = None
+        self._site = None
+        log.info('HTTP 服务器已关闭')

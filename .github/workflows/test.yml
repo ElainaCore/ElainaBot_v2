@@ -28,6 +28,9 @@ permissions:
   contents: read
   pull-requests: write
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
 jobs:
   # ============================================================
   # Job 1: 静态检查 — 快速失败, 最轻量

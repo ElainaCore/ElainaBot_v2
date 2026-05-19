@@ -32,6 +32,9 @@ Thumbs.db
 modules/modules_enabled.json
 modules/onebot_adapter/data/
 
+# --- Project: Test Output ---
+tests/stress/results/
+
 # --- Project: Backups ---
 *.bak
 *.ban

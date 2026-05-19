@@ -74,6 +74,20 @@ class WSBroadcast:
         self._clients.clear()
         self._sse_queues.clear()
 
+    def shutdown(self):
+        """服务器关闭时主动断开所有面板连接，避免阻塞 aiohttp runner.shutdown()
+
+        WebSocket: 发送 Close Frame (code=1001 Going Away)
+        SSE: 清空队列集合（handler 在下一次 queue 操作时自然退出）
+        """
+        for ws in list(self._clients):
+            with contextlib.suppress(Exception, RuntimeError):
+                asyncio.get_running_loop().create_task(
+                    ws.close(code=1001, message=b'Server shutdown')
+                )
+        self._clients.clear()
+        self._sse_queues.clear()
+
 
 # 模块级单例 (向后兼容)
 _broadcast = WSBroadcast()
