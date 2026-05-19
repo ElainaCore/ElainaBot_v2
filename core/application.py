@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import logging
 import os
 
 from core.base.config import cfg
@@ -120,8 +121,11 @@ class Application(EventHandlerMixin):
         cfg.init(self._path('config'))
 
         fw_name = cfg.get('settings', 'web.framework_name', 'ElainaBot')
-        setup_logger(framework_name=fw_name)
+        log_level_str = cfg.get('settings', 'logging.level', 'INFO').upper()
+        log_level = getattr(logging, log_level_str, logging.INFO)
+        setup_logger(framework_name=fw_name, level=log_level)
         log.info(f'{"=" * 5} {fw_name} 启动中 {"=" * 5}')
+        log.info(f'日志等级: {log_level_str}')
 
         bot_configs = cfg.get_bot_configs()
         valid_bots = [b for b in bot_configs if b.get('appid') and b.get('secret')]

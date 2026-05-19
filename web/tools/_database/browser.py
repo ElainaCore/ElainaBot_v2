@@ -12,11 +12,8 @@ log = logging.getLogger('ElainaBot.web.database')
 _bot_manager = None
 _base_dir = ''
 
-# 禁止的 SQL 关键词 (防止写操作)
-_WRITE_KEYWORDS = re.compile(
-    r'\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|REPLACE|ATTACH|DETACH|REINDEX|VACUUM|PRAGMA\s+\w+\s*=)\b',
-    re.IGNORECASE,
-)
+# 判断是否为返回结果集的查询
+_READ_PATTERN = re.compile(r'^\s*(SELECT|PRAGMA|EXPLAIN|WITH)\b', re.IGNORECASE)
 
 
 def set_context(bot_manager, base_dir: str):
@@ -97,15 +94,17 @@ def _validate_db_path(db_path):
 def _open_readonly(db_path):
     """以只读方式打开 SQLite"""
     uri = f'file:{db_path}?mode=ro'
-    conn = sqlite3.connect(uri, uri=True, check_same_thread=False)
+    conn = sqlite3.connect(uri, uri=True, check_same_thread=False, timeout=30)
     conn.row_factory = sqlite3.Row
+    conn.text_factory = lambda b: b.decode('utf-8', errors='replace')
     return conn
 
 
 def _open_readwrite(db_path):
     """以读写方式打开 SQLite"""
-    conn = sqlite3.connect(db_path, check_same_thread=False)
+    conn = sqlite3.connect(db_path, check_same_thread=False, timeout=30)
     conn.row_factory = sqlite3.Row
+    conn.text_factory = lambda b: b.decode('utf-8', errors='replace')
     return conn
 
 
@@ -226,7 +225,7 @@ async def handle_query_table(request: web.Request):
 
 
 async def handle_execute_sql(request: web.Request):
-    """执行只读 SQL 查询"""
+    """执行任意 SQL (支持 SELECT / INSERT / UPDATE / DELETE / DDL 等全部指令)"""
     body = await request.json()
     db_path = body.get('path', '')
     sql = (body.get('sql', '') or '').strip()
@@ -238,29 +237,36 @@ async def handle_execute_sql(request: web.Request):
     if not valid:
         return web.json_response({'success': False, 'message': '无效路径'}, status=403)
 
-    # 检查是否有写操作
-    if _WRITE_KEYWORDS.search(sql):
-        return web.json_response({'success': False, 'message': '仅允许只读查询 (SELECT)'}, status=403)
+    is_read = _READ_PATTERN.match(sql)
 
-    # 限制结果行数
-    if not re.search(r'\bLIMIT\b', sql, re.IGNORECASE):
-        sql = sql.rstrip(';') + ' LIMIT 500'
+    # 读查询自动加 LIMIT 防止返回过多
+    if is_read and not re.search(r'\bLIMIT\b', sql, re.IGNORECASE):
+        sql = sql.rstrip(';') + ' LIMIT 1000'
 
     try:
-        conn = _open_readonly(abs_path)
+        conn = _open_readwrite(abs_path)
+
+        # 多语句 (含分号分割) 用 executescript (无结果集)
+        statements = [s.strip() for s in sql.split(';') if s.strip()]
+        if len(statements) > 1 and not is_read:
+            conn.executescript(sql)
+            conn.close()
+            return web.json_response({'success': True, 'message': f'已执行 {len(statements)} 条语句', 'affected': -1})
+
         cursor = conn.execute(sql)
-        rows = cursor.fetchall()
-        columns = [{'name': desc[0], 'type': ''} for desc in cursor.description] if cursor.description else []
-        data = [dict(r) for r in rows]
+
+        if is_read:
+            rows = cursor.fetchall()
+            columns = [{'name': desc[0], 'type': ''} for desc in cursor.description] if cursor.description else []
+            data = [dict(r) for r in rows]
+            conn.close()
+            return web.json_response({'success': True, 'data': data, 'columns': columns, 'total': len(data)})
+
+        # 写操作: 返回影响行数
+        affected = cursor.rowcount
+        conn.commit()
         conn.close()
-        return web.json_response(
-            {
-                'success': True,
-                'data': data,
-                'columns': columns,
-                'total': len(data),
-            }
-        )
+        return web.json_response({'success': True, 'message': f'执行成功, 影响 {affected} 行', 'affected': affected})
     except Exception as e:
         return web.json_response({'success': False, 'message': str(e)}, status=400)
 
