@@ -91,7 +91,12 @@ async def handle_restart(request: web.Request):
                 cwd=_base_dir,
                 creationflags=subprocess.CREATE_NEW_CONSOLE,
             )
-            threading.Thread(target=lambda: (time.sleep(1), os._exit(0)), daemon=True).start()
+
+            def _delayed_exit():
+                time.sleep(1)
+                os._exit(0)
+
+            threading.Thread(target=_delayed_exit, daemon=True).start()
         else:
             subprocess.Popen([sys.executable, restarter], cwd=_base_dir, start_new_session=True)
         return web.json_response({'success': True, 'message': '正在重启...'})

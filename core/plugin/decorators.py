@@ -4,10 +4,10 @@ import asyncio
 import re
 
 # 临时注册表 (加载插件时收集, 由 PluginManager.load 消费)
-_pending_handlers = []
-_pending_on_load = []
-_pending_on_unload = []
-_pending_interceptors = []
+_pending_handlers: list = []
+_pending_on_load: list = []
+_pending_on_unload: list = []
+_pending_interceptors: list = []
 
 
 def handler(

@@ -25,7 +25,7 @@ class LogService(_BaseLogService, ShareMixin, WakeupMixin):
     """SQLite 日志服务 (每个 bot 一个实例, 异步)"""
 
     _global_callbacks_registered = False
-    _all_instances = []  # 所有活跃实例 (全局回调分发到每个实例)
+    _all_instances: list['LogService'] = []  # 所有活跃实例 (全局回调分发到每个实例)
 
     def __init__(
         self,

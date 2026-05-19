@@ -46,7 +46,7 @@ def _is_debugger() -> bool:
         return True
     # PyCharm pydevd 环境变量
     is_debugger = os.environ.get('PYDEVD_USE_FRAME_EVAL') or os.environ.get('PYCHARM_HOSTED')
-    return is_debugger
+    return bool(is_debugger)
 
 
 def _resolve_env() -> str:
