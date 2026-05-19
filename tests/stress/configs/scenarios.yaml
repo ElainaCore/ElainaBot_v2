@@ -1,0 +1,117 @@
+# ElainaBot Stress Test Framework - Default Scenario Configuration
+
+global:
+  output_dir: "tests/stress/results"
+  mock_mode: "simulate"
+  report_formats: ["console", "json", "html"]
+  fail_on_error_rate: 0.05
+  fail_on_memory_leak_mb: 100
+
+metrics:
+  histogram_buckets: [0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0]
+  sample_interval_seconds: 1.0
+  export_raw_samples: true
+
+mock_defaults:
+  message_sender:
+    latency_ms: 5
+    failure_rate: 0.0
+  log_service:
+    queue_maxsize: 1000
+    flush_interval: 2.0
+  bot_registry:
+    bot_count: 1
+
+suites:
+  webhook_flood:
+    enabled: true
+    description: "Test webhook endpoint under massive concurrent HTTP POSTs"
+    mock_mode: "simulate"
+    levels:
+      light:
+        concurrent_users: 10
+        rate_per_second: 50
+        duration_seconds: 30
+      medium:
+        concurrent_users: 50
+        rate_per_second: 100
+        duration_seconds: 30
+      heavy:
+        concurrent_users: 200
+        rate_per_second: 500
+        duration_seconds: 15
+      burst:
+        concurrent_users: 500
+        rate_per_second: 0
+        duration_seconds: 10
+
+  websocket_flood:
+    enabled: true
+    description: "Test WebSocket Semaphore(256) backpressure"
+    mock_mode: "simulate"
+    overrides:
+      semaphore_size: 256
+      rates: [100, 500, 1000, 2000]
+      duration_per_rate: 30
+
+  plugin_dispatch:
+    enabled: true
+    description: "Measure dispatch latency scaling with many handlers"
+    mock_mode: "simulate"
+    overrides:
+      handler_counts: [10, 50, 100, 200]
+      match_positions: ["first", "middle", "last", "none"]
+      rate_per_second: 100
+      duration_per_scenario: 10
+
+  interceptor_pipeline:
+    enabled: true
+    description: "Measure interceptor sequential execution overhead"
+    mock_mode: "simulate"
+    overrides:
+      interceptor_counts: [1, 5, 10, 20]
+      interceptor_work_types: ["noop", "check_10ms", "block_all"]
+      events_per_scenario: 100
+
+  message_reply:
+    enabled: true
+    description: "Test reply() throughput and log queue pressure"
+    mock_mode: "simulate"
+    overrides:
+      rates: [50, 100, 200]
+      log_queue_sizes: [500, 1000]
+      before_send_hooks: [0, 1]
+      after_send_hooks: [0, 1]
+      duration_per_rate: 15
+
+  mixed_endurance:
+    enabled: true
+    description: "Long-running mixed load for memory leak detection"
+    mock_mode: "simulate"
+    overrides:
+      durations: [60, 120]
+      rate_per_second: 30
+      sample_interval: 5
+      bot_count: 2
+      handler_count: 50
+      interceptor_count: 3
+      memory_leak_threshold_mb: 50
+      task_growth_threshold: 10
+
+  dedup_pressure:
+    enabled: true
+    description: "Test dedup hashmap under high duplicate volume"
+    mock_mode: "simulate"
+    overrides:
+      duplicate_rate: 0.3
+      rate_per_second: 1000
+      duration_seconds: 60
+
+  log_queue_pressure:
+    enabled: true
+    description: "Test log queue backpressure"
+    mock_mode: "simulate"
+    overrides:
+      queue_sizes: [100, 500, 1000, 10000]
+      rate_per_second: 500
+      duration_per_size: 15
