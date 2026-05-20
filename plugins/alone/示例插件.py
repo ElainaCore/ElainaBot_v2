@@ -1,10 +1,10 @@
 """示例功能: 媒体发送、ark卡片、markdown、撤回、主动消息、按钮等 (仅主人可用)"""
 
-import os
 import asyncio
+import os
+
 from core.plugin.decorators import handler, on_unload
 from core.plugin.web_pages import register_page, unregister_page
-
 
 # ==================== 媒体发送示例 ====================
 
@@ -190,7 +190,7 @@ async def force_wakeup_user(event, match):
 
 @handler(r'^全量签到$', name='签到', desc='无需@即可触发的签到指令', ignore_at_check=True)
 async def check_in(event, match):
-    await event.reply(f"✅ 签到成功！")
+    await event.reply("✅ 签到成功！")
 
 
 @handler(r'^主动测试$', name='全量主动测试', desc='无需@即可触发, 3秒后发送主动消息', ignore_at_check=True, owner_only=True)
@@ -312,8 +312,9 @@ def _unload_web_pages():
 @handler(r'^面板推送$', name='面板推送', desc='向 Web 面板推送一条自定义日志', owner_only=True)
 async def push_to_panel(event, match):
     try:
-        import web.ws as ws
         from datetime import datetime
+
+        import web.ws as ws
         entry = {
             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'content': f'来自插件的推送测试 (用户: {event.user_id})',

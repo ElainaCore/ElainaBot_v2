@@ -140,15 +140,13 @@ async def toggle(event, match):
         assert plugin_manager.handler_count == 1
 
     async def test_unload_nonexistent_plugin(self, plugin_manager):
-        """加载不存在的插件抛出 FileNotFoundError"""
-        with pytest.raises(FileNotFoundError):
-            await plugin_manager.load('nonexistent_plugin')
+        """加载不存在的插件不抛异常, 仅 log error 后返回"""
+        await plugin_manager.load('nonexistent_plugin')  # 不抛异常
 
     async def test_load_plugin_with_no_py_files(self, temp_plugins_dir, plugin_manager):
-        """空插件目录 (无 .py 文件) 抛出 FileNotFoundError"""
+        """空插件目录 (无 .py 文件) 不抛异常, 仅 log error 后返回"""
         os.makedirs(os.path.join(temp_plugins_dir, 'empty_plugin'))
-        with pytest.raises(FileNotFoundError):
-            await plugin_manager.load('empty_plugin')
+        await plugin_manager.load('empty_plugin')  # 不抛异常
 
     async def test_plugin_list_after_load(self, temp_plugins_dir, plugin_manager):
         """get_plugin_list() 返回加载信息"""

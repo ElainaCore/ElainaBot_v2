@@ -8,7 +8,6 @@ from aiohttp import web
 from web.tools._plugin_mgr.shared import (
     ENTRY_CANDIDATES,
     find_entry,
-    find_entry_or_ban,
     get_pm,
     log,
     plugins_dir,
@@ -44,29 +43,23 @@ def _get_plugin_bots_map():
 
 
 def _scan_py_files(dir_path, prefix=''):
-    """扫描 .py / .py.ban 文件"""
+    """扫描 .py 文件 (只扫描 .py, 不再使用 .py.ban 禁用机制)"""
     files = []
     for fname in sorted(os.listdir(dir_path)):
         if fname.startswith('_'):
             continue
-        if fname.endswith('.py'):
-            enabled = True
-        elif fname.endswith('.py.ban'):
-            enabled = False
-        else:
+        if not fname.endswith('.py'):
             continue
         fpath = os.path.join(dir_path, fname)
         if not os.path.isfile(fpath):
             continue
         display = f'{prefix}{fname}' if prefix else fname
-        if not enabled and display.endswith('.ban'):
-            display = display[:-4]
         stat = os.stat(fpath)
         files.append(
             {
                 'name': display,
                 'path': fpath.replace('\\', '/'),
-                'enabled': enabled,
+                'enabled': True,
                 'size': stat.st_size,
                 'last_modified': datetime.fromtimestamp(stat.st_mtime).strftime('%Y-%m-%d %H:%M:%S'),
             }
@@ -83,28 +76,34 @@ def _scan_plugins():
     if not os.path.isdir(pdir):
         return result
     plugin_info_map = _get_plugin_info()
+    pm = get_pm()
+    disabled_set = pm.get_disabled_plugins() if pm else set()
 
     for dir_name in os.listdir(pdir):
         plugin_dir = os.path.join(pdir, dir_name)
         if not os.path.isdir(plugin_dir) or dir_name.startswith(('_', '.')):
             continue
         is_system = dir_name == 'system'
-        entry_path, enabled = find_entry_or_ban(plugin_dir)
+
+        # 持久化禁用状态优先
+        persist_disabled = dir_name in disabled_set
+        entry_path = find_entry(plugin_dir)
         if not entry_path:
             py_files = [f for f in os.listdir(plugin_dir) if f.endswith('.py') and not f.startswith('_')]
             if not py_files:
                 continue
             entry_path = os.path.join(plugin_dir, py_files[0])
-            enabled = True
 
         pinfo = plugin_info_map.get(dir_name, {})
         mtime = datetime.fromtimestamp(os.path.getmtime(entry_path)).strftime('%Y-%m-%d %H:%M:%S')
         is_large = find_entry(plugin_dir) is not None
+        loaded = dir_name in (pm.plugins if pm else {})
+        enabled = loaded and not persist_disabled
 
         result.append(
             {
                 'name': dir_name,
-                'status': 'loaded' if enabled else 'disabled',
+                'status': 'disabled' if persist_disabled else ('loaded' if loaded else 'unloaded'),
                 'path': entry_path.replace('\\', '/'),
                 'directory': dir_name,
                 'is_system': is_system,
@@ -116,26 +115,34 @@ def _scan_plugins():
                 'meta': pinfo.get('meta', {}),
             }
         )
-    result.sort(key=lambda x: (0 if x['status'] == 'loaded' else 1))
+    result.sort(key=lambda x: (0 if x['status'] == 'loaded' else 1 if x['status'] == 'unloaded' else 2))
     return result
 
 
 def _scan_plugin_dirs():
-    """按目录分组扫描所有 .py / .py.ban 文件"""
+    """按目录分组扫描所有 .py 文件 (禁用状态来自持久化)"""
     pdir = plugins_dir()
     dirs = []
     if not os.path.isdir(pdir):
         return dirs
     plugin_info_map = _get_plugin_info()
     bots_map = _get_plugin_bots_map()
+    pm = get_pm()
+    disabled_set = pm.get_disabled_plugins() if pm else set()
 
     for dir_name in sorted(os.listdir(pdir)):
         dir_path = os.path.join(pdir, dir_name)
         if not os.path.isdir(dir_path) or dir_name.startswith(('.', '__')):
             continue
         is_system = dir_name == 'system'
+        persist_disabled = dir_name in disabled_set
         pinfo = plugin_info_map.get(dir_name, {})
         files = _scan_py_files(dir_path)
+
+        # 标记文件级别的 enabled (持久化禁用则全部标记为 disabled)
+        if persist_disabled:
+            for f in files:
+                f['enabled'] = False
 
         for f in files:
             fname = f['name']
@@ -147,18 +154,21 @@ def _scan_plugin_dirs():
         if has_entry:
             app_dir = os.path.join(dir_path, 'app')
             if os.path.isdir(app_dir):
-                files.extend(_scan_py_files(app_dir, prefix='app/'))
+                sub_files = _scan_py_files(app_dir, prefix='app/')
+                if persist_disabled:
+                    for f in sub_files:
+                        f['enabled'] = False
+                files.extend(sub_files)
 
         if not files:
             continue
-        entry_enabled = any(f['name'] in ENTRY_CANDIDATES and f['enabled'] for f in files)
-        is_enabled = entry_enabled if has_entry else any(f['enabled'] for f in files)
 
+        loaded = dir_name in (pm.plugins if pm else {})
         dirs.append(
             {
                 'directory': dir_name,
                 'is_system': is_system,
-                'enabled': is_enabled,
+                'enabled': loaded and not persist_disabled,
                 'is_large': has_entry,
                 'files': files,
                 'allowed_bots': bots_map.get(dir_name, []),

@@ -79,18 +79,6 @@ def find_entry(plugin_dir):
     return None
 
 
-def find_entry_or_ban(plugin_dir):
-    """查找入口文件或其 .ban 版本"""
-    for name in ENTRY_CANDIDATES:
-        path = os.path.join(plugin_dir, name)
-        if os.path.isfile(path):
-            return path, True
-        ban = path + '.ban'
-        if os.path.isfile(ban):
-            return ban, False
-    return None, None
-
-
 # ==================== 配置文件格式检测 ====================
 
 CONFIG_EXTS = frozenset(

@@ -27,50 +27,58 @@ async def handle_command(event, match):
 
 
 async def handle_toggle_plugin(request: web.Request):
+    """启用/禁用插件 (持久化到 data/plugins_disabled.json)"""
     body = await request.json()
     plugin_path = body.get('path', '')
+    plugin_name = body.get('name', '')
     action = body.get('action', '')
-    if not plugin_path or action not in ('enable', 'disable'):
+
+    if action not in ('enable', 'disable'):
         return web.json_response({'success': False, 'message': '参数错误'}, status=400)
 
-    plugin_path = os.path.normpath(plugin_path)
+    # 优先使用 name (插件目录名), 否则从 path 推导
+    if not plugin_name and plugin_path:
+        plugin_path = os.path.normpath(plugin_path)
+        pdir = plugins_dir()
+        try:
+            rel = os.path.relpath(plugin_path, pdir)
+            plugin_name = rel.split(os.sep)[0]
+        except ValueError:
+            return web.json_response({'success': False, 'message': '无效路径'}, status=403)
+
+    if not plugin_name:
+        return web.json_response({'success': False, 'message': '缺少插件名或路径'}, status=400)
+
+    # 校验插件目录确实存在
     pdir = plugins_dir()
-    valid, abs_path = validate_path(plugin_path, pdir)
-    if not valid:
-        return web.json_response({'success': False, 'message': '无效路径'}, status=403)
+    plugin_dir = os.path.join(pdir, plugin_name)
+    if not os.path.isdir(plugin_dir):
+        return web.json_response({'success': False, 'message': f'插件目录不存在: {plugin_name}'}, status=404)
 
-    is_disable = action == 'disable'
-    expect_ext = '.py' if is_disable else '.py.ban'
-    if not abs_path.endswith(expect_ext):
-        return web.json_response({'success': False, 'message': f'只能操作 {expect_ext}'}, status=400)
-    new_abs = (abs_path + '.ban') if is_disable else abs_path[:-4]
-    if os.path.exists(new_abs):
-        return web.json_response({'success': False, 'message': '目标文件已存在'}, status=409)
-    os.rename(abs_path, new_abs)
-    await _try_reload_plugin(new_abs if not is_disable else abs_path, pdir)
-    label = '已禁用' if is_disable else '已启用'
-    return web.json_response(
-        {
-            'success': True,
-            'message': f'插件{label}',
-            'new_path': new_abs.replace('\\', '/'),
-        }
-    )
-
-
-async def _try_reload_plugin(file_path, pdir):
-    """根据文件路径推导插件名并触发运行时热重载"""
     pm = get_pm()
     if not pm:
-        return
+        return web.json_response({'success': False, 'message': '框架未启动或插件管理器未初始化'}, status=503)
+
     try:
-        rel = os.path.relpath(file_path, pdir)
-        plugin_name = rel.split(os.sep)[0]
-        if plugin_name and plugin_name in pm.plugins:
-            await pm.reload(plugin_name)
-            log.info(f'插件文件变更触发热重载: {plugin_name}')
+        if action == 'enable':
+            pm.enable_plugin(plugin_name)
+            if plugin_name not in pm.plugins:
+                # 插件在启动时被跳过, 现在加载
+                await pm.load(plugin_name)
+                pm._rebuild_handler_list()
+            label = '已启用'
+        else:
+            pm.disable_plugin(plugin_name)
+            label = '已禁用'
+
+        return web.json_response({
+            'success': True,
+            'message': f'插件 {plugin_name} {label}',
+            'plugin_name': plugin_name,
+        })
     except Exception as e:
-        log.warning(f'自动热重载失败: {e}')
+        log.error(f'插件 {action} [{plugin_name}] 失败: {e}')
+        return web.json_response({'success': False, 'message': f'操作异常: {e}'}, status=500)
 
 
 # ==================== 热重载 ====================

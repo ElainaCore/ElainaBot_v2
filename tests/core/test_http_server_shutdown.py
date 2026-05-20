@@ -14,6 +14,12 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 
+# ==================== 共享 handlers ====================
+
+async def _health_handler(_request):
+    return web.json_response({'status': 'ok'})
+
+
 # ==================== WSBroadcast.shutdown() 单元测试 ====================
 
 
@@ -181,7 +187,7 @@ class TestShutdownWithWebSocket:
 
         app = web.Application()
         app.router.add_get('/ws/panel', _ws.handle_ws)
-        app.router.add_get('/health', lambda r: web.json_response({'status': 'ok'}))
+        app.router.add_get('/health', _health_handler)
 
         server = TestServer(app)
         await server.start_server()
@@ -215,7 +221,7 @@ class TestShutdownWithWebSocket:
 
         app = web.Application()
         app.router.add_get('/ws/panel', _ws.handle_ws)
-        app.router.add_get('/health', lambda r: web.json_response({'status': 'ok'}))
+        app.router.add_get('/health', _health_handler)
 
         server = TestServer(app)
         await server.start_server()
@@ -267,7 +273,7 @@ class TestStopEndToEnd:
         from core.server.http_server import HttpServer
 
         app = web.Application()
-        app.router.add_get('/health', lambda r: web.json_response({'status': 'ok'}))
+        app.router.add_get('/health', _health_handler)
 
         bot_manager = MagicMock()
         server = HttpServer(bot_manager, os.path.dirname(ROOT))
@@ -295,7 +301,7 @@ class TestStopEndToEnd:
         from core.server.http_server import HttpServer
 
         app = web.Application()
-        app.router.add_get('/health', lambda r: web.json_response({'status': 'ok'}))
+        app.router.add_get('/health', _health_handler)
 
         bot_manager = MagicMock()
         server = HttpServer(bot_manager, os.path.dirname(ROOT))

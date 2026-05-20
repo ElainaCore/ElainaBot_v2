@@ -76,9 +76,13 @@ class _LoaderMixin:
             log.warning(f'插件目录为空: {self._dir}')
             return
         dirs = sorted(d for d in os.listdir(self._dir) if os.path.isdir(os.path.join(self._dir, d)) and not d.startswith(('_', '.')))
-        loaded = large = 0
+        loaded = skipped = large = 0
         for name in dirs:
             try:
+                if name in self._disabled_plugins:
+                    log.info(f'插件 [{name}] 已禁用, 跳过加载')
+                    skipped += 1
+                    continue
                 if self._find_large_entry(os.path.join(self._dir, name)):
                     await self._load_large(name)
                     large += 1
@@ -91,15 +95,17 @@ class _LoaderMixin:
                 report_error(PLUGIN, name, e)
         self._rebuild_handler_list()
         self._snapshot_all_mtimes()
-        log.info(f'插件加载完成: {loaded}/{len(dirs)} 个 (大型 {large}), 共 {self.handler_count} 个处理器')
+        log.info(f'插件加载完成: {loaded}/{len(dirs)} 个 (大型 {large}, 跳过 {skipped}), 共 {self.handler_count} 个处理器')
 
     async def load(self, name):
         plugin_dir = os.path.join(self._dir, name)
         if not os.path.isdir(plugin_dir):
-            raise FileNotFoundError(f'插件目录不存在: {plugin_dir}')
+            get_logger(PLUGIN, name).error(f'[{name}]插件所在目录不存在: {plugin_dir}')
+            return
         py_files = self._list_py_files(plugin_dir)
         if not py_files:
-            raise FileNotFoundError(f'插件目录中无 .py 文件: {plugin_dir}')
+            get_logger(PLUGIN, name).error(f'[{name}]插件所在目录中无 .py 文件: {plugin_dir}')
+            return
         async with self._lock:
             if name in self._plugins:
                 await self._unload_plugin(name)
@@ -150,7 +156,8 @@ class _LoaderMixin:
         plugin_dir = os.path.join(self._dir, name)
         entry = self._find_large_entry(plugin_dir)
         if not entry:
-            raise FileNotFoundError(f'大型插件入口不存在: {plugin_dir}')
+            get_logger(PLUGIN, name).error(f'[{name}]为大型插件（文件夹型插件），但入口不存在: {plugin_dir}')
+            return
         async with self._lock:
             if name in self._plugins:
                 await self._unload_plugin(name)
