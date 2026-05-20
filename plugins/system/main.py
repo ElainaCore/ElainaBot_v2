@@ -13,13 +13,14 @@ __plugin_meta__ = {
 from core.base.logger import PLUGIN, get_logger
 from core.plugin.decorators import on_load, on_unload
 
-# 导入 app 子模块, 触发 @handler / 侧边栏页面等注册
-from plugins.system.app import (
-    admin,  # noqa: F401
-    basic,  # noqa: F401
-    openapi,  # noqa: F401
-    stats,  # noqa: F401
-)
+# # 导入 app 子模块, 触发 @handler / 侧边栏页面等注册
+# 已在全局加载整个文件夹遍历，无需单独加载
+# from plugins.system.app import (
+#     admin,  # noqa: F401
+#     basic,  # noqa: F401
+#     openapi,  # noqa: F401
+#     stats,  # noqa: F401
+# )
 
 log = get_logger(PLUGIN, '系统管理')
 
