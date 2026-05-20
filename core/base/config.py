@@ -162,6 +162,16 @@ class ConfigManager:
             logger.info(f'从示例文件创建配置: {os.path.basename(base)}.yaml <- {os.path.basename(example_p)}')
             self._path_cache[name] = target
             return target
+        # 2b) Docker 环境 fallback: 挂载卷可能清空了 config 目录，回退到 config.defaults
+        fallback_p = os.path.join(self._config_dir + '.defaults', os.path.basename(base) + '.example.yaml')
+        if os.path.isfile(fallback_p):
+            import shutil
+
+            target = base + '.yaml'
+            shutil.copy2(fallback_p, target)
+            logger.info(f'[Docker] 从备份创建配置: {os.path.basename(base)}.yaml <- config.defaults/{os.path.basename(fallback_p)}')
+            self._path_cache[name] = target
+            return target
         # 3) 都不存在, 返回默认路径 (后续写入时创建)
         p = base + '.yaml'
         self._path_cache[name] = p
