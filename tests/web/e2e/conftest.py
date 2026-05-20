@@ -111,7 +111,10 @@ async def e2e_app(dist_dir, api_config_dir):
         return web.Response(text='Not Found', status=404)
 
     # /web/ -> /web/index.html
-    app.router.add_get('/web', lambda r: web.HTTPFound('/web/'))
+    async def _redirect_web(_request):
+        raise web.HTTPFound('/web/')
+
+    app.router.add_get('/web', _redirect_web)
     app.router.add_get('/web/{path:.*}', spa_handler)
 
     # 测试辅助 API: /api/test/token — 生成测试 token
