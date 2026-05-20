@@ -148,13 +148,14 @@ class _DispatchMixin:
             except Exception as e:
                 report_error(PLUGIN, ic.get('_plugin', '?'), e)
 
-        # 处理器匹配 (原文优先, 再试加/去 / 的变体)
+        # 处理器匹配
         scene = _event_scene(event)
         handlers = self._handlers_for(et)
-        variants = (content, content[1:]) if content[:1] == '/' else (content, '/' + content)
-        for v in variants:
-            if self._match_handlers(handlers, v, event, appid, is_non_at, non_at_ok, scene, user_id, et, content):
-                return True
+        if self._match_handlers(handlers, content, event, appid, is_non_at, non_at_ok, scene, user_id, et, content):
+            return True
+        alt = content[1:] if content[:1] == '/' else '/' + content
+        if self._match_handlers(handlers, alt, event, appid, is_non_at, non_at_ok, scene, user_id, et, content):
+            return True
 
         # 无匹配 → 默认回复
         should_default = not suppress_reply and (et in ('GROUP_AT_MESSAGE_CREATE', 'C2C_MESSAGE_CREATE') or (is_group_msg and is_at_self))
@@ -260,15 +261,19 @@ class _DispatchMixin:
 
     # ---------- 日志服务 ----------
 
-    def _get_log_service(self, event):
-        try:
-            from core.application import get_app
+    _cached_app = None
 
-            app = get_app()
-        except Exception:
-            return None
-        if not app:
-            return None
+    def _get_log_service(self, event):
+        app = _DispatchMixin._cached_app
+        if app is None:
+            try:
+                from core.application import get_app
+                app = get_app()
+            except Exception:
+                return None
+            if app is None:
+                return None
+            _DispatchMixin._cached_app = app
         bot = app.get_bot(event.appid)
         return bot.log_service if bot else None
 

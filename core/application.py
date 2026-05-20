@@ -257,7 +257,10 @@ class Application(EventHandlerMixin):
         ]
         for coro in cleanup:
             if coro:
-                await coro
+                try:
+                    await asyncio.wait_for(coro, timeout=10)
+                except TimeoutError:
+                    log.warning(f'关闭超时(10s), 跳过: {coro}')
 
         if self._http_server:
             await self._http_server.stop(timeout=5)
