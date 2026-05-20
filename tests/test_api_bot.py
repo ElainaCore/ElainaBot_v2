@@ -1,7 +1,6 @@
 """API 测试: 机器人模块 (bots, robot/info, robot/qrcode, bot/restart)"""
 
-import pytest
-from tests.helpers import assert_success_response, assert_error_response
+from tests.helpers import assert_success_response
 
 
 class TestBots:

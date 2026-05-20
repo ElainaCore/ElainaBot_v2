@@ -1,6 +1,5 @@
 """API 测试: 统计模块 (statistics, statistics/chart, statistics/task/{id}, statistics/dates)"""
 
-import pytest
 from tests.helpers import assert_success_response
 
 

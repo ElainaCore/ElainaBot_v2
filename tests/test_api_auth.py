@@ -1,7 +1,6 @@
 """API 测试: 鉴权模块 (auth/login, auth/check, auth/password-status)"""
 
-import pytest
-from tests.helpers import assert_200, assert_401, assert_success_response, assert_error_response, do_login
+from tests.helpers import assert_200, assert_401, assert_error_response, assert_success_response, do_login
 
 
 class TestAuthLogin:

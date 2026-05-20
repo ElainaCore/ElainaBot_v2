@@ -1,7 +1,8 @@
 """API 测试: 日志模块 (logs/recent, logs/login, logs/{log_type}, unban, delete-ip)"""
 
 import pytest
-from tests.helpers import assert_success_response, assert_error_response
+
+from tests.helpers import assert_success_response
 
 
 class TestLogsRecent:
@@ -67,10 +68,8 @@ class TestLogOperations:
 
     async def test_unban_ip_missing_param(self, api_client, auth_headers):
         resp = await api_client.post('/api/logs/unban', json={}, headers=auth_headers)
-        data = await resp.json()
         assert resp.status in (400, 404)
 
     async def test_delete_ip_missing_param(self, api_client, auth_headers):
         resp = await api_client.post('/api/logs/delete-ip', json={}, headers=auth_headers)
-        data = await resp.json()
         assert resp.status in (400, 404)

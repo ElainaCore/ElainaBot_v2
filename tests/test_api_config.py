@@ -1,7 +1,6 @@
 """API 测试: 配置模块 (config, config/save, config-file/read, config-file/save)"""
 
-import pytest
-from tests.helpers import assert_success_response, assert_error_response
+from tests.helpers import assert_error_response, assert_success_response
 
 
 class TestConfigGet:

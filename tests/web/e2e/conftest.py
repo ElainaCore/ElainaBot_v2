@@ -2,7 +2,6 @@
 
 import os
 import sys
-import tempfile
 
 import pytest
 
@@ -68,7 +67,7 @@ async def e2e_app(dist_dir, api_config_dir):
 
     import web.api as _api
     import web.auth as _auth
-    from core.base.config import ConfigManager, cfg
+    from core.base.config import ConfigManager
 
     # 重置并初始化
     ConfigManager._instance = None

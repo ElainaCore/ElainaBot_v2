@@ -1,6 +1,5 @@
 """API 测试: 更新模块 (update/* 路由组)"""
 
-import pytest
 from tests.helpers import assert_success_response
 
 
@@ -80,5 +79,5 @@ class TestUpdateMirrors:
         resp = await api_client.post('/api/update/mirror', headers=auth_headers)
         # json() 可能失败因为 Content-Type 不是 JSON
         if 'application/json' in (resp.headers.get('Content-Type', '') or ''):
-            data = await resp.json()
-            assert resp.status in (200, 400, 500)
+            await resp.json()
+        assert resp.status in (200, 400, 500)

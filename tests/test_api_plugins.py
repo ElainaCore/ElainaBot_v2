@@ -1,7 +1,6 @@
 """API 测试: 插件管理模块 (plugins/* 路由组)"""
 
-import pytest
-from tests.helpers import assert_success_response, assert_error_response
+from tests.helpers import assert_success_response
 
 
 class TestPluginScan:

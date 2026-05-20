@@ -1,6 +1,5 @@
 """API 测试: 系统信息模块 (system/info)"""
 
-import pytest
 
 
 class TestSystemInfo:

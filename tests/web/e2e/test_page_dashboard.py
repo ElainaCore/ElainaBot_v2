@@ -1,6 +1,5 @@
 """E2E 测试: Dashboard 页面"""
 
-import pytest
 
 
 class TestDashboardPage:

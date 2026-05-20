@@ -1,7 +1,6 @@
 """API 测试: 消息管理模块 (message/chats, history, send, nickname, nicknames, recall)"""
 
-import pytest
-from tests.helpers import assert_success_response, assert_error_response
+from tests.helpers import assert_success_response
 
 
 class TestMessageChats:

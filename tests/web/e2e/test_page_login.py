@@ -1,6 +1,5 @@
 """E2E 测试: 登录页面"""
 
-import pytest
 
 
 class TestLoginPage:

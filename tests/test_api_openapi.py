@@ -1,7 +1,8 @@
 """API 测试: OpenAPI 模块 (openapi/* 路由组)"""
 
 import pytest
-from tests.helpers import assert_success_response, assert_error_response
+
+from tests.helpers import assert_success_response
 
 
 class TestOpenapiAuth:

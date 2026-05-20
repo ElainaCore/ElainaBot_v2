@@ -2,7 +2,6 @@
 
 import pytest
 
-
 # 所有 SPA 路由 (Hash router)
 SPA_ROUTES = [
     '/web/',

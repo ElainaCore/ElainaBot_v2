@@ -192,9 +192,8 @@ def app_instance():
 
 def _reset_web_singletons():
     """重置 web 模块的所有模块级全局状态, 确保测试隔离"""
-    import web.auth as _auth
     import web.api as _api
-    import web.ws as _ws
+    import web.auth as _auth
     from core.base.config import ConfigManager, cfg
 
     # 重置 ConfigManager 单例
@@ -220,8 +219,9 @@ def _reset_web_singletons():
 def api_config_dir():
     """创建临时 API 配置目录, 包含 settings.yaml + bot.yaml, 并初始化 web auth"""
     import os
-    import yaml
     import tempfile
+
+    import yaml
 
     _reset_web_singletons()
 

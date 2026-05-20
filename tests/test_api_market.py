@@ -1,7 +1,5 @@
 """API 测试: 插件市场模块 (market/* 路由组)"""
 
-import pytest
-from tests.helpers import assert_success_response, assert_error_response
 
 
 class TestMarketList:

@@ -1,6 +1,5 @@
 """E2E 测试: SPA 路由导航"""
 
-import pytest
 
 
 class TestNavigation:

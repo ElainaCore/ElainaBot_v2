@@ -1,7 +1,6 @@
 """API 测试: 数据库浏览模块 (database/*)"""
 
-import pytest
-from tests.helpers import assert_success_response, assert_error_response
+from tests.helpers import assert_success_response
 
 
 class TestDatabaseList:
