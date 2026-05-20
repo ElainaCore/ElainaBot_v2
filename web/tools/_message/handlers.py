@@ -4,7 +4,7 @@ import asyncio
 import contextlib
 import time
 from datetime import date as _date
-from typing import Any, cast
+from typing import Any
 
 from aiohttp import BodyPartReader, web
 
