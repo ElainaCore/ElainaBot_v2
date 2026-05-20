@@ -10,6 +10,8 @@ from core.plugin.context import _make_reply_log_cb
 
 log = get_logger(FRAMEWORK, '插件管理')
 
+_non_at_debug_ts: dict[str, float] = {}  # {appid: last_log_time}
+
 # ==================== 场景位掩码 ====================
 
 _S_GROUP, _S_DIRECT, _S_CHANNEL = 1, 2, 4
@@ -138,6 +140,9 @@ class _DispatchMixin:
                 gid = event.group_id or ''
                 wl = _get(appid, 'non_at_message.group_whitelist', []) or []
                 non_at_ok = bool(gid and gid in wl)
+                if not non_at_ok and time.time() - _non_at_debug_ts.get(appid, 0) >= 60:
+                    _non_at_debug_ts[appid] = time.time()
+                    log.debug(f'[{appid}] 收到全量群消息但 non_at_message 未启用 (group={gid})')
 
         # 拦截器
         for ic in self._all_interceptors:
