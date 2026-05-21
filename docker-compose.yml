@@ -14,13 +14,3 @@ services:
       - ./data:/app/data
     environment:
       - TZ=Asia/Shanghai
-    tty: true
-    stdin_open: true
-    # 首次启动自动补充配置模板
-    command: >
-      sh -c "
-        if [ ! -f /app/config/settings.example.yaml ]; then
-          cp /app/config.defaults/*.example.yaml /app/config/ 2>/dev/null || true
-        fi &&
-        exec python main.py
-      "

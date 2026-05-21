@@ -100,12 +100,10 @@ docker run -d \
   elainabot/elainabot:latest
 ```
 
-**方式二：docker compose**
+**方式二：docker compose（推荐）**
 
 ```bash
-mkdir elainabot && cd elainabot
-curl -O https://raw.githubusercontent.com/ElainaCore/ElainaBot_v2/main/docker-compose.yml
-docker compose up -d
+mkdir elainabot && cd elainabot && curl -O https://raw.githubusercontent.com/ElainaCore/ElainaBot_v2/main/docker-compose.yml && docker compose up -d
 ```
 
 **访问 Web 面板完成配置**
