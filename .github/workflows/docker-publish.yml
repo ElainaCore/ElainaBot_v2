@@ -10,9 +10,6 @@ permissions:
   contents: read
   packages: write
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
-
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -48,16 +45,13 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Lowercase owner
-        run: echo "OWNER_LC=${GITHUB_REPOSITORY_OWNER,,}" >> $GITHUB_ENV
-
       - name: Build and Push to GitHub Container Registry
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
           tags: |
-            ghcr.io/${{ env.OWNER_LC }}/elainabot:latest
-            ghcr.io/${{ env.OWNER_LC }}/elainabot:${{ github.sha }}
+            ghcr.io/${{ github.repository_owner }}/elainabot:latest
+            ghcr.io/${{ github.repository_owner }}/elainabot:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

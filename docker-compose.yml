@@ -6,15 +6,11 @@ services:
     container_name: elainabot_v2
     restart: unless-stopped
     ports:
-      - "5200:5200"       # Web 管理面板
+      - "5200:5200"
     volumes:
-      # 持久化配置、插件、模块、数据（数据库/日志/媒体）
       - ./config:/app/config
       - ./plugins:/app/plugins
       - ./modules:/app/modules
       - ./data:/app/data
     environment:
-      # 时区设置（可改成你当地时区）
       - TZ=Asia/Shanghai
-    tty: true
-    stdin_open: true
