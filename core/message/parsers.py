@@ -7,20 +7,20 @@ import re
 
 from core.message import bot_openid
 
-# 内容清洗: QQ 表情标签
-_FACE_PATTERN = re.compile(r'<faceType=\d+,faceId="[^"]+",ext="[^"]+">')
+# 内容清洗: QQ 表情标签 → [face id=数字]
+_FACE_PATTERN = re.compile(r'<faceType=\d+,faceId="([^"]+)",ext="[^"]+">')
 
 
 # ==================== 内容处理辅助 ====================
 
 
 def sanitize_content(content):
-    """内容清洗: 去除 face 标签, 去除首尾空白 (/ 前缀由 dispatch 层处理)"""
+    """内容清洗: 将 face 标签转为 [face id=X], 去除首尾空白 (/ 前缀由 dispatch 层处理)"""
     if not content:
         return ''
     text = str(content).strip()
     if '<faceType' in text:
-        text = _FACE_PATTERN.sub('', text).strip()
+        text = _FACE_PATTERN.sub(r'[face id=\1]', text).strip()
     return text
 
 
