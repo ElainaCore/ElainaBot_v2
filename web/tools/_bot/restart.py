@@ -77,7 +77,9 @@ async def handle_restart(request: web.Request):
     from core.base.config import cfg
 
     port = cfg.get('settings', 'server.port', 5001)
-    restarter = os.path.join(_base_dir, 'bot_restarter.py')
+    data_dir = os.path.join(_base_dir, 'data')
+    os.makedirs(data_dir, exist_ok=True)
+    restarter = os.path.join(data_dir, 'bot_restarter.py')
 
     try:
         script = _WIN_TEMPLATE.format(main_py=main_py) if _IS_WINDOWS else _UNIX_TEMPLATE.format(main_py=main_py, port=port)
