@@ -35,16 +35,13 @@ async def _shutdown_tasks(tasks, stop_event):
 
 def _close_all_conns(conns, conn_locks=None):
     """WAL checkpoint + 关闭并清空所有 SQLite 连接 (加锁防止与 executor 写线程竞态)"""
-    for db_path in list(conns):
-        conn = conns.get(db_path)
-        if not conn:
-            continue
+    for db_path, conn in conns.items():
         lock = (conn_locks or {}).get(db_path)
         if lock:
             lock.acquire()
         try:
             with contextlib.suppress(Exception):
-                conn.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             with contextlib.suppress(Exception):
                 conn.close()
         finally:
@@ -165,23 +162,25 @@ class _BaseLogService:
         return None
 
     def _write_batch_sync(self, db_path, log_type, sql, rows):
-        conn = self._get_conn(db_path, log_type)
+        try:
+            conn = self._get_conn(db_path, log_type)
+        except Exception as e:
+            log.error(f'[{self._log_tag}] 打开数据库失败 [{log_type}] {db_path}: {e}')
+            raise
         lock = self._conn_locks.get(db_path)
         try:
             with lock:
                 conn.executemany(sql, rows)
                 conn.commit()
-        except sqlite3.Error as e:
-            log.error(f'[{self._log_tag}] SQLite 错误 [{log_type}]: {e}')
+        except Exception as e:
+            log.error(f'[{self._log_tag}] 写入失败 [{log_type}] ({len(rows)}条): {e}')
             with contextlib.suppress(Exception):
                 conn.rollback()
+            raise
 
     async def _write_batch(self, db_path, log_type, sql, rows):
         loop = asyncio.get_running_loop()
-        try:
-            await loop.run_in_executor(None, self._write_batch_sync, db_path, log_type, sql, rows)
-        except Exception as e:
-            log.error(f'[{self._log_tag}] 写入失败 [{log_type}]: {e}')
+        await loop.run_in_executor(None, self._write_batch_sync, db_path, log_type, sql, rows)
 
     async def _flush_type(self, log_type):
         q = self._queues[log_type]
@@ -198,19 +197,26 @@ class _BaseLogService:
         sql = _INSERTS.get(log_type)
         if not sql:
             return
-        if log_type in DAILY_TYPES:
-            groups = defaultdict(list)
+        try:
+            if log_type in DAILY_TYPES:
+                groups = defaultdict(list)
+                for item in batch:
+                    ts = item.get('timestamp', datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+                    row = self._extract_row(log_type, item)
+                    if row:
+                        groups[ts[:10]].append(row)
+                for date, rows in groups.items():
+                    await self._write_batch(self._resolve_db_path(log_type, date), log_type, sql, rows)
+            else:
+                rows = [r for item in batch if (r := self._extract_row(log_type, item))]
+                if rows:
+                    await self._write_batch(self._resolve_db_path(log_type), log_type, sql, rows)
+        except Exception as e:
+            log.error(f'[{self._log_tag}] 刷写失败 [{log_type}] {len(batch)}条消息丢失: {e}')
+            # 将未写入的数据放回队列重试
             for item in batch:
-                ts = item.get('timestamp', datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
-                row = self._extract_row(log_type, item)
-                if row:
-                    groups[ts[:10]].append(row)
-            for date, rows in groups.items():
-                await self._write_batch(self._resolve_db_path(log_type, date), log_type, sql, rows)
-        else:
-            rows = [r for item in batch if (r := self._extract_row(log_type, item))]
-            if rows:
-                await self._write_batch(self._resolve_db_path(log_type), log_type, sql, rows)
+                with contextlib.suppress(asyncio.QueueFull):
+                    q.put_nowait(item)
 
     async def _flush_all(self):
         for t in self._queues:
@@ -298,6 +304,7 @@ class _BaseLogService:
         self._tasks.append(asyncio.create_task(self._periodic_flush()))
         if self._retention_days > 0:
             self._tasks.append(asyncio.create_task(self._periodic_cleanup()))
+        log.debug(f'[{self._log_tag}] 日志刷写任务已启动 (间隔={self._interval}s, 保留={self._retention_days}天, 目录={self._base_dir})')
 
     async def _shutdown_base(self):
         await _shutdown_tasks(self._tasks, self._stop)
