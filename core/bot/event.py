@@ -162,17 +162,29 @@ class EventHandlerMixin:
             gid = event.group_id or ''
             content = event.content or ''
             raw_json = json.dumps(event.raw, ensure_ascii=False)
-            bot.log_service.add_sync('message', {
-                'type': et, 'message_id': msg_id, 'user_id': uid,
-                'group_id': gid, 'content': content,
-                'raw_message': raw_json, 'direction': 'receive',
-            })
-            self._push_web_log('message', {
-                'type': et, 'message_id': msg_id, 'user_id': uid,
-                'group_id': gid, 'content': content, 'direction': 'receive',
-                'appid': appid, 'bot_name': bot.name,
-                'bot_qq': getattr(bot, 'robot_qq', '') or '', 'event_type': et,
-            })
+            log_msg_item = {
+                'type': et,
+                'message_id': msg_id,
+                'user_id': uid,
+                'group_id': gid,
+                'content': content,
+                'raw_message': raw_json,
+                'direction': 'receive',
+            }
+            bot.log_service.add_sync('message', log_msg_item)
+            web_log_item = {
+                'type': et,
+                'message_id': msg_id,
+                'user_id': uid,
+                'group_id': gid,
+                'content': content,
+                'direction': 'receive',
+                'appid': appid,
+                'bot_name': bot.name,
+                'bot_qq': getattr(bot, 'robot_qq', '') or '',
+                'event_type': et,
+            }
+            self._push_web_log('message', web_log_item)
             if uid:
                 asyncio.create_task(self._track_user(bot, event, appid))
 
@@ -185,8 +197,7 @@ class EventHandlerMixin:
             return
 
         # 屏蔽其他机器人发送的消息 (author.bot=true)
-        if getattr(event, 'is_bot', False) \
-                and cfg.get_bot_setting(appid, 'non_at_message.ignore_bot_sender', False):
+        if getattr(event, 'is_bot', False) and cfg.get_bot_setting(appid, 'non_at_message.ignore_bot_sender', False):
             return
 
         # 插件分发
@@ -195,33 +206,20 @@ class EventHandlerMixin:
         try:
             await self._plugin_manager.dispatch(event, bot.sender)
         except Exception as e:
-            report_error(
-                FRAMEWORK,
-                '事件分发',
-                e,
-                context={'appid': appid, 'event_type': et, 'user_id': event.user_id},
-            )
-            self._push_web_log(
-                'error',
-                {
-                    'appid': appid,
-                    'source': '事件分发',
-                    'content': str(e),
-                    'event_type': et,
-                },
-            )
+            ctx = {'appid': appid, 'event_type': et, 'user_id': event.user_id}
+            report_error(FRAMEWORK, '事件分发', e, context=ctx)
+            web_log_err_item = {'appid': appid, 'source': '事件分发', 'content': str(e), 'event_type': et}
+            self._push_web_log('error', web_log_err_item)
         _dt = time.time() - _t0
         if _dt > 1:
             msg = f'[性能] 事件处理耗时 {_dt * 1000:.0f}ms content={event.content[:50] if event.content else ""}'
             log.warning(msg)
-            self._push_web_log(
-                'framework',
-                {
-                    'appid': appid,
-                    'source': '性能',
-                    'content': msg,
-                },
-            )
+            frm_log_item = {
+                'appid': appid,
+                'source': '性能',
+                'content': msg,
+            }
+            self._push_web_log('framework', frm_log_item)
 
     # ==================== 消息审核 ====================
 
@@ -509,7 +507,7 @@ class EventHandlerMixin:
                     raw = json.loads(raw_str)
                 except (json.JSONDecodeError, TypeError) as e:
                     p = getattr(e, 'pos', 0) or 0
-                    log.warning(f'[群用户列表] group={group_id} JSON损坏: {e}, 上下文: ...{raw_str[max(0,p-50):p+50]}...')
+                    log.warning(f'[群用户列表] group={group_id} JSON损坏: {e}, 上下文: ...{raw_str[max(0, p - 50) : p + 50]}...')
                     raw = []
                 user_map = self._parse_user_map(raw)
                 self._upsert_group_user(user_map, uid, today)
