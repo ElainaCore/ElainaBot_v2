@@ -84,16 +84,17 @@ class LogService(_BaseLogService, ShareMixin, WakeupMixin):
         """dict → INSERT 参数元组"""
         ts = data.get('timestamp', datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
         if log_type == 'message':
+            def _s(v): return str(v) if not isinstance(v, str) else v
             return (
                 ts,
-                data.get('type', ''),
-                data.get('message_id', ''),
-                data.get('user_id', ''),
-                data.get('group_id', ''),
-                data.get('content', ''),
-                data.get('raw_message', ''),
-                data.get('plugin_name', ''),
-                data.get('direction', ''),
+                _s(data.get('type', '')),
+                _s(data.get('message_id', '')),
+                _s(data.get('user_id', '')),
+                _s(data.get('group_id', '')),
+                _s(data.get('content', '')),
+                _s(data.get('raw_message', '')),
+                _s(data.get('plugin_name', '')),
+                _s(data.get('direction', '')),
             )
         common = self._extract_common_row(log_type, data, ts)
         if common:
