@@ -7,7 +7,6 @@ import re
 
 from core.message import bot_openid
 
-
 # ==================== 解析器基类 ====================
 
 
@@ -15,16 +14,19 @@ class MessageParser:
     """消息解析器基类 — 提供内容清洗 / 图片提取 / 通用消息解析"""
 
     _FACE_PATTERN = re.compile(r'<faceType=\d+,faceId="([^"]+)",ext="[^"]+">')
+    _AT_PATTERN = re.compile(r'<@!?[A-Za-z0-9]+>')
 
     @staticmethod
     def sanitize_content(content):
-        """内容清洗: 将 face 标签转为 [face id=X], 去除首尾空白 (/ 前缀由 dispatch 层处理)"""
+        """内容清洗: face 标签→[face id=X], @圈人信息剔除, 去除首尾空白"""
         if not content:
             return ''
-        text = str(content).strip()
+        text = str(content)
         if '<faceType' in text:
-            text = MessageParser._FACE_PATTERN.sub(r'[face id=\1]', text).strip()
-        return text
+            text = MessageParser._FACE_PATTERN.sub(r'[face id=\1]', text)
+        if '<@' in text:
+            text = MessageParser._AT_PATTERN.sub('', text)
+        return text.strip()
 
     @staticmethod
     def extract_image_from_attachments(attachments):
@@ -124,7 +126,7 @@ class ChannelMessageParser(MessageParser):
             if bot_id and event.raw_content:
                 for prefix in [f'<@!{bot_id}>', f'<@{bot_id}>']:
                     if event.raw_content.startswith(prefix):
-                        cleaned = event.raw_content[len(prefix):].lstrip()
+                        cleaned = event.raw_content[len(prefix) :].lstrip()
                         event.content = self.sanitize_content(cleaned)
                         break
         event.group_id = d.get('channel_id', '')
