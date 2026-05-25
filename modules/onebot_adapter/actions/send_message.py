@@ -64,7 +64,7 @@ class SendMessageAction(BaseAction):
 
         gid = real_id if is_group else None
         uid = None if is_group else real_id
-        msg_id_ref = self._ctx.find_msg_id(real_id)
+        msg_id_ref = params.get('msg_id')  # or self._ctx.find_msg_id(real_id)
 
         ok, data = await MessageSenderService.send(
             sender,

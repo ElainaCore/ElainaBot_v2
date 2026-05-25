@@ -128,6 +128,7 @@ async def convert_message_event(event, id_mapper, self_qq: int) -> dict | None:
         'message_type': 'group' if is_group else 'private',
         'sub_type': 'normal',
         'message_id': msg_id,
+        'raw_msg_id': event.message_id,
         'user_id': qq_user,
         'message': segments,
         'raw_message': raw_message,
