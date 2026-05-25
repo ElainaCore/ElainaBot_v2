@@ -16,7 +16,6 @@ from modules.onebot_adapter.lib.id_mapper import IDMapper
 
 if TYPE_CHECKING:
     from core.bot.manager import BotManager
-    from core.message.event import Event
     from core.storage.log import LogService
 
 
@@ -123,22 +122,3 @@ class ActionContext:
             direction='send',
         )
 
-    async def log_recv(self, appid: str, event: Event, ob_event: dict[str, Any]) -> None:
-        """记录接收的 OneBot 事件 JSON 到 SQLite (不推实时日志)"""
-        if ob_event.get('post_type') != 'message':
-            return
-        raw = json.dumps(ob_event, ensure_ascii=False)
-        ls = self.get_log_service(appid)
-        if ls:
-            await ls.add(
-                'message',
-                {
-                    'type': 'onebot_recv',
-                    'user_id': event.user_id or '',
-                    'group_id': event.group_id or '',
-                    'content': ob_event.get('raw_message', ''),
-                    'raw_message': raw,
-                    'plugin_name': 'onebot_adapter',
-                    'direction': 'receive',
-                },
-            )

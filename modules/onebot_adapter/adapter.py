@@ -285,7 +285,6 @@ class OneBotAdapter:
             ob_event = await convert_message_event(event, self.id_mapper, self_qq)
 
         if ob_event:
-            await self._actx.log_recv(aid, event, ob_event)
             await self.ws_server.broadcast(ob_event, appid=aid)
 
     def _cache_msg_id(self, event: Event, appid: int) -> None:
