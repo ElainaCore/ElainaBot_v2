@@ -75,16 +75,10 @@ class SendMessageAction(BaseAction):
             msg_id_ref,
         )
 
-        await self._ctx.log_send(
-            'group' if is_group else 'private',
-            real_id,
-            label,
-            ok,
-            data,
-        )
+        await self._ctx.log_send('group' if is_group else 'private', real_id, label, ok, data)
 
         if ok:
             return self._ok({'message_id': hash(str(data)) & 0x7FFFFFFF}, echo=echo)
 
         self._ctx.log.warning(f'{"群" if is_group else "私聊"} {raw_id} 发送失败: {data}')
-        return self._fail(str(data), echo=echo)
+        return self._fail(str(data), echo=echo, retcode=data.get('err_code') or data.get('code') or 1)

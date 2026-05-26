@@ -4,7 +4,7 @@
 # HTTP 服务器
 server:
   host: "0.0.0.0"
-  port: 5200
+  port: 15200
 
 # 注: message/identity/welcome/maintenance/blacklist 已移至 bot.yaml (每个机器人可独立配置)
 

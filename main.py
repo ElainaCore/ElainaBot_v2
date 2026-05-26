@@ -87,8 +87,8 @@ def main():
 
     with contextlib.suppress(KeyboardInterrupt):
         restart = asyncio.run(Application().start())
-    if restart:
-        os.execv(sys.executable, [sys.executable] + sys.argv)
+        if restart:
+            os.execv(sys.executable, [sys.executable] + sys.argv)
 
 
 if __name__ == '__main__':
