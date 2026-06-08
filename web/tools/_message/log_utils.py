@@ -4,6 +4,7 @@ import asyncio
 import json
 
 from core.base.logger import FRAMEWORK, report_error, report_error_raw
+from core.message.response import extract_message_id, extract_reference_id
 
 
 def _build_display(msg_type, content, image_data, media_file_type, ark_template_id, media_label=''):
@@ -20,31 +21,13 @@ def _build_display(msg_type, content, image_data, media_file_type, ark_template_
     return content[:200]
 
 
-def _extract_message_id(resp_data):
-    if isinstance(resp_data, dict):
-        return resp_data.get('id') or resp_data.get('msg_id') or resp_data.get('message_id') or ''
-    return ''
-
-
-def _extract_reference_id(resp_data):
-    if not isinstance(resp_data, dict):
-        return ''
-    ext = resp_data.get('ext_info')
-    if isinstance(ext, dict):
-        ref = ext.get('ref_idx') or ext.get('msg_idx') or ext.get('message_reference_id') or ext.get('reference_id')
-        if ref:
-            return str(ref)
-    ref = resp_data.get('ref_idx') or resp_data.get('msg_idx') or resp_data.get('message_reference_id') or resp_data.get('reference_id')
-    return str(ref) if ref else ''
-
-
 def _log_sent_message(bot, chat_type, chat_id, display, bot_appid, bot_name, bot_qq='', payload=None, resp_data=None):
     """成功发送 → 写消息数据库 + 推送到面板"""
     group_id = chat_id if chat_type == 'group' else ''
     user_id = chat_id if chat_type != 'group' else ''
     raw = json.dumps(payload, ensure_ascii=False, default=str) if payload else display
-    message_id = _extract_message_id(resp_data)
-    reference_id = _extract_reference_id(resp_data)
+    message_id = extract_message_id(resp_data)
+    reference_id = extract_reference_id(resp_data)
 
     # 写 message.db
     try:

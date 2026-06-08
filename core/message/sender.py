@@ -30,30 +30,13 @@ from core.message.keyboard import (
 )
 from core.message.media import get_image_size as _get_image_size
 from core.message.media import upload_media_bytes, upload_media_via_url
+from core.message.response import extract_message_id, extract_reference_id
 from core.message.template import tpl
 from core.module.hook import get_hook_manager as _get_hooks
 
 
 def _msg_seq():
     return random.randint(10000, 999999)
-
-
-def _extract_message_id_from_response(data):
-    if isinstance(data, dict):
-        return data.get('id') or data.get('msg_id') or data.get('message_id') or ''
-    return ''
-
-
-def _extract_reference_id_from_response(data):
-    if not isinstance(data, dict):
-        return ''
-    ext = data.get('ext_info')
-    if isinstance(ext, dict):
-        ref = ext.get('ref_idx') or ext.get('msg_idx') or ext.get('message_reference_id') or ext.get('reference_id')
-        if ref:
-            return str(ref)
-    ref = data.get('ref_idx') or data.get('msg_idx') or data.get('message_reference_id') or data.get('reference_id')
-    return str(ref) if ref else ''
 
 
 class MessageSender(_HttpMixin, _MediaSendMixin):
@@ -292,8 +275,8 @@ class MessageSender(_HttpMixin, _MediaSendMixin):
                 user_id = parts[2]
         text = self._extract_log_text(payload, content)
         raw_msg = json.dumps(payload, ensure_ascii=False, default=str)
-        msg_id = _extract_message_id_from_response(resp_data)
-        ref_id = _extract_reference_id_from_response(resp_data)
+        msg_id = extract_message_id(resp_data)
+        ref_id = extract_reference_id(resp_data)
         self._emit_log(
             text,
             user_id,
@@ -492,8 +475,6 @@ class MessageSender(_HttpMixin, _MediaSendMixin):
         skip_suffix = kwargs.pop('skip_suffix', False)
         message_reference = kwargs.pop('message_reference', None)
         message_reference_id = kwargs.pop('message_reference_id', None) or kwargs.pop('reference_message_id', None)
-        wants_reference = bool(message_reference or message_reference_id)
-        explicit_msg_type = msg_type
         use_md = cfg.get_bot_setting(self._appid, 'message.use_markdown', True)
         payload = {'msg_seq': _msg_seq()}
         for k in ('msg_id', 'event_id'):
@@ -506,7 +487,7 @@ class MessageSender(_HttpMixin, _MediaSendMixin):
             payload['media'] = media
             if content:
                 payload['content'] = content
-        elif use_md and msg_type != MSG_TYPE_TEXT and not (wants_reference and explicit_msg_type is None):
+        elif use_md and msg_type != MSG_TYPE_TEXT:
             payload['msg_type'] = MSG_TYPE_MARKDOWN
             md_content = str(content) if content is not None else ''
             suffix = '' if skip_suffix else cfg.get_bot_setting(self._appid, 'message.markdown_suffix', '')
@@ -517,14 +498,13 @@ class MessageSender(_HttpMixin, _MediaSendMixin):
 
         if buttons:
             payload['keyboard'] = build_keyboard(buttons, self._appid)
-        if payload.get('msg_type') != MSG_TYPE_MARKDOWN:
-            if message_reference:
-                payload['message_reference'] = message_reference
-            elif message_reference_id:
-                payload['message_reference'] = {
-                    'message_id': str(message_reference_id),
-                    'ignore_get_message_error': True,
-                }
+        if message_reference:
+            payload['message_reference'] = message_reference
+        elif message_reference_id:
+            payload['message_reference'] = {
+                'message_id': str(message_reference_id),
+                'ignore_get_message_error': True,
+            }
         payload.update(kwargs)
         return payload
 
@@ -587,8 +567,8 @@ class MessageSender(_HttpMixin, _MediaSendMixin):
         user_id = getattr(event, 'user_id', '') or ''
         group_id = getattr(event, 'group_id', '') or ''
         raw_msg = json.dumps(payload, ensure_ascii=False, default=str)
-        msg_id = _extract_message_id_from_response(resp_data)
-        ref_id = _extract_reference_id_from_response(resp_data)
+        msg_id = extract_message_id(resp_data)
+        ref_id = extract_reference_id(resp_data)
         if reply_log_cb:
             try:
                 reply_log_cb(

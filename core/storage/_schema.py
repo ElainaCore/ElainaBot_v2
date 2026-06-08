@@ -5,6 +5,7 @@ import json
 import re
 
 from core.base.logger import SERVICE, get_logger
+from core.message.response import extract_reference_id, raw_response_text
 
 log = get_logger(SERVICE, '日志')
 
@@ -14,8 +15,8 @@ _QUEUE_MAXSIZE = 50000
 def _json_field(data, key, default=''):
     """将 dict/list 字段序列化为 JSON, 其它直接转 str"""
     v = data.get(key, default)
-    raw = getattr(v, '_raw_response_text', None)
-    if isinstance(raw, str):
+    raw = raw_response_text(v)
+    if raw is not None:
         return raw
     return json.dumps(v, ensure_ascii=False) if isinstance(v, dict | list) else str(v)
 
@@ -245,25 +246,6 @@ def _rebuild_message_table(conn, existing):
     conn.commit()
 
 
-def _extract_reference_id_from_context(ctx):
-    if not isinstance(ctx, dict):
-        return ''
-    ext = ctx.get('ext_info')
-    if isinstance(ext, dict):
-        ref = ext.get('ref_idx') or ext.get('msg_idx') or ext.get('message_reference_id') or ext.get('reference_id')
-        if ref:
-            return str(ref)
-    ref = ctx.get('ref_idx') or ctx.get('msg_idx') or ctx.get('message_reference_id') or ctx.get('reference_id')
-    if ref:
-        return str(ref)
-    for key in ('response', 'data'):
-        nested = ctx.get(key)
-        ref = _extract_reference_id_from_context(nested)
-        if ref:
-            return ref
-    return ''
-
-
 def _backfill_message_reference_id(conn):
     """把 context 中已有的 REFIDX/ref_idx 回填到 reference_id。"""
     try:
@@ -288,7 +270,7 @@ def _backfill_message_reference_id(conn):
             continue
         if not isinstance(ctx, dict):
             continue
-        ref = _extract_reference_id_from_context(ctx)
+        ref = extract_reference_id(ctx)
         if ref and not current_ref:
             conn.execute('UPDATE log SET reference_id = ? WHERE id = ?', (str(ref), row_id))
             changed = True

@@ -217,6 +217,7 @@ async def handle_get_chat_history(request: web.Request):
             {
                 'id': r.get('id', len(messages)),
                 'message_id': r.get('message_id', ''),
+                'reference_id': r.get('reference_id', ''),
                 'user_id': uid,
                 'appid': r.get('appid', ''),
                 'bot_qq': r.get('bot_qq', '') if is_bot else '',
@@ -265,6 +266,8 @@ async def handle_send_message(request: web.Request):
         msg_type:        text | markdown | media | ark
         content:         文本内容 / 资源URL (media) / ARK kv JSON (ark)
         msg_id:          回复消息 ID (被动回复需要)
+        message_reference_id: REFIDX_xxx, 显式引用消息时传
+        quote_message_id: 要引用的 message_id, 后端会查 reference_id
         image:           图片文件 (仅 text 模式, 与 content 一起发送)
         media_file_type: 富媒体文件类型 1=图片 2=视频 3=语音 4=文件 (仅 media)
         ark_template_id: ARK 模板 ID (仅 ark)
@@ -298,6 +301,7 @@ async def handle_send_message(request: web.Request):
         content = fields.get('content', '').strip()
         msg_id = fields.get('msg_id', '')
         message_reference_id = fields.get('message_reference_id', '').strip()
+        quote_message_id = (fields.get('quote_message_id') or fields.get('message_reference_message_id') or '').strip()
         media_file_type = int(fields.get('media_file_type', '1'))
         ark_template_id = int(fields.get('ark_template_id', '23'))
 
@@ -315,7 +319,8 @@ async def handle_send_message(request: web.Request):
         bot_name = getattr(bot, 'name', '') or bot_appid
         bot_qq = getattr(bot, 'robot_qq', '') or ''
 
-        message_reference_id = message_reference_id or _lookup_reference_id(bot, chat_type, chat_id, msg_id)
+        if not message_reference_id and quote_message_id:
+            message_reference_id = _lookup_reference_id(bot, chat_type, chat_id, quote_message_id)
 
         # 全量群只用主动消息, 不需要被动消息 msg_id, 引用走 message_reference
         if chat_type == 'group' and chat_id in _get_full_access_group_ids():
