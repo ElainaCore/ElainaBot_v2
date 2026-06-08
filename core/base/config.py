@@ -39,6 +39,7 @@ _BOT_DEFAULTS = {
     'non_at_message.ignore_at_other_user': True,
     'non_at_message.ignore_bot_sender': False,
     'non_at_message.quiet_at_self': False,
+    'non_at_message.strip_bot_name_at': False,
     'identity.use_union_id_for_group': False,
     'identity.use_union_id_for_channel': False,
     'welcome.group_welcome': False,

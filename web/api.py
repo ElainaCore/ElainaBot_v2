@@ -92,6 +92,7 @@ def get_routes() -> list:
         web.post('/api/message/recall', _(message_handler.handle_recall_message)),
         # ── 统计 ──
         web.get('/api/statistics', _(statistics_handler.handle_get_statistics)),
+        web.get('/api/statistics/hourly', _(statistics_handler.handle_get_hourly_statistics)),
         web.get('/api/statistics/chart', _(statistics_handler.handle_get_chart_data)),
         web.get(
             '/api/statistics/task/{task_id}',

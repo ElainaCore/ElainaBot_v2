@@ -85,7 +85,10 @@ async def setup(ctx):
     global _instance
     cfg = ctx.ensure_config(_DEFAULTS, comments=_COMMENTS)
     _instance = PlaywrightRenderer(cfg)
-    log.info(f'✅ Playwright 就绪 [{cfg["browser_type"]}] 首次调用时启动浏览器')
+    if cfg.get('close_after_use', False):
+        log.info(f'✅ Playwright 就绪 [{cfg["browser_type"]}] 用完即关模式, 不预初始化')
+    else:
+        log.info(f'✅ Playwright 就绪 [{cfg["browser_type"]}] 首次调用时启动浏览器')
     return _instance
 
 
@@ -157,6 +160,8 @@ class PlaywrightRenderer:
 
     async def _ensure_browser(self):
         """按需启动浏览器, 崩溃时自动重启"""
+        if self._cfg.get('close_after_use', False):
+            return await self._fresh_launch()
         if self._browser and self._browser.is_connected():
             return True
         async with self._lock:
@@ -164,28 +169,37 @@ class PlaywrightRenderer:
                 return True
             restarting = self._browser is not None
             log.info('浏览器已断开, 正在重启...' if restarting else '正在按需启动浏览器...')
-            try:
-                if not self._pw:
-                    from playwright.async_api import async_playwright
+            return await self._do_launch(restarting)
 
-                    self._pw = await async_playwright().start()
-                launcher = getattr(
-                    self._pw,
-                    self._cfg.get('browser_type', 'chromium'),
-                    self._pw.chromium,
-                )
-                self._browser = await launcher.launch(
-                    headless=self._cfg.get('headless', True),
-                    args=self._cfg.get('launch_args', []),
-                )
-                log.info('✅ 浏览器已启动' if not restarting else '✅ 浏览器已重启')
-                if not self._cfg.get('close_after_use', False) and (not self._cleanup_task or self._cleanup_task.done()):
-                    self._cleanup_task = asyncio.create_task(self._idle_cleanup_loop())
-                return True
-            except Exception as e:
-                self._last_error = str(e)
-                log.error(f'浏览器启动失败: {e}', exc_info=True)
-                return False
+    async def _fresh_launch(self):
+        """用完即关模式: 每次全新启动, 无重连检测"""
+        async with self._lock:
+            log.info('用完即关模式: 启动浏览器...')
+            return await self._do_launch(False)
+
+    async def _do_launch(self, restarting):
+        """实际启动浏览器"""
+        try:
+            if not self._pw:
+                from playwright.async_api import async_playwright
+                self._pw = await async_playwright().start()
+            launcher = getattr(
+                self._pw,
+                self._cfg.get('browser_type', 'chromium'),
+                self._pw.chromium,
+            )
+            self._browser = await launcher.launch(
+                headless=self._cfg.get('headless', True),
+                args=self._cfg.get('launch_args', []),
+            )
+            log.info('✅ 浏览器已启动' if not restarting else '✅ 浏览器已重启')
+            if not self._cfg.get('close_after_use', False) and (not self._cleanup_task or self._cleanup_task.done()):
+                self._cleanup_task = asyncio.create_task(self._idle_cleanup_loop())
+            return True
+        except Exception as e:
+            self._last_error = str(e)
+            log.error(f'浏览器启动失败: {e}', exc_info=True)
+            return False
 
     async def _idle_cleanup_loop(self):
         """定时检查并关闭空闲浏览器"""
@@ -230,7 +244,9 @@ class PlaywrightRenderer:
                     viewport={'width': vw, 'height': vh},
                 )
             except Exception as e:
-                if 'Connection closed' in str(e) or not (self._browser and self._browser.is_connected()):
+                if not self._cfg.get('close_after_use', False) and (
+                    'Connection closed' in str(e) or not (self._browser and self._browser.is_connected())
+                ):
                     log.warning(f'浏览器连接已断开, 尝试重启: {e}')
                     await self._close_browser()
                     if not await self._ensure_browser():

@@ -62,6 +62,7 @@ bots:
       ignore_at_other_user: true       # 忽略仅@其他用户的消息 (未@自己时静默跳过)
       ignore_bot_sender: true          # 屏蔽其他机器人发送的消息 (author.bot=true)
       quiet_at_self: false             # 全量消息中@机器人时, 抑制黑名单/维护等默认回复 (仍匹配插件)
+      strip_bot_name_at: false         # 全量消息匹配前, 消除 @机器人名 文本
 
   # 添加更多机器人只需复制上方配置块:
   # - name: "第二个机器人"

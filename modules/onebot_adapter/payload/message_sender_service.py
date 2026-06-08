@@ -28,11 +28,11 @@ class MessageSenderService:
         payload: str | dict[str, Any],
         image_bytes: bytes | str | None,
         msg_id: int | str | None,
-    ) -> tuple[bool, Any]:
+    ) -> tuple[bool, Any, dict[str, Any]]:
         """统一发送入口
 
         Returns:
-            (ok: bool, data: Any) — 成功为 (True, resp_data), 失败为 (False, error_msg)
+            (ok, data, send_payload) — 成功为接口响应, 失败为错误对象
         """
         target = group_id or user_id
         prefix = 'groups' if group_id else 'users'
@@ -50,10 +50,10 @@ class MessageSenderService:
         payload: str | dict[str, Any],
         image_bytes: str | bytes,
         msg_id: int | str | None,
-    ) -> tuple[bool, Any]:
+    ) -> tuple[bool, Any, dict[str, Any]]:
         file_info = await upload_media_bytes(sender, image_bytes, 1, f'/v2/{prefix}/{target}/files')
         if not file_info:
-            return False, '图片上传失败'
+            return False, '图片上传失败', {}
         media_payload: dict[str, Any] = {
             'msg_type': MessageType.MSG_TYPE_MEDIA,
             'msg_seq': random.randint(10000, 999999),
@@ -62,7 +62,8 @@ class MessageSenderService:
         }
         if msg_id:
             media_payload['msg_id'] = msg_id
-        return await sender.post_json(f'/v2/{prefix}/{target}/messages', media_payload)
+        ok, data = await sender.post_json(f'/v2/{prefix}/{target}/messages', media_payload)
+        return ok, data, media_payload
 
     @classmethod
     async def _send_text(
@@ -73,10 +74,10 @@ class MessageSenderService:
         target: int | str,
         payload: str | dict[str, Any],
         msg_id: int | str | None,
-    ) -> tuple[bool, Any]:
+    ) -> tuple[bool, Any, dict[str, Any]]:
         kwargs = PayloadConverter.convert(payload)
         if group_id:
-            ok, data, _ = await sender.send_to_group(target, msg_id=msg_id, **kwargs)
+            ok, data, send_payload = await sender.send_to_group(target, msg_id=msg_id, **kwargs)
         else:
-            ok, data, _ = await sender.send_to_user(target, msg_id=msg_id, **kwargs)
-        return ok, data
+            ok, data, send_payload = await sender.send_to_user(target, msg_id=msg_id, **kwargs)
+        return ok, data, send_payload

@@ -4,6 +4,7 @@ import asyncio
 import json
 
 from core.base.logger import FRAMEWORK, report_error, report_error_raw
+from core.message.response import extract_message_id, extract_reference_id
 
 
 def _build_display(msg_type, content, image_data, media_file_type, ark_template_id, media_label=''):
@@ -20,11 +21,13 @@ def _build_display(msg_type, content, image_data, media_file_type, ark_template_
     return content[:200]
 
 
-def _log_sent_message(bot, chat_type, chat_id, display, bot_appid, bot_name, bot_qq='', payload=None):
+def _log_sent_message(bot, chat_type, chat_id, display, bot_appid, bot_name, bot_qq='', payload=None, resp_data=None):
     """成功发送 → 写消息数据库 + 推送到面板"""
     group_id = chat_id if chat_type == 'group' else ''
     user_id = chat_id if chat_type != 'group' else ''
     raw = json.dumps(payload, ensure_ascii=False, default=str) if payload else display
+    message_id = extract_message_id(resp_data)
+    reference_id = extract_reference_id(resp_data)
 
     # 写 message.db
     try:
@@ -34,13 +37,15 @@ def _log_sent_message(bot, chat_type, chat_id, display, bot_appid, bot_name, bot
                 log_service.add(
                     'message',
                     {
-                        'type': 'plugin',
+                        'message_id': message_id,
+                        'reference_id': reference_id,
                         'user_id': user_id,
                         'group_id': group_id,
                         'content': display,
                         'plugin_name': 'WebPanel',
                         'raw_message': raw,
                         'direction': 'send',
+                        'context': resp_data if resp_data is not None else '',
                     },
                 )
             )
@@ -60,6 +65,9 @@ def _log_sent_message(bot, chat_type, chat_id, display, bot_appid, bot_name, bot
                 'user_id': user_id,
                 'group_id': group_id,
                 'content': display,
+                'message_id': message_id,
+                'reference_id': reference_id,
+                'raw_message': raw,
                 'is_bot': True,
                 'direction': 'send',
                 'source': 'web_panel',

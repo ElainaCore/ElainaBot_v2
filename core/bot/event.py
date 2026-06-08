@@ -2,7 +2,6 @@
 """事件处理 Mixin — 事件分发 / 去重 / 生命周期 / 用户追踪 / 群组记录"""
 
 import asyncio
-import contextlib
 import json
 import time
 from datetime import datetime, timedelta
@@ -74,6 +73,7 @@ class EventHandlerMixin:
     # ==================== 事件入口 ====================
 
     async def _on_event(self, event):
+        _t0 = time.time()
         appid = event.appid
         bot = self._bots.get(appid)
         if not bot:
@@ -152,8 +152,6 @@ class EventHandlerMixin:
                 context={'appid': appid, 'event_type': et, 'raw': raw_json},
             )
 
-        _t0 = time.time()
-
         # 消息日志 + 用户追踪 (消息事件和回调事件都记录)
         if et in MESSAGE_TYPES or et == INTERACTION_CREATE:
             # json.dumps 移至轻量 dict 构造后, 仅序列化一次
@@ -162,29 +160,20 @@ class EventHandlerMixin:
             gid = event.group_id or ''
             content = event.content or ''
             raw_json = json.dumps(event.raw, ensure_ascii=False)
-            log_msg_item = {
-                'type': et,
-                'message_id': msg_id,
-                'user_id': uid,
-                'group_id': gid,
-                'content': content,
+            bot.log_service.add_sync('message', {
+                'message_id': msg_id, 'user_id': uid,
+                'reference_id': getattr(event, 'message_reference_id', '') or '',
+                'group_id': gid, 'content': content,
+                'raw_message': raw_json, 'direction': 'receive',
+            })
+            self._push_web_log('message', {
+                'message_id': msg_id, 'user_id': uid,
+                'group_id': gid, 'content': content, 'direction': 'receive',
+                'appid': appid, 'bot_name': bot.name,
+                'bot_qq': getattr(bot, 'robot_qq', '') or '', 'event_type': et,
+                'reference_id': getattr(event, 'message_reference_id', '') or '',
                 'raw_message': raw_json,
-                'direction': 'receive',
-            }
-            bot.log_service.add_sync('message', log_msg_item)
-            web_log_item = {
-                'type': et,
-                'message_id': msg_id,
-                'user_id': uid,
-                'group_id': gid,
-                'content': content,
-                'direction': 'receive',
-                'appid': appid,
-                'bot_name': bot.name,
-                'bot_qq': getattr(bot, 'robot_qq', '') or '',
-                'event_type': et,
-            }
-            self._push_web_log('message', web_log_item)
+            })
             if uid:
                 asyncio.create_task(self._track_user(bot, event, appid))
 
@@ -231,16 +220,7 @@ class EventHandlerMixin:
         appid = event.appid
 
         if et == MESSAGE_AUDIT_PASS and audit_id and real_msg_id:
-            # 将数据库中 audit_id 替换为真实 message_id
-            from datetime import date as _d
-
-            dates = [(_d.today() - timedelta(days=i)).strftime('%Y-%m-%d') for i in range(3)]
-            sql = 'UPDATE log SET message_id=? WHERE message_id=?'
-            for day in dates:
-                with contextlib.suppress(Exception):
-                    bot.log_service.query('message', sql, (real_msg_id, audit_id), date=day)
             log.debug(f'[{appid}] 审核通过: {audit_id} -> {real_msg_id}')
-            # 推送到 Web 面板实时更新
             self._push_web_log(
                 'audit',
                 {

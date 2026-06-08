@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import time
 from datetime import date as _date
+from datetime import timedelta
 from typing import Any, cast
 
 from aiohttp import BodyPartReader, web
@@ -31,6 +32,33 @@ from web.tools._message.shared import (
 _chat_list_cache: dict[tuple[str, str, int], tuple[float, list[dict[str, Any]]]] = {}
 _CHAT_LIST_TTL = 30  # 秒
 _chat_list_lock = None  # asyncio.Lock, 延迟初始化
+
+
+def _lookup_reference_id(bot, chat_type, chat_id, message_id):
+    """根据 message_id 查出 message 表单独记录的 REFIDX。"""
+    if not bot or not message_id:
+        return ''
+    if str(message_id).startswith('REFIDX_'):
+        return str(message_id)
+    where = "message_id = ? AND reference_id != ''"
+    params = (message_id,)
+    if chat_type == 'group':
+        where += ' AND group_id = ?'
+        params += (chat_id,)
+    else:
+        where += ' AND user_id = ?'
+        params += (chat_id,)
+    sql = f'SELECT reference_id FROM log WHERE {where} ORDER BY id DESC LIMIT 1'
+    today = _date.today()
+    for offset in range(3):
+        d = (today - timedelta(days=offset)).strftime('%Y-%m-%d')
+        rows = bot.log_service.query('message', sql, params, date=d)
+        if not rows:
+            continue
+        ref = rows[0].get('reference_id', '') or ''
+        if ref:
+            return str(ref)
+    return ''
 
 
 async def handle_get_nickname(request: web.Request):
@@ -174,7 +202,6 @@ async def handle_get_chat_history(request: web.Request):
     for r in rows:
         uid = r.get('user_id', '')
         content = r.get('content', '')
-        msg_type = r.get('type', '')
         is_bot = r.get('direction') == 'send'
 
         if content.startswith('[Bot:'):
@@ -183,13 +210,14 @@ async def handle_get_chat_history(request: web.Request):
                 content = content[idx + 2 :]
 
         plugin_name = r.get('plugin_name', '')
-        source = 'web_panel' if plugin_name == 'WebPanel' else ('onebot' if msg_type in ('onebot_send', 'onebot_recv') else '')
+        source = 'web_panel' if plugin_name == 'WebPanel' else ('onebot' if plugin_name == 'onebot_adapter' else '')
         raw = r.get('raw_message', '')
         recalled = raw == '[recalled]'
         messages.append(
             {
                 'id': r.get('id', len(messages)),
                 'message_id': r.get('message_id', ''),
+                'reference_id': r.get('reference_id', ''),
                 'user_id': uid,
                 'appid': r.get('appid', ''),
                 'bot_qq': r.get('bot_qq', '') if is_bot else '',
@@ -211,7 +239,7 @@ async def handle_get_chat_history(request: web.Request):
             if r.get('_date', '') != today_str:
                 continue
             mid = r.get('message_id', '')
-            if mid and r.get('type') != 'plugin' and r.get('direction') != 'send':
+            if mid and r.get('direction') != 'send':
                 last_msg_id = mid
                 break
 
@@ -238,6 +266,8 @@ async def handle_send_message(request: web.Request):
         msg_type:        text | markdown | media | ark
         content:         文本内容 / 资源URL (media) / ARK kv JSON (ark)
         msg_id:          回复消息 ID (被动回复需要)
+        message_reference_id: REFIDX_xxx, 显式引用消息时传
+        quote_message_id: 要引用的 message_id, 后端会查 reference_id
         image:           图片文件 (仅 text 模式, 与 content 一起发送)
         media_file_type: 富媒体文件类型 1=图片 2=视频 3=语音 4=文件 (仅 media)
         ark_template_id: ARK 模板 ID (仅 ark)
@@ -270,12 +300,10 @@ async def handle_send_message(request: web.Request):
         msg_type = fields.get('msg_type', 'text')
         content = fields.get('content', '').strip()
         msg_id = fields.get('msg_id', '')
+        message_reference_id = fields.get('message_reference_id', '').strip()
+        quote_message_id = (fields.get('quote_message_id') or fields.get('message_reference_message_id') or '').strip()
         media_file_type = int(fields.get('media_file_type', '1'))
         ark_template_id = int(fields.get('ark_template_id', '23'))
-
-        # 全量群只用主动消息, 不需要被动消息
-        if chat_type == 'group' and chat_id in _get_full_access_group_ids():
-            msg_id = ''
 
         if not chat_type or not chat_id:
             return web.json_response({'success': False, 'message': '缺少 chat_type/chat_id'}, status=400)
@@ -291,6 +319,13 @@ async def handle_send_message(request: web.Request):
         bot_name = getattr(bot, 'name', '') or bot_appid
         bot_qq = getattr(bot, 'robot_qq', '') or ''
 
+        if not message_reference_id and quote_message_id:
+            message_reference_id = _lookup_reference_id(bot, chat_type, chat_id, quote_message_id)
+
+        # 全量群只用主动消息, 不需要被动消息 msg_id, 引用走 message_reference
+        if chat_type == 'group' and chat_id in _get_full_access_group_ids():
+            msg_id = ''
+
         # 根据消息类型发送
         is_group = chat_type == 'group'
         gid = chat_id if is_group else None
@@ -298,35 +333,53 @@ async def handle_send_message(request: web.Request):
 
         # 发送 — sender.send_to_* 内部已记录日志, 其余路径需手动记录
         need_log = True
+        send_payload = {}
         if msg_type == 'media' and content:
-            ok, data = await _send_media_url(
+            ok, data, send_payload = await _send_media_url(
                 sender,
                 content,
                 file_type=media_file_type,
                 group_id=gid,
                 user_id=uid,
                 msg_id=msg_id,
+                message_reference_id=message_reference_id,
             )
         elif msg_type == 'ark' and content:
-            ok, data = await _send_ark(
+            ok, data, send_payload = await _send_ark(
                 sender,
                 ark_template_id,
                 content,
                 group_id=gid,
                 user_id=uid,
                 msg_id=msg_id,
+                message_reference_id=message_reference_id,
             )
         elif msg_type == 'text' and image_data:
-            ok, data = await _send_text_with_image(sender, content, image_data, group_id=gid, user_id=uid, msg_id=msg_id)
+            ok, data, send_payload = await _send_text_with_image(
+                sender,
+                content,
+                image_data,
+                group_id=gid,
+                user_id=uid,
+                msg_id=msg_id,
+                message_reference_id=message_reference_id,
+            )
         else:
             need_log = False
             api_msg_type = 2 if msg_type == 'markdown' else 0
             send_fn = sender.send_to_group if is_group else sender.send_to_user
-            ok, data, _ = await send_fn(chat_id, content, msg_id=msg_id, msg_type=api_msg_type, skip_suffix=True)
+            ok, data, send_payload = await send_fn(
+                chat_id,
+                content,
+                msg_id=msg_id,
+                msg_type=api_msg_type,
+                skip_suffix=True,
+                message_reference_id=message_reference_id,
+            )
 
         if ok:
             if need_log:
-                media_label = sender._save_media(image_data, 1) if image_data else ''
+                media_label = await sender._save_media(image_data, 1) if image_data else ''
                 display = _build_display(
                     msg_type,
                     content,
@@ -335,10 +388,10 @@ async def handle_send_message(request: web.Request):
                     ark_template_id,
                     media_label,
                 )
-                _log_sent_message(bot, chat_type, chat_id, display, bot_appid, bot_name, bot_qq)
+                _log_sent_message(bot, chat_type, chat_id, display, bot_appid, bot_name, bot_qq, send_payload, data)
             return web.json_response({'success': True, 'message': '发送成功'})
         err_msg = data.get('message', '发送失败') if isinstance(data, dict) else str(data)
-        _log_send_error(bot, msg_type, chat_type, chat_id, {}, data, bot_appid, msg_id)
+        _log_send_error(bot, msg_type, chat_type, chat_id, send_payload, data, bot_appid, msg_id)
         return web.json_response({'success': False, 'message': err_msg})
 
     except Exception as e:

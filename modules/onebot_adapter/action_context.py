@@ -11,6 +11,7 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from core.message.response import extract_message_id, extract_reference_id
 from core.message.sender import MessageSender
 from modules.onebot_adapter.lib.id_mapper import IDMapper
 
@@ -95,23 +96,28 @@ class ActionContext:
         content: str,
         ok: bool,
         resp_data: Any,
+        send_payload: Any = None,
     ) -> None:
         """记录发送消息到 SQLite + 实时推送"""
         gid = str(target_id) if msg_type == 'group' else ''
         uid = str(target_id) if msg_type == 'private' else ''
-        raw = json.dumps({'ok': ok, 'resp': str(resp_data)[:500]}, ensure_ascii=False)
+        raw = json.dumps(send_payload, ensure_ascii=False, default=str) if send_payload else content
+        message_id = extract_message_id(resp_data)
+        reference_id = extract_reference_id(resp_data)
         ls = self.get_log_service()
         if ls:
             await ls.add(
                 'message',
                 {
-                    'type': 'onebot_send',
+                    'message_id': message_id,
+                    'reference_id': reference_id,
                     'user_id': uid,
                     'group_id': gid,
                     'content': content,
                     'raw_message': raw,
                     'plugin_name': 'onebot_adapter',
                     'direction': 'send',
+                    'context': resp_data if resp_data is not None else '',
                 },
             )
         self.push_ws(
@@ -121,4 +127,3 @@ class ActionContext:
             is_bot=True,
             direction='send',
         )
-

@@ -1,10 +1,10 @@
 """示例功能: 媒体发送、ark卡片、markdown、撤回、主动消息、按钮等 (仅主人可用)"""
 
-import asyncio
 import os
-
+import asyncio
 from core.plugin.decorators import handler, on_unload
 from core.plugin.web_pages import register_page, unregister_page
+
 
 # ==================== 媒体发送示例 ====================
 
@@ -113,6 +113,67 @@ async def send_buttons(event, match):
     await event.reply("📌 按钮功能演示", buttons=buttons)
 
 
+# ==================== 引用消息示例 ====================
+# message_reference_id 要传 QQ message_scene.ext 里的 REFIDX_xxx。
+# 不是 event.message_id 里的 ROBOT1.0_xxx。框架会自动组装为:
+# {"message_reference": {"message_id": "REFIDX_xxx", "ignore_get_message_error": true}}
+# 是否使用 markdown 取决于 msg_type/use_markdown；只有显式传 message_reference_id 才引用。
+
+@handler(r'^引用信息$', name='查看引用信息', desc='查看当前消息 ID 与可引用 REFIDX', owner_only=True)
+async def show_reference_info(event, match):
+    await event.reply(
+        f"平台消息 ID:\n{event.message_id or '无'}\n\n"
+        f"引用用 REFIDX:\n{event.message_reference_id or '无'}"
+    )
+
+
+@handler(r'^引用当前$', name='引用当前消息', desc='引用触发这条消息进行回复', owner_only=True)
+async def reply_reference_current(event, match):
+    ref_id = event.message_reference_id
+    if not ref_id:
+        return await event.reply("当前消息没有可用的 REFIDX，无法引用")
+    await event.reply(
+        f"这条回复引用了你刚刚发送的消息\nREFIDX: {ref_id}",
+        message_reference_id=ref_id,
+    )
+
+
+@handler(r'^引用指定\s+(\S+)(?:\s+(.+))?$', name='引用指定消息', desc='引用指定 REFIDX 发送回复', owner_only=True)
+async def reply_reference_custom(event, match):
+    ref_id = match.group(1).strip()
+    content = (match.group(2) or '这条回复引用了指定消息').strip()
+    await event.reply(content, message_reference_id=ref_id)
+
+
+@handler(r'^引用刚发送$', name='引用刚发送消息', desc='从发送响应 ext_info.ref_idx 引用刚发送的消息', owner_only=True)
+async def reply_reference_sent(event, match):
+    data = await event.reply("第一条消息：等下会引用我", msg_type=0)
+    ref_id = ''
+    if isinstance(data, dict):
+        ext = data.get('ext_info') or {}
+        ref_id = ext.get('ref_idx') if isinstance(ext, dict) else ''
+    if not ref_id:
+        return await event.reply("发送响应里没有 ext_info.ref_idx，无法引用刚发送的消息")
+    await event.reply(
+        f"**第二条消息**：这条 markdown 引用了刚发送的第一条\nREFIDX: {ref_id}",
+        message_reference_id=ref_id,
+        msg_type=2,
+    )
+
+
+@handler(r'^主动引用\s+(\S+)(?:\s+(.+))?$', name='主动引用消息', desc='主动消息引用指定 REFIDX', owner_only=True)
+async def proactive_reference_custom(event, match):
+    ref_id = match.group(1).strip()
+    content = (match.group(2) or '这条主动消息引用了指定消息').strip()
+    if event.is_group:
+        ok, data, _ = await event.send_to_group(event.group_id, content, message_reference_id=ref_id)
+    else:
+        ok, data, _ = await event.send_to_user(event.user_id, content, message_reference_id=ref_id)
+    if not ok:
+        err = data.get('message', '未知错误') if isinstance(data, dict) else str(data)
+        await event.reply(f"❌ 主动引用发送失败: {err}")
+
+
 # ==================== 分享链接功能 ====================
 
 def _get_log_service(event):
@@ -190,7 +251,7 @@ async def force_wakeup_user(event, match):
 
 @handler(r'^全量签到$', name='签到', desc='无需@即可触发的签到指令', ignore_at_check=True)
 async def check_in(event, match):
-    await event.reply("✅ 签到成功！")
+    await event.reply(f"✅ 签到成功！")
 
 
 @handler(r'^主动测试$', name='全量主动测试', desc='无需@即可触发, 3秒后发送主动消息', ignore_at_check=True, owner_only=True)
@@ -312,9 +373,8 @@ def _unload_web_pages():
 @handler(r'^面板推送$', name='面板推送', desc='向 Web 面板推送一条自定义日志', owner_only=True)
 async def push_to_panel(event, match):
     try:
-        from datetime import datetime
-
         import web.ws as ws
+        from datetime import datetime
         entry = {
             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'content': f'来自插件的推送测试 (用户: {event.user_id})',

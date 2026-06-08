@@ -19,7 +19,6 @@ web:
   theme_gradient: "linear-gradient(135deg, #5865f2, #7289da)"
 
 logging:
-  level: "INFO"                              # 日志等级: DEBUG / INFO / WARNING / ERROR
   dir: "log"                                 # 日志根目录(相对框架目录)
   insert_interval: 2                         # 批量写入间隔(秒), 0=立即写入
   batch_size: 0                              # 单次最大写入条数, 0=不限

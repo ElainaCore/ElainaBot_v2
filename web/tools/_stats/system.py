@@ -1,5 +1,6 @@
 """系统信息采集"""
 
+import asyncio
 import contextlib
 import gc
 import logging
@@ -18,6 +19,8 @@ _start_time = datetime.now()
 _last_gc: float = 0.0
 _GC_INTERVAL = 30
 _bot_manager = None
+_info_cache = (0.0, None)
+_INFO_CACHE_TTL = 5
 
 
 def set_context(bot_manager, start_time=None):
@@ -155,8 +158,15 @@ def get_system_info() -> dict:
 
 
 async def handle_system_info(request: web.Request):
+    global _info_cache
     try:
-        return web.json_response(get_system_info())
+        now = time.time()
+        ts, data = _info_cache
+        if data and now - ts < _INFO_CACHE_TTL:
+            return web.json_response(data)
+        data = await asyncio.get_running_loop().run_in_executor(None, get_system_info)
+        _info_cache = (now, data)
+        return web.json_response(data)
     except Exception as e:
         log.error(f'获取系统信息失败: {e}')
         return web.json_response({'error': str(e)}, status=500)

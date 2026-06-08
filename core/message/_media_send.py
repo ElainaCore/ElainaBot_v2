@@ -10,6 +10,7 @@ from core.message._http import (
     MessageType,
 )
 from core.message.media import _resolve_upload_ep, upload_media_bytes
+from core.message.response import extract_message_id
 
 log = get_logger(FRAMEWORK, '消息发送')
 
@@ -28,7 +29,7 @@ class _MediaSendMixin:
 
     def _maybe_auto_recall(self, event, data, delay):
         if delay and data:
-            mid = _extract_message_id(data)
+            mid = extract_message_id(data)
             if mid:
                 asyncio.create_task(self._auto_recall(event, mid, delay))
 
@@ -176,9 +177,3 @@ def _set_msg_or_event_id(payload, event):
         payload['msg_id'] = event.message_id
     elif event.needs_event_id:
         payload['event_id'] = event.event_id or ''
-
-
-def _extract_message_id(data):
-    if isinstance(data, dict):
-        return data.get('id') or data.get('msg_id') or data.get('message_id')
-    return None

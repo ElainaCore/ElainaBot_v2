@@ -54,7 +54,12 @@ class LogService(_BaseLogService, ShareMixin, WakeupMixin):
         if not LogService._global_callbacks_registered:
             LogService._global_callbacks_registered = True
             on_error(LogService._global_error_dispatch)
+        await asyncio.get_running_loop().run_in_executor(None, self._ensure_today_message_schema)
         await self._start_tasks()
+
+    def _ensure_today_message_schema(self):
+        """启动时主动校验当天 message.db 结构。"""
+        self._get_conn(self._resolve_db_path('message'), 'message')
 
     async def shutdown(self):
         """关闭日志服务, 刷写缓冲"""
@@ -87,14 +92,15 @@ class LogService(_BaseLogService, ShareMixin, WakeupMixin):
             def _s(v): return str(v) if not isinstance(v, str) else v
             return (
                 ts,
-                _s(data.get('type', '')),
                 _s(data.get('message_id', '')),
+                _s(data.get('reference_id', '')),
                 _s(data.get('user_id', '')),
                 _s(data.get('group_id', '')),
                 _s(data.get('content', '')),
                 _s(data.get('raw_message', '')),
                 _s(data.get('plugin_name', '')),
                 _s(data.get('direction', '')),
+                _json_field(data, 'context', ''),
             )
         common = self._extract_common_row(log_type, data, ts)
         if common:

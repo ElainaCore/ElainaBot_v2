@@ -44,6 +44,17 @@ def _event_scene(event: Event) -> int:
     return (_S_GROUP if event.is_group else 0) | (_S_DIRECT if event.is_direct else 0) | (_S_CHANNEL if event.is_channel else 0)
 
 
+def _strip_leading_bot_name_at(content, bot_name):
+    """全量消息中移除所有 @机器人名 文本, 仅用于 handler 匹配。"""
+    if not content or not bot_name:
+        return content
+    name = str(bot_name).strip()
+    prefix = f'@{name}'
+    if not name or prefix not in content:
+        return content
+    return content.replace(prefix, '').strip()
+
+
 # ==================== Mixin ====================
 
 
@@ -166,12 +177,12 @@ class _DispatchMixin:
         # 处理器匹配
         scene: int = _event_scene(event)
         handlers = self._handlers_for(et)
-        if self._match_handlers(handlers, content, event, appid, is_non_at, non_at_ok, scene, user_id, et, content):
+        handler_content = content
+        if is_group_msg and _get(appid, 'non_at_message.strip_bot_name_at', False):
+            handler_content = _strip_leading_bot_name_at(content, getattr(sender, '_bot_name', '') or '')
+
+        if self._match_handlers(handlers, handler_content, event, appid, is_non_at, non_at_ok, scene, user_id, et, content):
             return True
-        # 无意义的性能损失，没人会把斜杠放在最后面
-        # alt = content[1:] if content[:1] == '/' else '/' + content
-        # if self._match_handlers(handlers, alt, event, appid, is_non_at, non_at_ok, scene, user_id, et, content):
-        #     return True
 
         # 无匹配 → 默认回复
         should_default: bool = not suppress_reply and (et in ('GROUP_AT_MESSAGE_CREATE', 'C2C_MESSAGE_CREATE') or (is_group_msg and is_at_self))
