@@ -60,8 +60,6 @@ async def _send_media_url(sender, url, *, file_type=1, group_id=None, user_id=No
         msg_id=msg_id,
         message_reference_id=message_reference_id,
     )
-    if isinstance(data, dict):
-        data.setdefault('_upload_response', resp)
     return ok, data, payload
 
 
@@ -90,8 +88,6 @@ async def _send_text_with_image(sender, content, image_bytes, *, group_id=None, 
         msg_id=msg_id,
         message_reference_id=message_reference_id,
     )
-    if isinstance(data, dict):
-        data.setdefault('_upload_response', resp)
     return ok, data, payload
 
 

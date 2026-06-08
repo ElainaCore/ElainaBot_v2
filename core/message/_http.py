@@ -32,6 +32,36 @@ _TOKEN_EXPIRED_CODE = 11244
 _MAX_MEDIA_DOWNLOAD = 100 * 1024 * 1024  # 100MB 下载上限, 防止 OOM
 
 
+class RawResponseDict(dict):
+    """保留 HTTP 原始 JSON body 的 dict 响应。"""
+
+    __slots__ = ('_raw_response_text',)
+
+    def __init__(self, *args, raw_response_text='', **kwargs):
+        super().__init__(*args, **kwargs)
+        self._raw_response_text = raw_response_text
+
+
+class RawResponseList(list):
+    """保留 HTTP 原始 JSON body 的 list 响应。"""
+
+    __slots__ = ('_raw_response_text',)
+
+    def __init__(self, *args, raw_response_text=''):
+        super().__init__(*args)
+        self._raw_response_text = raw_response_text
+
+
+def _loads_raw_response(body):
+    raw_text = body.decode('utf-8', errors='replace')
+    result = json.loads(raw_text)
+    if isinstance(result, dict):
+        return RawResponseDict(result, raw_response_text=raw_text)
+    if isinstance(result, list):
+        return RawResponseList(result, raw_response_text=raw_text)
+    return result
+
+
 class _HttpMixin:
     """HTTP 请求层 Mixin"""
 
@@ -61,7 +91,7 @@ class _HttpMixin:
                 del resp  # 立即释放 HttpResponse 引用
                 if status >= 400:
                     try:
-                        err = json.loads(body)
+                        err = _loads_raw_response(body)
                     except Exception:
                         err = {
                             'message': body.decode(errors='replace'),
@@ -74,7 +104,7 @@ class _HttpMixin:
                         continue
                     return False, err
                 if body:
-                    result = json.loads(body)
+                    result = _loads_raw_response(body)
                     del body
                     return True, result
                 return True, {}

@@ -35,13 +35,13 @@ _chat_list_lock = None  # asyncio.Lock, 延迟初始化
 
 
 def _lookup_reference_id(bot, chat_type, chat_id, message_id):
-    """根据接收消息 message_id 查出 message 表单独记录的 REFIDX。"""
+    """根据 message_id 查出 message 表单独记录的 REFIDX。"""
     if not bot or not message_id:
         return ''
     if str(message_id).startswith('REFIDX_'):
         return str(message_id)
-    where = 'message_id = ? AND direction = ?'
-    params = (message_id, 'receive')
+    where = "message_id = ? AND reference_id != ''"
+    params = (message_id,)
     if chat_type == 'group':
         where += ' AND group_id = ?'
         params += (chat_id,)

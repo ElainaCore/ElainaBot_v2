@@ -26,12 +26,25 @@ def _extract_message_id(resp_data):
     return ''
 
 
+def _extract_reference_id(resp_data):
+    if not isinstance(resp_data, dict):
+        return ''
+    ext = resp_data.get('ext_info')
+    if isinstance(ext, dict):
+        ref = ext.get('ref_idx') or ext.get('msg_idx') or ext.get('message_reference_id') or ext.get('reference_id')
+        if ref:
+            return str(ref)
+    ref = resp_data.get('ref_idx') or resp_data.get('msg_idx') or resp_data.get('message_reference_id') or resp_data.get('reference_id')
+    return str(ref) if ref else ''
+
+
 def _log_sent_message(bot, chat_type, chat_id, display, bot_appid, bot_name, bot_qq='', payload=None, resp_data=None):
     """成功发送 → 写消息数据库 + 推送到面板"""
     group_id = chat_id if chat_type == 'group' else ''
     user_id = chat_id if chat_type != 'group' else ''
     raw = json.dumps(payload, ensure_ascii=False, default=str) if payload else display
     message_id = _extract_message_id(resp_data)
+    reference_id = _extract_reference_id(resp_data)
 
     # 写 message.db
     try:
@@ -42,6 +55,7 @@ def _log_sent_message(bot, chat_type, chat_id, display, bot_appid, bot_name, bot
                     'message',
                     {
                         'message_id': message_id,
+                        'reference_id': reference_id,
                         'user_id': user_id,
                         'group_id': group_id,
                         'content': display,
@@ -69,6 +83,7 @@ def _log_sent_message(bot, chat_type, chat_id, display, bot_appid, bot_name, bot
                 'group_id': group_id,
                 'content': display,
                 'message_id': message_id,
+                'reference_id': reference_id,
                 'is_bot': True,
                 'direction': 'send',
                 'source': 'web_panel',

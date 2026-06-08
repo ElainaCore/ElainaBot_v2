@@ -14,6 +14,9 @@ _QUEUE_MAXSIZE = 50000
 def _json_field(data, key, default=''):
     """将 dict/list 字段序列化为 JSON, 其它直接转 str"""
     v = data.get(key, default)
+    raw = getattr(v, '_raw_response_text', None)
+    if isinstance(raw, str):
+        return raw
     return json.dumps(v, ensure_ascii=False) if isinstance(v, dict | list) else str(v)
 
 
@@ -242,14 +245,33 @@ def _rebuild_message_table(conn, existing):
     conn.commit()
 
 
+def _extract_reference_id_from_context(ctx):
+    if not isinstance(ctx, dict):
+        return ''
+    ext = ctx.get('ext_info')
+    if isinstance(ext, dict):
+        ref = ext.get('ref_idx') or ext.get('msg_idx') or ext.get('message_reference_id') or ext.get('reference_id')
+        if ref:
+            return str(ref)
+    ref = ctx.get('ref_idx') or ctx.get('msg_idx') or ctx.get('message_reference_id') or ctx.get('reference_id')
+    if ref:
+        return str(ref)
+    for key in ('response', 'data'):
+        nested = ctx.get(key)
+        ref = _extract_reference_id_from_context(nested)
+        if ref:
+            return ref
+    return ''
+
+
 def _backfill_message_reference_id(conn):
-    """把旧版误写到 receive.context 的 REFIDX 搬到 reference_id。"""
+    """把 context 中已有的 REFIDX/ref_idx 回填到 reference_id。"""
     try:
         existing = {row[1] for row in conn.execute('PRAGMA table_info(log)').fetchall()}
         if 'reference_id' not in existing or 'context' not in existing:
             return
         rows = conn.execute(
-            "SELECT id, reference_id, context FROM log WHERE direction = 'receive' AND context != ''"
+            "SELECT id, direction, reference_id, context FROM log WHERE context != ''"
         ).fetchall()
     except Exception:
         return
@@ -257,7 +279,7 @@ def _backfill_message_reference_id(conn):
     meta_keys = {'event_type', 'message_reference_id', 'message_scene', 'msg_idx'}
     changed = False
     for row in rows:
-        row_id, current_ref, raw_context = row[0], row[1] or '', row[2] or ''
+        row_id, direction, current_ref, raw_context = row[0], row[1] or '', row[2] or '', row[3] or ''
         if not raw_context.lstrip().startswith('{'):
             continue
         try:
@@ -266,16 +288,16 @@ def _backfill_message_reference_id(conn):
             continue
         if not isinstance(ctx, dict):
             continue
-        ref = ctx.get('message_reference_id') or ctx.get('msg_idx') or ''
+        ref = _extract_reference_id_from_context(ctx)
         if ref and not current_ref:
             conn.execute('UPDATE log SET reference_id = ? WHERE id = ?', (str(ref), row_id))
             changed = True
-        if ctx and set(ctx).issubset(meta_keys):
+        if direction == 'receive' and ctx and set(ctx).issubset(meta_keys):
             conn.execute('UPDATE log SET context = ? WHERE id = ?', ('', row_id))
             changed = True
     if changed:
         conn.commit()
-        log.info('自动迁移: message.log 已整理 receive.context 与 reference_id')
+        log.info('自动迁移: message.log 已整理 context 与 reference_id')
 
 
 def _migrate_message_table(conn):
