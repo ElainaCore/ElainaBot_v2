@@ -158,6 +158,8 @@ class Event:
         'guild_id',
         'channel_id',
         'message_type',
+        'message_scene',
+        'message_reference_id',
         'msg_elements',
         'attachments',
         'image_url',
@@ -203,6 +205,8 @@ class Event:
         self.guild_id = None
         self.channel_id = None
         self.message_type = None
+        self.message_scene = {}
+        self.message_reference_id = ''
         self.msg_elements = []
         self.attachments = []
         self.image_url = None

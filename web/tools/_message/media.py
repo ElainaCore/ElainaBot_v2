@@ -16,7 +16,15 @@ def _media_endpoints(group_id, user_id):
     return f'/v2/users/{user_id}/files', f'/v2/users/{user_id}/messages'
 
 
-async def _web_send_media(sender, *, file_info, content='', group_id=None, user_id=None, msg_id=''):
+def _apply_reference(payload, message_reference_id=''):
+    if message_reference_id:
+        payload['message_reference'] = {
+            'message_id': str(message_reference_id),
+            'ignore_get_message_error': True,
+        }
+
+
+async def _web_send_media(sender, *, file_info, content='', group_id=None, user_id=None, msg_id='', message_reference_id=''):
     """file_info 已就绪, 直接发送富媒体消息"""
     _, send_ep = _media_endpoints(group_id, user_id)
     payload = {
@@ -27,55 +35,70 @@ async def _web_send_media(sender, *, file_info, content='', group_id=None, user_
     }
     if msg_id:
         payload['msg_id'] = msg_id
-    return await sender.post_json(send_ep, payload)
+    _apply_reference(payload, message_reference_id)
+    ok, data = await sender.post_json(send_ep, payload)
+    return ok, data, payload
 
 
-async def _send_media_url(sender, url, *, file_type=1, group_id=None, user_id=None, msg_id=''):
+async def _send_media_url(sender, url, *, file_type=1, group_id=None, user_id=None, msg_id='', message_reference_id=''):
     """通过 URL 上传并发送富媒体"""
     upload_ep, _ = _media_endpoints(group_id, user_id)
-    ok, resp = await sender.post_json(upload_ep, {'srv_send_msg': False, 'file_type': file_type, 'url': url})
+    upload_payload = {'srv_send_msg': False, 'file_type': file_type, 'url': url}
+    ok, resp = await sender.post_json(upload_ep, upload_payload)
     if not ok:
         _log_upload_error(sender, upload_ep, resp, f'URL上传 file_type={file_type}')
-        return False, resp
+        return False, resp, upload_payload
     file_info = resp.get('file_info')
     if not file_info:
         _log_upload_error(sender, upload_ep, resp, 'URL上传返回无file_info')
-        return False, {'message': '上传失败: 无 file_info'}
-    return await _web_send_media(sender, file_info=file_info, group_id=group_id, user_id=user_id, msg_id=msg_id)
+        return False, {'message': '上传失败: 无 file_info'}, upload_payload
+    ok, data, payload = await _web_send_media(
+        sender,
+        file_info=file_info,
+        group_id=group_id,
+        user_id=user_id,
+        msg_id=msg_id,
+        message_reference_id=message_reference_id,
+    )
+    if isinstance(data, dict):
+        data.setdefault('_upload_response', resp)
+    return ok, data, payload
 
 
-async def _send_text_with_image(sender, content, image_bytes, *, group_id=None, user_id=None, msg_id=''):
+async def _send_text_with_image(sender, content, image_bytes, *, group_id=None, user_id=None, msg_id='', message_reference_id=''):
     """上传图片 bytes 并发送"""
     if not image_bytes:
-        return False, {'message': '图片数据为空'}
+        return False, {'message': '图片数据为空'}, {}
     upload_ep, _ = _media_endpoints(group_id, user_id)
-    ok, resp = await sender.post_json(
-        upload_ep,
-        {
-            'srv_send_msg': False,
-            'file_type': 1,
-            'file_data': base64.b64encode(image_bytes).decode(),
-        },
-    )
+    upload_payload = {
+        'srv_send_msg': False,
+        'file_type': 1,
+        'file_data': base64.b64encode(image_bytes).decode(),
+    }
+    ok, resp = await sender.post_json(upload_ep, upload_payload)
     if not ok:
-        return False, resp
+        return False, resp, upload_payload
     file_info = resp.get('file_info')
     if not file_info:
-        return False, {'message': '上传失败: 无 file_info'}
-    return await _web_send_media(
+        return False, {'message': '上传失败: 无 file_info'}, upload_payload
+    ok, data, payload = await _web_send_media(
         sender,
         file_info=file_info,
         content=content,
         group_id=group_id,
         user_id=user_id,
         msg_id=msg_id,
+        message_reference_id=message_reference_id,
     )
+    if isinstance(data, dict):
+        data.setdefault('_upload_response', resp)
+    return ok, data, payload
 
 
 # ==================== 辅助: ARK ====================
 
 
-async def _send_ark(sender, template_id, kv_json_str, *, group_id=None, user_id=None, msg_id=''):
+async def _send_ark(sender, template_id, kv_json_str, *, group_id=None, user_id=None, msg_id='', message_reference_id=''):
     """发送 ARK 消息
 
     template_id: ARK 模板 ID (23, 24, 37 等)
@@ -84,10 +107,10 @@ async def _send_ark(sender, template_id, kv_json_str, *, group_id=None, user_id=
     try:
         kv_data = json.loads(kv_json_str)
     except json.JSONDecodeError as e:
-        return False, {'message': f'ARK kv JSON 解析失败: {e}'}
+        return False, {'message': f'ARK kv JSON 解析失败: {e}'}, {}
 
     if not isinstance(kv_data, list):
-        return False, {'message': 'ARK kv 必须是 JSON 数组'}
+        return False, {'message': 'ARK kv 必须是 JSON 数组'}, {}
 
     payload = {
         'msg_type': 3,
@@ -97,6 +120,8 @@ async def _send_ark(sender, template_id, kv_json_str, *, group_id=None, user_id=
     }
     if msg_id:
         payload['msg_id'] = msg_id
+    _apply_reference(payload, message_reference_id)
 
     _, send_ep = _media_endpoints(group_id, user_id)
-    return await sender.post_json(send_ep, payload)
+    ok, data = await sender.post_json(send_ep, payload)
+    return ok, data, payload

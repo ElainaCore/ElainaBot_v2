@@ -2,7 +2,6 @@
 """事件处理 Mixin — 事件分发 / 去重 / 生命周期 / 用户追踪 / 群组记录"""
 
 import asyncio
-import contextlib
 import json
 import time
 from datetime import datetime, timedelta
@@ -161,12 +160,13 @@ class EventHandlerMixin:
             content = event.content or ''
             raw_json = json.dumps(event.raw, ensure_ascii=False)
             bot.log_service.add_sync('message', {
-                'type': et, 'message_id': msg_id, 'user_id': uid,
+                'message_id': msg_id, 'user_id': uid,
+                'reference_id': getattr(event, 'message_reference_id', '') or '',
                 'group_id': gid, 'content': content,
                 'raw_message': raw_json, 'direction': 'receive',
             })
             self._push_web_log('message', {
-                'type': et, 'message_id': msg_id, 'user_id': uid,
+                'message_id': msg_id, 'user_id': uid,
                 'group_id': gid, 'content': content, 'direction': 'receive',
                 'appid': appid, 'bot_name': bot.name,
                 'bot_qq': getattr(bot, 'robot_qq', '') or '', 'event_type': et,
@@ -219,16 +219,7 @@ class EventHandlerMixin:
         appid = event.appid
 
         if et == MESSAGE_AUDIT_PASS and audit_id and real_msg_id:
-            # 将数据库中 audit_id 替换为真实 message_id
-            from datetime import date as _d
-
-            dates = [(_d.today() - timedelta(days=i)).strftime('%Y-%m-%d') for i in range(3)]
-            sql = 'UPDATE log SET message_id=? WHERE message_id=?'
-            for day in dates:
-                with contextlib.suppress(Exception):
-                    bot.log_service.query('message', sql, (real_msg_id, audit_id), date=day)
             log.debug(f'[{appid}] 审核通过: {audit_id} -> {real_msg_id}')
-            # 推送到 Web 面板实时更新
             self._push_web_log(
                 'audit',
                 {

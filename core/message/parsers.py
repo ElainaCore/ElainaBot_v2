@@ -4,11 +4,13 @@
 import html
 import json
 import re
+from urllib.parse import unquote
 
 from core.message import bot_openid
 
 # 内容清洗: QQ 表情标签
 _FACE_PATTERN = re.compile(r'<faceType=\d+,faceId="[^"]+",ext="[^"]+">')
+_MSG_IDX_PATTERN = re.compile(r'(?:^|[?&])msg_idx=([^&]+)')
 
 
 # ==================== 内容处理辅助 ====================
@@ -43,6 +45,24 @@ def swap_ids(uid, union_id, should_swap):
     return uid, union_id or uid, uid
 
 
+def extract_msg_idx(scene):
+    """从 message_scene.ext 中提取可用于 message_reference 的 REFIDX。"""
+    if not isinstance(scene, dict):
+        return ''
+    ext = scene.get('ext', [])
+    if isinstance(ext, str):
+        ext = [ext]
+    if not isinstance(ext, list):
+        return ''
+    for item in ext:
+        if not isinstance(item, str):
+            continue
+        m = _MSG_IDX_PATTERN.search(item)
+        if m:
+            return unquote(m.group(1))
+    return ''
+
+
 # ==================== 通用消息解析 ====================
 
 
@@ -71,6 +91,8 @@ def parse_message_generic(event, d):
     event.channel_id = d.get('channel_id', '')
 
     scene = d.get('message_scene', {})
+    event.message_scene = scene if isinstance(scene, dict) else {}
+    event.message_reference_id = extract_msg_idx(scene)
     event.scene_source = scene.get('source', '') if isinstance(scene, dict) else ''
 
     if event.image_url and event.content:

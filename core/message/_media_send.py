@@ -176,6 +176,12 @@ def _set_msg_or_event_id(payload, event):
         payload['msg_id'] = event.message_id
     elif event.needs_event_id:
         payload['event_id'] = event.event_id or ''
+    ref_id = getattr(event, 'message_reference_id', '') or ''
+    if ref_id and 'message_reference' not in payload:
+        payload['message_reference'] = {
+            'message_id': ref_id,
+            'ignore_get_message_error': True,
+        }
 
 
 def _extract_message_id(data):

@@ -66,7 +66,7 @@ class SendMessageAction(BaseAction):
         uid = None if is_group else real_id
         msg_id_ref = self._ctx.find_msg_id(real_id)
 
-        ok, data = await MessageSenderService.send(
+        ok, data, send_payload = await MessageSenderService.send(
             sender,
             gid,
             uid,
@@ -81,10 +81,12 @@ class SendMessageAction(BaseAction):
             label,
             ok,
             data,
+            send_payload,
         )
 
         if ok:
-            return self._ok({'message_id': hash(str(data)) & 0x7FFFFFFF}, echo=echo)
+            message_id = data.get('id') or data.get('msg_id') or data.get('message_id') if isinstance(data, dict) else ''
+            return self._ok({'message_id': message_id or (hash(str(data)) & 0x7FFFFFFF)}, echo=echo)
 
         self._ctx.log.warning(f'{"群" if is_group else "私聊"} {raw_id} 发送失败: {data}')
         return self._fail(str(data), echo=echo)

@@ -60,13 +60,12 @@ class PluginInfo:
 def _make_reply_log_cb(plugin_name, log_service):
     """创建插件回复日志回调 (避免在匹配循环中反复定义闭包)"""
 
-    def cb(text, uid, gid, raw_message='', message_id=''):
+    def cb(text, uid, gid, raw_message='', message_id='', context=None):
         if log_service:
             asyncio.ensure_future(
                 log_service.add(
                     'message',
                     {
-                        'type': 'plugin',
                         'message_id': message_id,
                         'user_id': uid,
                         'group_id': gid,
@@ -74,6 +73,7 @@ def _make_reply_log_cb(plugin_name, log_service):
                         'plugin_name': plugin_name,
                         'raw_message': raw_message,
                         'direction': 'send',
+                        'context': context if context is not None else '',
                     },
                 )
             )

@@ -277,7 +277,15 @@ class MessageSender(_HttpMixin, _MediaSendMixin):
         msg_id = ''
         if isinstance(resp_data, dict):
             msg_id = resp_data.get('id') or resp_data.get('msg_id') or ''
-        self._emit_log(text, user_id, group_id, raw_msg, 'proactive', message_id=msg_id)
+        self._emit_log(
+            text,
+            user_id,
+            group_id,
+            raw_msg,
+            'proactive',
+            message_id=msg_id,
+            context=resp_data if resp_data is not None else '',
+        )
 
     async def send_to_channel(self, channel_id, content=None, *, msg_id=None, buttons=None, **kwargs):
         endpoint = f'/channels/{channel_id}/messages'
@@ -420,6 +428,7 @@ class MessageSender(_HttpMixin, _MediaSendMixin):
         log_type='proactive',
         plugin_name='',
         message_id='',
+        context=None,
     ):
         """推送到 Web 面板 + 持久化到数据库"""
         if self._web_log_cb:
@@ -445,7 +454,6 @@ class MessageSender(_HttpMixin, _MediaSendMixin):
                     self._log_service.add(
                         'message',
                         {
-                            'type': log_type,
                             'message_id': message_id,
                             'user_id': user_id,
                             'group_id': group_id,
@@ -453,6 +461,7 @@ class MessageSender(_HttpMixin, _MediaSendMixin):
                             'raw_message': raw_msg,
                             'direction': 'send',
                             'plugin_name': plugin_name or log_type,
+                            'context': context if context is not None else '',
                         },
                     )
                 )
@@ -460,6 +469,8 @@ class MessageSender(_HttpMixin, _MediaSendMixin):
     def _build_core_payload(self, content, buttons, media, msg_type, **kwargs):
         """统一载荷构建 (回复/推送共用)"""
         skip_suffix = kwargs.pop('skip_suffix', False)
+        message_reference = kwargs.pop('message_reference', None)
+        message_reference_id = kwargs.pop('message_reference_id', None) or kwargs.pop('reference_message_id', None)
         use_md = cfg.get_bot_setting(self._appid, 'message.use_markdown', True)
         payload = {'msg_seq': _msg_seq()}
         for k in ('msg_id', 'event_id'):
@@ -483,6 +494,13 @@ class MessageSender(_HttpMixin, _MediaSendMixin):
 
         if buttons:
             payload['keyboard'] = build_keyboard(buttons, self._appid)
+        if message_reference:
+            payload['message_reference'] = message_reference
+        elif message_reference_id:
+            payload['message_reference'] = {
+                'message_id': str(message_reference_id),
+                'ignore_get_message_error': True,
+            }
         payload.update(kwargs)
         return payload
 
@@ -550,7 +568,7 @@ class MessageSender(_HttpMixin, _MediaSendMixin):
             msg_id = resp_data.get('id') or resp_data.get('msg_id') or ''
         if reply_log_cb:
             with contextlib.suppress(Exception):
-                reply_log_cb(text, user_id, group_id, raw_msg, msg_id)
+                reply_log_cb(text, user_id, group_id, raw_msg, msg_id, resp_data if resp_data is not None else '')
         # 无论是否有 reply_log_cb, 都推送到 Web 面板实时日志
         if reply_log_cb and self._web_log_cb:
             with contextlib.suppress(Exception):
@@ -578,4 +596,5 @@ class MessageSender(_HttpMixin, _MediaSendMixin):
                 'template',
                 plugin_name or 'framework',
                 message_id=msg_id,
+                context=resp_data if resp_data is not None else '',
             )

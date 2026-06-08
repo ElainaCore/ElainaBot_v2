@@ -19,6 +19,7 @@ from core.storage._schema import (
     _ensure_indexes,
     _json_field,
     _migrate_data_tables,
+    _migrate_message_table,
     _migrate_missing_columns,
 )
 
@@ -107,7 +108,10 @@ class _BaseLogService:
                     else:
                         conn.execute(schema)
                         conn.commit()
-                    _migrate_missing_columns(conn, log_type)
+                    if log_type == 'message':
+                        _migrate_message_table(conn)
+                    else:
+                        _migrate_missing_columns(conn, log_type)
                     _ensure_indexes(conn, log_type)
                 self._initialized.add(db_path)
             self._conn_locks.setdefault(db_path, threading.Lock())
