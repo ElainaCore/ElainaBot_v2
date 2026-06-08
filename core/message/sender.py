@@ -448,6 +448,7 @@ class MessageSender(_HttpMixin, _MediaSendMixin):
                         'direction': 'send',
                         'message_id': message_id,
                         'reference_id': reference_id,
+                        'raw_message': raw_msg,
                         'plugin_name': plugin_name or log_type,
                     },
                 )
@@ -599,6 +600,7 @@ class MessageSender(_HttpMixin, _MediaSendMixin):
                         'direction': 'send',
                         'message_id': msg_id,
                         'reference_id': ref_id,
+                        'raw_message': raw_msg,
                         'plugin_name': plugin_name or 'framework',
                     },
                 )

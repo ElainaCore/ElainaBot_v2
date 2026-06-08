@@ -67,6 +67,7 @@ def _log_sent_message(bot, chat_type, chat_id, display, bot_appid, bot_name, bot
                 'content': display,
                 'message_id': message_id,
                 'reference_id': reference_id,
+                'raw_message': raw,
                 'is_bot': True,
                 'direction': 'send',
                 'source': 'web_panel',

@@ -11,30 +11,13 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from core.message.response import extract_message_id, extract_reference_id
 from core.message.sender import MessageSender
 from modules.onebot_adapter.lib.id_mapper import IDMapper
 
 if TYPE_CHECKING:
     from core.bot.manager import BotManager
     from core.storage.log import LogService
-
-
-def _extract_message_id(resp_data):
-    if isinstance(resp_data, dict):
-        return resp_data.get('id') or resp_data.get('msg_id') or resp_data.get('message_id') or ''
-    return ''
-
-
-def _extract_reference_id(resp_data):
-    if not isinstance(resp_data, dict):
-        return ''
-    ext = resp_data.get('ext_info')
-    if isinstance(ext, dict):
-        ref = ext.get('ref_idx') or ext.get('msg_idx') or ext.get('message_reference_id') or ext.get('reference_id')
-        if ref:
-            return str(ref)
-    ref = resp_data.get('ref_idx') or resp_data.get('msg_idx') or resp_data.get('message_reference_id') or resp_data.get('reference_id')
-    return str(ref) if ref else ''
 
 
 @dataclass
@@ -119,8 +102,8 @@ class ActionContext:
         gid = str(target_id) if msg_type == 'group' else ''
         uid = str(target_id) if msg_type == 'private' else ''
         raw = json.dumps(send_payload, ensure_ascii=False, default=str) if send_payload else content
-        message_id = _extract_message_id(resp_data)
-        reference_id = _extract_reference_id(resp_data)
+        message_id = extract_message_id(resp_data)
+        reference_id = extract_reference_id(resp_data)
         ls = self.get_log_service()
         if ls:
             await ls.add(

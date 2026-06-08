@@ -233,6 +233,40 @@ async def handle_get_chart_data(request: web.Request):
     return web.json_response(payload)
 
 
+async def handle_get_hourly_statistics(request: web.Request):
+    """仪表盘轻量小时分布 — 避免进入仪表盘时触发完整统计扫描。"""
+    import time as _time
+
+    appid_filter = request.query.get('appid', '')
+    cache_key = (0, appid_filter)
+    now_ts = _time.time()
+    cached = _chart_cache.get(cache_key)
+    if cached and now_ts - cached[0] < _CACHE_TTL:
+        return web.json_response(cached[1])
+
+    loop = asyncio.get_running_loop()
+    payload = await loop.run_in_executor(None, _gather_hourly_statistics_sync, appid_filter)
+    _chart_cache[cache_key] = (now_ts, payload)
+    return web.json_response(payload)
+
+
+def _hourly_list(hourly):
+    return [hourly.get(f'{h:02d}', 0) for h in range(24)]
+
+
+def _gather_hourly_statistics_sync(appid_filter):
+    now = datetime.now()
+    today = now.strftime('%Y-%m-%d')
+    yesterday = (now - timedelta(days=1)).strftime('%Y-%m-%d')
+    return {
+        'success': True,
+        'data': {
+            'today_hourly_distribution': _hourly_list(_aggregate_hourly(appid_filter, today)),
+            'yesterday_hourly_distribution': _hourly_list(_aggregate_hourly(appid_filter, yesterday)),
+        },
+    }
+
+
 def _gather_chart_sync(days, appid_filter):
     """折线图数据同步聚合 (executor 中调用)"""
     labels = []

@@ -170,6 +170,8 @@ class EventHandlerMixin:
                 'group_id': gid, 'content': content, 'direction': 'receive',
                 'appid': appid, 'bot_name': bot.name,
                 'bot_qq': getattr(bot, 'robot_qq', '') or '', 'event_type': et,
+                'reference_id': getattr(event, 'message_reference_id', '') or '',
+                'raw_message': raw_json,
             })
             if uid:
                 asyncio.create_task(self._track_user(bot, event, appid))
