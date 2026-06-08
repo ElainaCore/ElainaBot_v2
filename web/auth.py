@@ -80,6 +80,7 @@ def hash_password(plain: str) -> str:
 
 def verify_password(plain: str, stored: str) -> bool:
     """恒定时间比较, 兼容明文旧密码"""
+    stored = str(stored)
     if stored.startswith(_PWD_HASH_PREFIX):
         try:
             rest = stored[len(_PWD_HASH_PREFIX) :]
@@ -94,7 +95,7 @@ def verify_password(plain: str, stored: str) -> bool:
 
 
 def is_hashed(stored: str) -> bool:
-    return stored.startswith(_PWD_HASH_PREFIX)
+    return str(stored).startswith(_PWD_HASH_PREFIX)
 
 
 # ==================== JSON IO ====================
