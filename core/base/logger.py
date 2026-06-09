@@ -237,8 +237,7 @@ def report_framework(module_name, message, level='INFO'):
 
 
 def report_error_raw(module_type, module_name, content='', tb='', context='', appid=''):
-    """直接提交自定义字段的错误, 触发回调链(SQLite+WebSocket)"""
-    get_logger(module_type, module_name).warning(content[:200] if content else '(error)')
+    """直接提交自定义字段的错误, 触发回调链(SQLite+WebSocket)。仅记入报错表, 不输出控制台日志。"""
     data = {
         'timestamp': _now_str(),
         'appid': str(appid) if appid else '0000',
