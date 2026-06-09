@@ -80,13 +80,10 @@ class EventHandlerMixin:
 
         et = event.event_type
 
-        if et == INTERACTION_CREATE:
-            interaction_id = event.message_id or event.event_id
-            if interaction_id:
-                try:
-                    await bot.sender.ack_interaction(event, interaction_id=interaction_id)
-                except Exception as e:
-                    log.warning(f'[{appid}] 交互ACK失败: {e}')
+        # 交互事件 (INTERACTION_CREATE) 的 op12 ACK 不再由框架在分发前自动发送,
+        # 改由传输层 (webhook / websocket) 在插件分发后, 用插件经
+        # event.set_callback_code() 设置的状态码发送; 插件未设置则用默认 code。
+        # 参见 core/server/webhook.py 与 core/network/websocket.py。
 
         # 去重 (setdefault 避免二次查找)
         if cfg.get_bot_setting(appid, 'dedup.enabled', False):

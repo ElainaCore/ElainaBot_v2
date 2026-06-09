@@ -11,6 +11,17 @@ from core.message.event import Event
 log = logging.getLogger('ElainaBot.webhook')
 
 
+def _finish_interaction(event, task):
+    """交互事件分发结束回调: 取出异常 + 若插件未设置 code 则用默认 code 返回。"""
+    try:
+        exc = task.exception()
+    except Exception:
+        exc = None
+    if exc is not None:
+        log.warning(f'[Webhook] 交互事件分发异常: {exc!r}')
+    event.finish_dispatch()
+
+
 class WebhookHandler:
     """处理 QQ Bot webhook 回调: 签名验证 → 事件构造 → 分发"""
 
@@ -44,15 +55,26 @@ class WebhookHandler:
             return web.Response(text=sig_resp, content_type='application/json') if success else web.json_response({'error': 'invalid validation'}, status=400)
 
         # 事件构造与分发
+        import asyncio
+
+        is_interaction = body.get('t') == 'INTERACTION_CREATE'
         try:
             event = Event.from_webhook(headers, body)
-            import asyncio
-
-            asyncio.create_task(self._on_event(event))
+            if is_interaction:
+                # 启动 ACK 倒计时, 分发结束后用插件设置的 code 兜底/返回
+                event.start_ack_countdown()
+                task = asyncio.create_task(self._on_event(event))
+                task.add_done_callback(lambda t, ev=event: _finish_interaction(ev, t))
+            else:
+                asyncio.create_task(self._on_event(event))
         except Exception as e:
             self._on_error({'appid': appid, 'source': 'Webhook', 'error': e})
+            if is_interaction:
+                return web.json_response({'op': 12, 'code': 0})
+            return web.json_response({})
 
-        # 交互事件返回 ACK
-        if body.get('t') == 'INTERACTION_CREATE':
-            return web.json_response({'op': 12, 'code': 0})
+        # 交互事件: 等待插件设置 code (或分发结束/超时), 随 op12 ACK 返回
+        if is_interaction:
+            code = await event.wait_ack_code()
+            return web.json_response({'op': 12, 'code': code})
         return web.json_response({})

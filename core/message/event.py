@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 """事件数据容器 + 类型常量"""
 
+import asyncio
 import json
 from functools import partial
 
@@ -16,6 +17,10 @@ from core.message.parsers import (
     parse_interaction,
     parse_message_generic,
 )
+
+# 交互回调 (op12 ACK) 默认状态码与默认等待插件超时 (秒)
+_DEFAULT_CALLBACK_CODE = 0
+_DEFAULT_ACK_TIMEOUT = 2.0
 
 # ==================== 事件类型常量 ====================
 
@@ -182,6 +187,10 @@ class Event:
         '_sender',
         '_reply_log_cb',
         '_reply_plugin_name',
+        'callback_code',
+        '_ack_future',
+        '_ack_timer',
+        '_ack_timeout',
     )
 
     def __init__(self):
@@ -229,6 +238,11 @@ class Event:
         self._sender = None
         self._reply_log_cb = None
         self._reply_plugin_name = ''
+        # 交互回调 (op12) 状态码: 插件可通过 set_callback_code() 自定义
+        self.callback_code = None
+        self._ack_future = None
+        self._ack_timer = None
+        self._ack_timeout = _DEFAULT_ACK_TIMEOUT
 
     # ==================== 构造 ====================
 
@@ -358,6 +372,62 @@ class Event:
     @property
     def needs_event_id(self):
         return self.event_type in _EVENT_ID_TYPES
+
+    # ==================== 交互回调 (op12 ACK) ====================
+    # 插件可在处理 INTERACTION_CREATE 时调用 event.set_callback_code(n) 自定义
+    # 返回给客户端的状态码 (随 op12 ACK 一起发送, 不额外发 REST 请求)。
+    # 未设置则框架在分发结束 / 超时后用默认 code 兜底。
+
+    def start_ack_countdown(self):
+        """交互事件开始处理: 创建 ACK future 并启动默认超时定时器。
+
+        由传输层 (webhook / websocket) 在分发插件前调用。
+        """
+        loop = asyncio.get_running_loop()
+        if self._ack_future is None:
+            self._ack_future = loop.create_future()
+        self._reschedule_ack_timer()
+
+    def _reschedule_ack_timer(self):
+        loop = asyncio.get_running_loop()
+        if self._ack_timer is not None:
+            self._ack_timer.cancel()
+        self._ack_timer = loop.call_later(self._ack_timeout, self._fire_default_ack)
+
+    def set_ack_timeout(self, seconds):
+        """插件自定义等待时长 (秒), 用于需要持续处理后再返回 code 的插件。"""
+        self._ack_timeout = float(seconds)
+        if self._ack_timer is not None and self._ack_future is not None and not self._ack_future.done():
+            self._reschedule_ack_timer()
+
+    def set_callback_code(self, code):
+        """插件设置交互回调状态码 (随 op12 ACK 立即返回, 插件可继续运行)。"""
+        self.callback_code = int(code)
+        self._resolve_ack(self.callback_code)
+
+    def _resolve_ack(self, code):
+        if self._ack_timer is not None:
+            self._ack_timer.cancel()
+            self._ack_timer = None
+        if self._ack_future is not None and not self._ack_future.done():
+            self._ack_future.set_result(code)
+
+    def _fire_default_ack(self):
+        """超时兜底: 插件迟迟未设置 code, 用默认 code 返回。"""
+        self._ack_timer = None
+        if self._ack_future is not None and not self._ack_future.done():
+            self._ack_future.set_result(_DEFAULT_CALLBACK_CODE)
+
+    def finish_dispatch(self):
+        """插件分发结束: 若插件未自定义 code, 立即用默认 code 返回 (不等满超时)。"""
+        if self._ack_future is not None and not self._ack_future.done():
+            self._resolve_ack(_DEFAULT_CALLBACK_CODE)
+
+    async def wait_ack_code(self):
+        """等待交互 code: 插件设置 / 分发结束 / 超时 三者任一触发后返回。"""
+        if self._ack_future is None:
+            return _DEFAULT_CALLBACK_CODE
+        return await self._ack_future
 
     # ==================== 发送代理 ====================
     # event.reply(...) → sender.reply(event, ...)
