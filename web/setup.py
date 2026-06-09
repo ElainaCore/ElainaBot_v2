@@ -2,6 +2,7 @@
 
 import logging
 import os
+import sys
 
 from aiohttp import web
 
@@ -9,6 +10,32 @@ import web.api as _panel_api
 import web.auth as _auth
 
 log = logging.getLogger('ElainaBot.web')
+
+
+def _disable_sendfile_on_windows():
+    """在 Windows 上禁用 sendfile，改用 aiohttp 自带的分块回退实现。
+
+    Windows 的 asyncio ProactorEventLoop 没有原生 sendfile，``loop.sendfile``
+    会退回到 ``BaseEventLoop._sendfile_fallback``。该回退复用同一个 16 KiB 的
+    ``bytearray`` 缓冲区，并把指向该缓冲区的 ``memoryview`` 切片直接交给
+    Proactor 传输层做异步 IOCP 发送；在网络存在背压时，下一次 ``readinto`` 会在
+    上一块尚未发出前覆盖该缓冲区，导致返回的静态文件出现 16 KiB 对齐的块被
+    重复/错乱（表现为浏览器报 ``Uncaught SyntaxError: Unexpected token ':'``，
+    且同一份产物在 Windows 上时好时坏、Linux 上正常）。
+
+    设置 ``AIOHTTP_NOSENDFILE`` 后，aiohttp 会改用自身的 ``_sendfile_fallback``，
+    它每次都 ``fobj.read()`` 出一块全新的不可变 ``bytes``，不复用缓冲区，因此不会
+    出现上述损坏。Linux 仍走原生 ``os.sendfile``，不受影响。
+    """
+    if sys.platform != 'win32':
+        return
+    os.environ.setdefault('AIOHTTP_NOSENDFILE', '1')
+    try:
+        import aiohttp.web_fileresponse as _fr
+
+        _fr.NOSENDFILE = True
+    except Exception:
+        pass
 
 
 class _WebPanelLogHandler(logging.Handler):
@@ -44,6 +71,7 @@ class _WebPanelLogHandler(logging.Handler):
 
 def setup_web(app: web.Application, bot_manager, base_dir: str):
     """将 Web 面板挂载到 aiohttp 应用"""
+    _disable_sendfile_on_windows()
     _auth.init(base_dir)
     _panel_api.set_context(bot_manager, base_dir)
 
