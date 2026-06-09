@@ -211,35 +211,10 @@ class EventHandlerMixin:
     # ==================== 消息审核 ====================
 
     async def _handle_audit(self, bot, event, et):
-        """处理 MESSAGE_AUDIT_PASS / MESSAGE_AUDIT_REJECT"""
-        d = event.raw.get('d', {}) if isinstance(event.raw, dict) else {}
-        audit_id = d.get('audit_id', '')
-        real_msg_id = d.get('message_id', '')
-        appid = event.appid
-
-        if et == MESSAGE_AUDIT_PASS and audit_id and real_msg_id:
-            log.debug(f'[{appid}] 审核通过: {audit_id} -> {real_msg_id}')
-            self._push_web_log(
-                'audit',
-                {
-                    'appid': appid,
-                    'audit_id': audit_id,
-                    'message_id': real_msg_id,
-                    'passed': True,
-                },
-            )
-
-        elif et == MESSAGE_AUDIT_REJECT and audit_id:
-            log.warning(f'[{appid}] 消息审核未通过: {audit_id}')
-            self._push_web_log(
-                'audit',
-                {
-                    'appid': appid,
-                    'audit_id': audit_id,
-                    'message_id': '',
-                    'passed': False,
-                },
-            )
+        """MESSAGE_AUDIT_PASS / MESSAGE_AUDIT_REJECT: 仅记录, 不再替换消息 id"""
+        if et == MESSAGE_AUDIT_REJECT:
+            d = event.raw.get('d', {}) if isinstance(event.raw, dict) else {}
+            log.warning(f'[{event.appid}] 消息审核未通过: {d.get("audit_id", "")}')
 
     # ==================== 全量群记录 ====================
 
