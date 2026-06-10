@@ -25,9 +25,6 @@ log = get_logger(FRAMEWORK, '统计')
 _SCHEDULE_HOUR = 4
 _SCHEDULE_MINUTE = 0
 
-# 启动时回补最近 N 天 (不含今天) 遗漏的统计
-_BACKFILL_DAYS = 3
-
 # 私聊判定: group_id 为空或 'c2c'
 _PRIVATE_GIDS = ('', 'c2c')
 
@@ -106,7 +103,7 @@ class StatisticsService:
             return
         self._running = True
         self._task = asyncio.create_task(self._scheduler_loop())
-        asyncio.create_task(self._backfill_missing())
+        asyncio.create_task(self._startup_catchup())
         log.info(f'已启动 [每日 {self._schedule_hour:02d}:{self._schedule_minute:02d}]')
 
     async def stop(self):
@@ -117,29 +114,36 @@ class StatisticsService:
                 await self._task
             self._task = None
 
-    async def _backfill_missing(self):
-        """启动时检查最近几天 (不含今天) 是否有遗漏的统计, 补算"""
+    async def _startup_catchup(self):
+        """启动补算: 若已过今日配置的统计时间, 而今日应执行的统计(聚合昨日)尚无记录,
+        则立即补跑; 未到今日统计时间则不动, 交给调度器在到点时执行.
+        """
         await asyncio.sleep(8)  # 等待其他服务就绪
         if not self._enabled():
             return
-        today = datetime.now().date()
-        appids = self.list_appids()
-        if not appids:
+        now = datetime.now()
+        today_run = now.replace(
+            hour=self._schedule_hour,
+            minute=self._schedule_minute,
+            second=0,
+            microsecond=0,
+        )
+        if now < today_run:
+            return  # 未到今日统计时间, 交给调度器
+        # 已过今日统计时间: 今日应执行的是聚合"昨日"
+        yesterday = (now - timedelta(days=1)).strftime('%Y-%m-%d')
+        pending = [
+            appid
+            for appid in self.list_appids()
+            if os.path.isfile(self._message_db_path(appid, yesterday))
+            and not self._is_processed(appid, yesterday)
+        ]
+        if not pending:
             return
-        for i in range(1, _BACKFILL_DAYS + 1):
-            date_str = (today - timedelta(days=i)).isoformat()
-            missing = [
-                appid
-                for appid in appids
-                if os.path.isfile(self._message_db_path(appid, date_str))
-                and not self._is_processed(appid, date_str)
-            ]
-            if not missing:
-                continue
-            log.info(f'补算 {date_str} 统计: {len(missing)} 个机器人')
-            for appid in missing:
-                with contextlib.suppress(Exception):
-                    await self.aggregate(appid, date_str)
+        log.info(f'启动补算今日统计(聚合 {yesterday}): {len(pending)} 个机器人')
+        for appid in pending:
+            with contextlib.suppress(Exception):
+                await self.aggregate(appid, yesterday)
 
     async def _scheduler_loop(self):
         while self._running:
