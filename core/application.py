@@ -18,6 +18,7 @@ from core.services.media_cleanup import MediaCleanupService
 from core.services.scheduler import RestartScheduler
 from core.storage.dau import DAUService
 from core.storage.log import SharedLogService
+from core.storage.statistics import StatisticsService
 
 log = get_logger(SYSTEM, '启动器')
 
@@ -59,6 +60,7 @@ class Application(EventHandlerMixin):
         self._hook_manager = HookManager()
         self._shared_log = None
         self._dau_service = None
+        self._statistics_service = None
         self._http_server = None
 
         # 服务
@@ -84,6 +86,10 @@ class Application(EventHandlerMixin):
     @property
     def dau_service(self):
         return self._dau_service
+
+    @property
+    def statistics_service(self):
+        return self._statistics_service
 
     @property
     def module_manager(self):
@@ -203,6 +209,12 @@ class Application(EventHandlerMixin):
         self._dau_service = DAUService(log_base)
         await self._dau_service.start()
 
+        # 7b) 累加统计 (用户/群, 每日定时聚合到 statistics.db)
+        stats_hour = cfg.get('settings', 'statistics.schedule_hour', 4)
+        stats_minute = cfg.get('settings', 'statistics.schedule_minute', 0)
+        self._statistics_service = StatisticsService(log_base, stats_hour, stats_minute)
+        await self._statistics_service.start()
+
         # 8) 挂载 Web 面板 (bot_registry 就绪后, 才能正确绑定 sender 回调)
         self._http_server.mount_web_panel()
 
@@ -266,6 +278,7 @@ class Application(EventHandlerMixin):
         # 按依赖顺序关闭
         cleanup = [
             self._dau_service and self._dau_service.stop(),
+            self._statistics_service and self._statistics_service.stop(),
             self._bot_registry and self._bot_registry.shutdown(),
             self._module_manager and self._module_manager.shutdown(),
             self._shared_log and self._shared_log.shutdown(),
