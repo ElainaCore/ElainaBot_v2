@@ -1,10 +1,10 @@
 """示例功能: 媒体发送、ark卡片、markdown、撤回、主动消息、按钮等 (仅主人可用)"""
 
-import os
 import asyncio
+import os
+
 from core.plugin.decorators import handler, on_unload
 from core.plugin.web_pages import register_page, unregister_page
-
 
 # ==================== 媒体发送示例 ====================
 
@@ -17,15 +17,10 @@ async def send_image(event, match):
 
 @handler(r'^本地图片$', name='本地图片', desc='发送本地图片示例', owner_only=True)
 async def send_local_image(event, match):
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "1.png")
-    if not os.path.exists(path):
-        return await event.reply(f"❌ 图片不存在: {path}")
-    try:
-        with open(path, 'rb') as f:
-            data = f.read()
-        await event.reply_image(data, f"📸 本地图片 ({len(data)/1024/1024:.2f}MB)")
-    except Exception as ex:
-        await event.reply(f"❌ 读取失败: {ex}")
+    # 读取插件目录下的 1.png 以 bytes 发送
+    path = os.path.join(os.path.dirname(__file__), "1.png")
+    with open(path, 'rb') as f:
+        await event.reply_image(f.read(), "📸 本地图片")
 
 
 @handler(r'^语音$', name='语音', desc='发送语音示例', owner_only=True)
@@ -41,25 +36,18 @@ async def send_video(event, match):
 
 @handler(r'^文件$', name='文件', desc='发送文件示例', owner_only=True)
 async def send_file(event, match):
-    import tempfile
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False, encoding='utf-8') as f:
-        f.write("ElainaBot测试文件\n这是一个自动生成的文本文件示例")
-        temp_path = f.name
-    try:
-        await event.reply_file(temp_path, "📄 自动生成的测试文件", file_name="elainabot_test.txt")
-    finally:
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
+    # file_name 是对方看到的文件名
+    path = os.path.join(os.path.dirname(__file__), "1.txt")
+    await event.reply_file(path, "📄 文件示例", file_name="test.txt")
 
 
 # ==================== 撤回示例 ====================
 
 @handler(r'^撤回测试$', name='撤回测试', desc='发送后3秒撤回', owner_only=True)
 async def test_recall(event, match):
-    data = await event.reply("⏰ 3秒后撤回...")
-    if data:
-        await asyncio.sleep(3)
-        await event.recall()
+    await event.reply("⏰ 3秒后撤回...")
+    await asyncio.sleep(3)
+    await event.recall()
 
 
 @handler(r'^自动撤回$', name='自动撤回', desc='使用 auto_delete_time 自动撤回', owner_only=True)
@@ -113,65 +101,36 @@ async def send_buttons(event, match):
     await event.reply("📌 按钮功能演示", buttons=buttons)
 
 
+# ==================== 交互回调示例 ====================
+# 回调按钮 (type=1) 被点击时, 框架会下发 INTERACTION_CREATE 事件,
+# event.content 就是按钮的 data。用 set_callback_code 应答这次点击。
+
+@handler(r'^交互按钮$', name='交互按钮', desc='发送回调按钮', owner_only=True)
+async def send_interaction_button(event, match):
+    buttons = [[{'text': '点我回调', 'data': 'demo_ack', 'type': 1}]]
+    await event.reply("📌 点击下方按钮触发交互回调", buttons=buttons)
+
+
+@handler(r'^demo_ack$', name='交互回调演示', desc='处理回调按钮点击', event_types=['INTERACTION_CREATE'])
+async def on_demo_ack(event, match):
+    event.set_callback_code(0)  # 应答这次交互
+
+
 # ==================== 引用消息示例 ====================
-# message_reference_id 要传 QQ message_scene.ext 里的 REFIDX_xxx。
-# 不是 event.message_id 里的 ROBOT1.0_xxx。框架会自动组装为:
-# {"message_reference": {"message_id": "REFIDX_xxx", "ignore_get_message_error": true}}
-# 是否使用 markdown 取决于 msg_type/use_markdown；只有显式传 message_reference_id 才引用。
+# 引用回复传 message_reference_id (REFIDX), 来自:
+#   - event.message_reference_id  ：引用用户当前这条消息
+#   - 发送响应 data['ext_info']['ref_idx'] ：引用机器人刚发的消息
 
-@handler(r'^引用信息$', name='查看引用信息', desc='查看当前消息 ID 与可引用 REFIDX', owner_only=True)
-async def show_reference_info(event, match):
-    await event.reply(
-        f"平台消息 ID:\n{event.message_id or '无'}\n\n"
-        f"引用用 REFIDX:\n{event.message_reference_id or '无'}"
-    )
-
-
-@handler(r'^引用当前$', name='引用当前消息', desc='引用触发这条消息进行回复', owner_only=True)
+@handler(r'^引用当前$', name='引用当前消息', desc='引用你发的这条消息回复', owner_only=True)
 async def reply_reference_current(event, match):
-    ref_id = event.message_reference_id
-    if not ref_id:
-        return await event.reply("当前消息没有可用的 REFIDX，无法引用")
-    await event.reply(
-        f"这条回复引用了你刚刚发送的消息\nREFIDX: {ref_id}",
-        message_reference_id=ref_id,
-    )
+    await event.reply("这条回复引用了你刚发的消息", message_reference_id=event.message_reference_id)
 
 
-@handler(r'^引用指定\s+(\S+)(?:\s+(.+))?$', name='引用指定消息', desc='引用指定 REFIDX 发送回复', owner_only=True)
-async def reply_reference_custom(event, match):
-    ref_id = match.group(1).strip()
-    content = (match.group(2) or '这条回复引用了指定消息').strip()
-    await event.reply(content, message_reference_id=ref_id)
-
-
-@handler(r'^引用刚发送$', name='引用刚发送消息', desc='从发送响应 ext_info.ref_idx 引用刚发送的消息', owner_only=True)
+@handler(r'^引用刚发送$', name='引用刚发送消息', desc='引用机器人刚发出的消息', owner_only=True)
 async def reply_reference_sent(event, match):
-    data = await event.reply("第一条消息：等下会引用我", msg_type=0)
-    ref_id = ''
-    if isinstance(data, dict):
-        ext = data.get('ext_info') or {}
-        ref_id = ext.get('ref_idx') if isinstance(ext, dict) else ''
-    if not ref_id:
-        return await event.reply("发送响应里没有 ext_info.ref_idx，无法引用刚发送的消息")
-    await event.reply(
-        f"**第二条消息**：这条 markdown 引用了刚发送的第一条\nREFIDX: {ref_id}",
-        message_reference_id=ref_id,
-        msg_type=2,
-    )
-
-
-@handler(r'^主动引用\s+(\S+)(?:\s+(.+))?$', name='主动引用消息', desc='主动消息引用指定 REFIDX', owner_only=True)
-async def proactive_reference_custom(event, match):
-    ref_id = match.group(1).strip()
-    content = (match.group(2) or '这条主动消息引用了指定消息').strip()
-    if event.is_group:
-        ok, data, _ = await event.send_to_group(event.group_id, content, message_reference_id=ref_id)
-    else:
-        ok, data, _ = await event.send_to_user(event.user_id, content, message_reference_id=ref_id)
-    if not ok:
-        err = data.get('message', '未知错误') if isinstance(data, dict) else str(data)
-        await event.reply(f"❌ 主动引用发送失败: {err}")
+    data = await event.reply("第一条消息")
+    ref_id = (data or {}).get('ext_info', {}).get('ref_idx', '')
+    await event.reply("这条引用了上面第一条", message_reference_id=ref_id)
 
 
 # ==================== 分享链接功能 ====================
@@ -228,21 +187,15 @@ async def query_my_sharer(event, match):
 @handler(r'^指定召回\s+(\S+)$', name='指定召回', desc='向指定用户发送召回消息', owner_only=True)
 async def wakeup_user(event, match):
     uid = match.group(1)
-    ok, r = await event.send_wakeup(uid, "📢 召回消息测试")
-    if ok:
-        await event.reply(f"✅ 召回成功 {uid[:8]}**** ID:{r}")
-    else:
-        await event.reply(f"❌ {r}")
+    await event.send_wakeup(uid, "📢 召回消息测试")
+    await event.reply(f"✅ 已向 {uid[:8]}**** 发送召回")
 
 
 @handler(r'^强制召回\s+(\S+)$', name='强制召回', desc='强制向指定用户发送召回消息', owner_only=True)
 async def force_wakeup_user(event, match):
     uid = match.group(1)
-    ok, r = await event.sender.force_wakeup(uid, "📢 强制召回测试")
-    if ok:
-        await event.reply(f"✅ 强制召回成功 {uid[:8]}**** ID:{r}")
-    else:
-        await event.reply(f"❌ {r}")
+    await event.sender.force_wakeup(uid, "📢 强制召回测试")
+    await event.reply(f"✅ 已强制召回 {uid[:8]}****")
 
 
 # ==================== 无视@配置示例 ====================
@@ -251,7 +204,7 @@ async def force_wakeup_user(event, match):
 
 @handler(r'^全量签到$', name='签到', desc='无需@即可触发的签到指令', ignore_at_check=True)
 async def check_in(event, match):
-    await event.reply(f"✅ 签到成功！")
+    await event.reply("✅ 签到成功！")
 
 
 @handler(r'^主动测试$', name='全量主动测试', desc='无需@即可触发, 3秒后发送主动消息', ignore_at_check=True, owner_only=True)
@@ -284,21 +237,33 @@ async def test_active_message(event, match):
 @handler(r'^主动私聊\s+(\S+)\s+(.+)$', name='主动私聊', desc='向指定用户发送主动消息', owner_only=True)
 async def test_send_to_user(event, match):
     uid, content = match.group(1), match.group(2)
-    ok, data, _ = await event.send_to_user(uid, content)
-    if ok:
-        await event.reply(f"✅ 已发送主动私聊消息\n目标: {uid[:8]}****")
-    else:
-        await event.reply(f"❌ 发送失败: {data.get('message', '未知错误')}")
+    await event.send_to_user(uid, content)
+    await event.reply(f"✅ 已发送给 {uid[:8]}****")
 
 
 @handler(r'^主动群发\s+(\S+)\s+(.+)$', name='主动群发', desc='向指定群发送主动消息', owner_only=True)
 async def test_send_to_group(event, match):
     gid, content = match.group(1), match.group(2)
-    ok, data, _ = await event.send_to_group(gid, content)
-    if ok:
-        await event.reply(f"✅ 已发送主动群消息\n目标群: {gid[:8]}****")
-    else:
-        await event.reply(f"❌ 发送失败: {data.get('message', '未知错误')}")
+    await event.send_to_group(gid, content)
+    await event.reply(f"✅ 已发送到群 {gid[:8]}****")
+
+
+# ==================== 无 event 主动推送示例 ====================
+# send_to_* 不读取 event 字段, event.send_to_* 只是便捷写法。
+# 没有 event 的场景 (定时任务、@on_load 后台循环) 取一个 sender 直接调用即可。
+
+def _get_any_sender():
+    from core.bot.manager import _bot_manager_ref
+    return next(iter(_bot_manager_ref._bots.values())).sender
+
+
+@handler(r'^无event群发\s+(\S+)\s+(.+)$', name='无event主动群发',
+         desc='不借助 event, 直接用 sender 推送', owner_only=True)
+async def send_without_event(event, match):
+    gid, content = match.group(1), match.group(2)
+    sender = _get_any_sender()
+    await sender.send_to_group(gid, content)
+    await event.reply(f"✅ 已通过 sender 发送到 {gid[:8]}****")
 
 
 @handler(r'^主动图片$', name='主动图片', desc='向当前会话主动发送图片', owner_only=True)
@@ -372,43 +337,20 @@ def _unload_web_pages():
 
 @handler(r'^面板推送$', name='面板推送', desc='向 Web 面板推送一条自定义日志', owner_only=True)
 async def push_to_panel(event, match):
-    try:
-        import web.ws as ws
-        from datetime import datetime
-        entry = {
-            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            'content': f'来自插件的推送测试 (用户: {event.user_id})',
-            'source': 'plugin.examples',
-            'level': 'INFO',
-        }
-        ws.push_log('framework', entry)
-        await event.reply("✅ 已推送日志到 Web 面板\n请在面板「日志」页查看")
-    except Exception as e:
-        await event.reply(f"❌ 推送失败: {e}")
+    from datetime import datetime
 
-
-@handler(r'^面板状态$', name='面板状态', desc='查看 Web 面板运行状态', owner_only=True)
-async def panel_status(event, match):
-    try:
-        import web.ws as ws
-        from core.base.config import cfg
-        port = cfg.get('settings', 'server.port', 5200)
-        client_count = len(ws._clients) if hasattr(ws, '_clients') else '未知'
-        await event.reply(
-            f"📊 Web 面板状态\n"
-            f"端口: {port}\n"
-            f"WebSocket 连接数: {client_count}\n"
-            f"面板路径: /web/")
-    except Exception as e:
-        await event.reply(f"❌ 获取状态失败: {e}")
+    import web.ws as ws
+    ws.push_log('framework', {
+        'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'content': '来自插件的推送测试',
+        'source': 'plugin.examples',
+        'level': 'INFO',
+    })
+    await event.reply("✅ 已推送日志到 Web 面板「日志」页")
 
 
 @handler(r'^面板广播\s+(.+)$', name='面板广播', desc='向所有面板客户端广播消息', owner_only=True)
 async def panel_broadcast(event, match):
-    content = match.group(1)
-    try:
-        import web.ws as ws
-        ws.broadcast({'type': 'notification', 'message': content})
-        await event.reply(f"✅ 已广播到所有面板客户端: {content}")
-    except Exception as e:
-        await event.reply(f"❌ 广播失败: {e}")
+    import web.ws as ws
+    ws.broadcast({'type': 'notification', 'message': match.group(1)})
+    await event.reply(f"✅ 已广播: {match.group(1)}")
