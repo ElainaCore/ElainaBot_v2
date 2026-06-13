@@ -1,45 +1,91 @@
-"""Bot OpenID 缓存 — 记录各 appid 的机器人 member_openid, 持久化到 JSON"""
+"""Bot OpenID 缓存 — 记录各 appid 机器人的艾特 id, 持久化到 JSON。
+
+全量环境下机器人真实 id (mentions[].id) 与 content 里 <@id> 的虚拟 id 可能不一致。
+首次「仅艾特机器人」时把两个来源的 id 都记下并标记 done; 之后直接按缓存移除, 不再判断。
+"""
 
 import json
 import os
+import re
 
-_BASE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-_FILE = os.path.join(_BASE, 'data', 'bot_openids.json')
+_AT = re.compile(r'<@!?([^>]+)>')
+_FILE = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    'data',
+    'bot_openids.json',
+)
 
-# {appid: openid} 每个机器人仅一个 openid
-_cache: dict[str, str] = {}
-# {appid: '<@openid>'} 预格式化标签, 热路径零分配
-_tag: dict[str, str] = {}
+# {appid: {'ids': set[str], 'done': bool}}
+_data: dict[str, dict] = {}
 
-# 启动时加载
-if os.path.isfile(_FILE):
+
+def _entry(appid):
+    return _data.setdefault(appid, {'ids': set(), 'done': False})
+
+
+def _save():
     try:
-        with open(_FILE, encoding='utf-8') as _f:
-            for _k, _v in json.load(_f).items():
-                if isinstance(_v, str) and _v:
-                    _cache[_k] = _v
-                    _tag[_k] = f'<@{_v}>'
+        os.makedirs(os.path.dirname(_FILE), exist_ok=True)
+        out = {a: {'ids': sorted(e['ids']), 'done': e['done']} for a, e in _data.items()}
+        with open(_FILE, 'w', encoding='utf-8') as f:
+            json.dump(out, f, ensure_ascii=False)
     except Exception:
         pass
+
+
+def _load():
+    """启动时加载 (兼容旧格式 "openid" 字符串 / ["id"...] 列表 / {"ids":[...],"done":bool})"""
+    if not os.path.isfile(_FILE):
+        return
+    try:
+        with open(_FILE, encoding='utf-8') as f:
+            raw = json.load(f)
+    except Exception:
+        return
+    for appid, v in raw.items():
+        if isinstance(v, str):
+            ids, done = [v], False
+        elif isinstance(v, dict):
+            ids, done = v.get('ids', []), bool(v.get('done'))
+        else:
+            ids, done = v, False
+        _data[appid] = {'ids': {i for i in ids if i}, 'done': done}
+
+
+_load()
 
 
 def add(appid, openid):
-    """记录 bot openid (仅首次发现时写盘)"""
-    if _cache.get(appid) == openid:
+    """登记一个 bot id (真实 id, 来自 mentions[].id)"""
+    if not appid or not openid:
         return
-    _cache[appid] = openid
-    _tag[appid] = f'<@{openid}>'
-    try:
-        os.makedirs(os.path.dirname(_FILE), exist_ok=True)
-        with open(_FILE, 'w', encoding='utf-8') as f:
-            json.dump(_cache, f, ensure_ascii=False)
-    except Exception:
-        pass
+    e = _entry(appid)
+    if openid not in e['ids']:
+        e['ids'].add(openid)
+        _save()
+
+
+def is_done(appid):
+    """该 appid 是否已记录齐全, 无需再判断"""
+    e = _data.get(appid)
+    return bool(e and e['done'])
+
+
+def learn(appid, content):
+    """全量「仅艾特机器人」: 把 content 里的 (虚拟) id 一并记下并标记完成"""
+    if not appid:
+        return
+    e = _entry(appid)
+    e['ids'].update(_AT.findall(content))
+    e['done'] = True
+    _save()
 
 
 def strip_self_at(appid, content):
-    """移除 content 中本机器人的所有 <@openid> (可能被艾特多次)"""
-    t = _tag.get(appid)
-    if not t:
+    """移除 content 中本机器人的所有 <@id>"""
+    e = _data.get(appid)
+    if not e:
         return content
-    return content.replace(t, '').strip()
+    for i in e['ids']:
+        content = content.replace(f'<@{i}>', '')
+    return content.strip()
