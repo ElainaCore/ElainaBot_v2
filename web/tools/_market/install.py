@@ -41,19 +41,47 @@ def _get_installed_module_names():
     return {d for d in os.listdir(modules_dir) if os.path.isdir(os.path.join(modules_dir, d)) and not d.startswith(('.', '__'))}
 
 
-def _get_local_module_version(name):
-    """读取本地模块的 __module_meta__['version']"""
-    entry = os.path.join(_modules_dir(), name, 'main.py')
-    if not os.path.isfile(entry):
+_PLUGIN_ENTRY_NAMES = ('index.py', 'app.py', 'main.py')
+
+
+def _read_meta_version(py_path, meta_var):
+    """从单个 .py 文件解析 <meta_var>['version'] (静态 AST, 不执行代码)"""
+    if not os.path.isfile(py_path):
         return ''
     try:
-        with open(entry, encoding='utf-8') as f:
+        with open(py_path, encoding='utf-8') as f:
             tree = ast.parse(f.read())
         for node in ast.iter_child_nodes(tree):
-            if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name) and node.targets[0].id == '__module_meta__':
+            if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name) and node.targets[0].id == meta_var:
                 meta = ast.literal_eval(node.value)
-                return meta.get('version', '')
+                if isinstance(meta, dict):
+                    return str(meta.get('version', ''))
     except Exception:
+        pass
+    return ''
+
+
+def _get_local_module_version(name):
+    """读取本地模块的 __module_meta__['version']"""
+    return _read_meta_version(os.path.join(_modules_dir(), name, 'main.py'), '__module_meta__')
+
+
+def _get_local_plugin_version(name):
+    """读取本地插件的 __plugin_meta__['version'] (入口文件优先, 否则扫描目录内其它 .py)"""
+    pdir = os.path.join(_plugins_dir(), name)
+    if not os.path.isdir(pdir):
+        return ''
+    for entry in _PLUGIN_ENTRY_NAMES:
+        ver = _read_meta_version(os.path.join(pdir, entry), '__plugin_meta__')
+        if ver:
+            return ver
+    try:
+        for f in sorted(os.listdir(pdir)):
+            if f.endswith('.py') and not f.startswith('_') and f not in _PLUGIN_ENTRY_NAMES:
+                ver = _read_meta_version(os.path.join(pdir, f), '__plugin_meta__')
+                if ver:
+                    return ver
+    except OSError:
         pass
     return ''
 
