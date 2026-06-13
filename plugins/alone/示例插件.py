@@ -3,8 +3,10 @@
 import asyncio
 import os
 
+from aiohttp import web
+
 from core.plugin.decorators import handler, on_unload
-from core.plugin.web_pages import register_page, unregister_page
+from core.plugin.web_pages import register_page, register_route, unregister_page
 
 # ==================== 媒体发送示例 ====================
 
@@ -331,6 +333,23 @@ register_page(
 @on_unload
 def _unload_web_pages():
     unregister_page('examples-page')
+
+
+# ==================== 自定义 HTTP 路由示例 ====================
+# 插件可以注册自己的 HTTP 接口, 路径需以 /api/ext/ 开头。默认 auth=True 复用
+# 后台登录 token; 设 auth=False 即开放免验证。插件卸载时框架自动注销这些路由。
+
+# 免验证: 浏览器直接访问 /api/ext/alone/ping 即可
+@register_route('GET', '/api/ext/alone/ping', auth=False)
+async def api_ping(request):
+    return web.json_response({'ok': True, 'plugin': 'alone'})
+
+
+# 需要 token (auth=True 是默认值, 可省略): 请求头带 Authorization: Bearer <token>
+@register_route('POST', '/api/ext/alone/echo')
+async def api_echo(request):
+    body = await request.json()
+    return web.json_response({'ok': True, 'you_sent': body})
 
 
 # ==================== Web 面板示例 ====================

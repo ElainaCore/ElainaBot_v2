@@ -612,6 +612,37 @@ def _cleanup():
     unregister_page('my-page')
 ```
 
+### 8.1 自定义 HTTP 路由
+
+除了页面, 插件还能注册自己的 HTTP 接口。路径**必须以 `/api/ext/` 开头**(建议用 `/api/ext/{插件名}/` 避免冲突)。默认 `auth=True` 复用后台登录 token; 设 `auth=False` 则开放免验证(如对外回调、健康检查)。
+
+```python
+from aiohttp import web
+from core.plugin.web_pages import register_route
+
+
+# 免验证路由: 任何人可直接访问
+@register_route('GET', '/api/ext/myplugin/ping', auth=False)
+async def ping(request):
+    return web.json_response({'ok': True})
+
+
+# 需要 token (auth=True 是默认值, 可省略): 请求头带 Authorization: Bearer <token>
+@register_route('POST', '/api/ext/myplugin/echo')
+async def echo(request):
+    body = await request.json()
+    return web.json_response({'you_sent': body})
+```
+
+| 参数 | 说明 |
+| --- | --- |
+| `method` | `'GET'` / `'POST'` / `'PUT'` / `'DELETE'` 等 |
+| `path` | 路由路径, 必须以 `/api/ext/` 开头 (精确匹配, 不支持路径参数; 可变部分用查询串/请求体传) |
+| `handler` | `async def handler(request)`, 返回 `web.json_response(...)` / `web.Response(...)` |
+| `auth` | 是否要求登录 token, 默认 `True` |
+
+> 路由由 web 层动态查表执行, 插件**热重载/卸载即时生效**; 插件卸载时框架会自动注销其全部路由, 无需手动清理。也可直接调用 `register_route('POST', '/api/ext/x/do', handler)` (非装饰器写法)。
+
 ---
 
 ## 9. 配置项与全量环境

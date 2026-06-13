@@ -161,6 +161,8 @@ def get_routes() -> list:
         # ── 自定义页面 ──
         web.get('/api/web-pages', _(handle_get_web_pages)),
         web.get('/api/web-pages/{key}', _(handle_get_web_page_html)),
+        # ── 插件自定义路由 (动态分发, 鉴权由路由自身的 auth 标志决定) ──
+        web.route('*', '/api/ext/{tail:.*}', handle_ext_route),
         # ── 数据库浏览 ──
         web.get('/api/database/list', _(database_browser.handle_list_databases)),
         web.post('/api/database/tables', _(database_browser.handle_list_tables)),
@@ -371,3 +373,18 @@ async def handle_get_web_page_html(request: web.Request):
     if html is None:
         return web.json_response({'success': False, 'error': '页面不存在'}, status=404)
     return web.Response(text=html, content_type='text/html', charset='utf-8')
+
+
+# ======================== 插件自定义路由 ========================
+
+
+async def handle_ext_route(request: web.Request):
+    """动态分发插件用 register_route 注册的 /api/ext/ 路由 (查表执行, 支持热重载)。"""
+    from core.plugin.web_pages import match_route
+
+    entry = match_route(request.method, request.path)
+    if entry is None:
+        return web.json_response({'success': False, 'error': '路由不存在'}, status=404)
+    if entry['auth'] and not auth.validate_token(request):
+        return web.json_response({'success': False, 'error': '未登录或会话已过期'}, status=401)
+    return await entry['handler'](request)
