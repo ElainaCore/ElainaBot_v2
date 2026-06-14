@@ -176,6 +176,8 @@ async def convert_lifecycle_event(event, id_mapper, self_qq: int) -> dict | None
         'post_type': 'notice',
         'notice_type': notice_type,
         'user_id': self_qq if need_group else qq_user,
+        'real_user_id': event.user_id,
+        'real_group_id': event.group_id,
     }
     if sub_type:
         result['sub_type'] = sub_type
