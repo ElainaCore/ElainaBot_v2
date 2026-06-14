@@ -7,6 +7,7 @@ from web.tools._market.install import (
     _get_installed_module_names,
     _get_installed_names,
     _get_local_module_version,
+    _get_local_plugin_version,
     _version_lt,
 )
 from web.tools._market.shared import (
@@ -46,6 +47,10 @@ async def handle_market_list(request: web.Request):
                 p['has_update'] = _version_lt(local_ver, p.get('version', ''))
         else:
             p['installed'] = safe in installed_plugins
+            if p['installed']:
+                local_ver = _get_local_plugin_version(safe)
+                p['local_version'] = local_ver
+                p['has_update'] = _version_lt(local_ver, p.get('version', ''))
 
     return web.json_response({'success': True, 'data': plugins, 'total': len(plugins)})
 

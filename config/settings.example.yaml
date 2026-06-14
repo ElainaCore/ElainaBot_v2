@@ -18,6 +18,12 @@ web:
   login_title_suffix: "面板"
   theme_gradient: "linear-gradient(135deg, #5865f2, #7289da)"
 
+# 统计 (累加聚合用户/群发言数据到 statistics.db, 每个用户/群只占一行)
+statistics:
+  enabled: true                              # 是否开启统计, 关闭则不聚合(不统计)
+  schedule_hour: 4                           # 每日聚合时间 - 小时(默认凌晨4点)
+  schedule_minute: 0                         # 每日聚合时间 - 分钟
+
 logging:
   dir: "log"                                 # 日志根目录(相对框架目录)
   insert_interval: 2                         # 批量写入间隔(秒), 0=立即写入

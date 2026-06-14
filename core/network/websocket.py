@@ -139,8 +139,6 @@ class WSClient:
     async def _on_dispatch(self, payload):
         """事件分发 → 构造 Event 并回调"""
         event_type = payload.get('t', '')
-        if event_type == 'INTERACTION_CREATE':
-            await self._send_event_ack(payload)
         if event_type == 'READY':
             self._session_id = payload.get('d', {}).get('session_id')
             log.info(f'[{self._appid}] WebSocket 已就绪 (session={self._session_id})')
@@ -151,9 +149,25 @@ class WSClient:
         try:
             event = Event.from_websocket(self._appid, payload)
             log.debug(f'[{self._appid}] WS事件: {event}')
-            asyncio.create_task(self._dispatch_with_backpressure(event))
+            if event_type == 'INTERACTION_CREATE':
+                # 先分发插件 (插件可 set_callback_code), 再用其 code 发 op12 ACK;
+                # ACK 在独立任务里等待, 不阻塞 WS 读取循环。
+                event.start_ack_countdown()
+                task = asyncio.create_task(self._dispatch_with_backpressure(event))
+                task.add_done_callback(lambda t, ev=event: ev.finish_dispatch())
+                asyncio.create_task(self._ack_interaction_when_ready(event, payload))
+            else:
+                asyncio.create_task(self._dispatch_with_backpressure(event))
         except Exception as e:
             log.error(f'[{self._appid}] 事件处理异常: {e}')
+
+    async def _ack_interaction_when_ready(self, event, payload):
+        """等待插件设置 code (或分发结束/超时) 后发送 op12 ACK。"""
+        try:
+            code = await event.wait_ack_code()
+        except Exception:
+            code = 0
+        await self._send_event_ack(payload, code)
 
     async def _dispatch_with_backpressure(self, event):
         """背压包装: Semaphore 控制并发, 满载时新事件等待空闲槽位"""

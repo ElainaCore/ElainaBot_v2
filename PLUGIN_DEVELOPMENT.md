@@ -214,6 +214,9 @@ async def filter_keywords(event):
 | `event.event_id` | `str` | 事件 ID |
 | `event.guild_id` | `str` | 频道服务器 ID (频道场景) |
 | `event.interaction_data` | `dict` | 交互回调数据 (仅 INTERACTION 事件) |
+| `event.callback_code` | `int` / `None` | 交互回调状态码, 见 5.8 |
+| `event.message_reference_id` | `str` | 可引用的 REFIDX (用于引用回复, 见 5.7) |
+| `event.message_scene` | `dict` | 消息场景信息 (`source` / `ext` 等) |
 
 ### 4.2 场景标识 (布尔属性)
 
@@ -413,7 +416,55 @@ await event.send_to_channel("指定频道ID", "频道消息")
 
 > **`event.reply()` vs `event.send_to_*()`**: `reply` 是被动回复 (关联当前消息 msg_id), `send_to_*` 是主动推送 (不关联消息)。日常使用 `reply` 即可, 延迟场景 (如定时任务、sleep 后) 可以用 `send_to_*`。
 
-### 5.7 撤回与交互
+#### 不依赖 event 的主动推送
+
+`send_to_*` 不读取 event 字段, `event.send_to_*` 只是便捷写法。没有 event 时 (定时任务、`@on_load` 后台循环) 取一个 `sender` 直接调用:
+
+```python
+from core.bot.manager import _bot_manager_ref
+
+# 取任意可用 bot 的 sender (指定 appid: _bot_manager_ref.get_bot(appid).sender)
+sender = next(iter(_bot_manager_ref._bots.values())).sender
+
+await sender.send_to_group("群ID", "通知内容")
+await sender.send_to_user("用户ID", "私信内容")
+await sender.send_to_channel("频道ID", "频道消息")
+```
+
+### 5.7 引用消息与发送返回值
+
+#### 发送返回值
+
+| 方法 | 返回值 |
+| --- | --- |
+| `reply` / `reply_image` / `reply_ark` 等 | 平台响应 `dict` (失败为 `None`) |
+| `send_to_group` / `send_to_user` | `(ok, data, payload)` 三元组 |
+| `send_to_channel` | `(ok, data)` |
+| `send_wakeup` | `(ok, 消息ID或原因)` |
+
+响应 `dict` 常用字段: `data['id']` (平台消息 ID)、`data['ext_info']['ref_idx']` (本条消息的可引用 REFIDX)。
+
+#### 引用消息 (message_reference_id)
+
+引用回复需要传 **REFIDX** (`REFIDX_xxx`), 而不是平台消息 ID (`ROBOT1.0_xxx`):
+
+```python
+# 1) 引用"用户当前这条消息"
+await event.reply("引用你刚发的消息", message_reference_id=event.message_reference_id)
+
+# 2) 引用"机器人刚发出的那条消息" (从发送响应里取 ref_idx)
+data = await event.reply("第一条")
+ref = (data or {}).get('ext_info', {}).get('ref_idx', '')
+if ref:
+    await event.reply("引用上面那条", message_reference_id=ref)
+
+# 3) 主动消息也可引用
+await event.send_to_group(event.group_id, "通知", message_reference_id=ref)
+```
+
+> 框架会自动组装为 `{"message_reference": {"message_id": "REFIDX_xxx", "ignore_get_message_error": true}}`。只有显式传 `message_reference_id` 才会引用。
+
+### 5.8 撤回与交互回调
 
 ```python
 # 撤回当前消息
@@ -421,12 +472,22 @@ await event.recall()
 
 # 撤回指定消息
 await event.recall(message_id="xxx")
+```
 
-# 按钮交互应答 (interaction 事件)
+**交互回调** — 回调按钮 (`type=1`) 被点击时下发 `INTERACTION_CREATE` 事件, 此时 `event.content` 即按钮的 `data`。用 `set_callback_code` 应答这次点击:
+
+```python
+@handler(r'^my_btn$', event_types=['INTERACTION_CREATE'])
+async def on_click(event, match):
+    event.set_callback_code(0)     # 应答这次交互
+    # event.set_ack_timeout(15)    # 需更久处理时, 先延长等待(秒)再设置 code
+    # 未调用时, 框架会自动用默认 code 应答
+
+# 旧式 REST 应答 (会额外发一次请求, 一般无需使用)
 await event.ack_interaction(code=0)
 ```
 
-### 5.8 唤醒消息 (召回功能)
+### 5.9 唤醒消息 (召回功能)
 
 ```python
 # 智能召回 (按规则发送)
@@ -436,7 +497,7 @@ ok, reason = await event.send_wakeup(user_id, "📢 召回提示")
 ok, result = await event.sender.force_wakeup(user_id, "强制召回")
 ```
 
-### 5.9 高级工具方法 (通过 `event.sender`)
+### 5.10 高级工具方法 (通过 `event.sender`)
 
 ```python
 # 生成分享链接
@@ -550,6 +611,37 @@ def _cleanup():
     """插件卸载时清理"""
     unregister_page('my-page')
 ```
+
+### 8.1 自定义 HTTP 路由
+
+除了页面, 插件还能注册自己的 HTTP 接口。路径**必须以 `/api/ext/` 开头**(建议用 `/api/ext/{插件名}/` 避免冲突)。默认 `auth=True` 复用后台登录 token; 设 `auth=False` 则开放免验证(如对外回调、健康检查)。
+
+```python
+from aiohttp import web
+from core.plugin.web_pages import register_route
+
+
+# 免验证路由: 任何人可直接访问
+@register_route('GET', '/api/ext/myplugin/ping', auth=False)
+async def ping(request):
+    return web.json_response({'ok': True})
+
+
+# 需要 token (auth=True 是默认值, 可省略): 请求头带 Authorization: Bearer <token>
+@register_route('POST', '/api/ext/myplugin/echo')
+async def echo(request):
+    body = await request.json()
+    return web.json_response({'you_sent': body})
+```
+
+| 参数 | 说明 |
+| --- | --- |
+| `method` | `'GET'` / `'POST'` / `'PUT'` / `'DELETE'` 等 |
+| `path` | 路由路径, 必须以 `/api/ext/` 开头 (精确匹配, 不支持路径参数; 可变部分用查询串/请求体传) |
+| `handler` | `async def handler(request)`, 返回 `web.json_response(...)` / `web.Response(...)` |
+| `auth` | 是否要求登录 token, 默认 `True` |
+
+> 路由由 web 层动态查表执行, 插件**热重载/卸载即时生效**; 插件卸载时框架会自动注销其全部路由, 无需手动清理。也可直接调用 `register_route('POST', '/api/ext/x/do', handler)` (非装饰器写法)。
 
 ---
 
@@ -741,11 +833,11 @@ async def set_reward(event, match):
 
 | 路径 | 功能 |
 | --- | --- |
-| `@plugins/alone/示例插件.py.ban` | 媒体/ark/按钮/撤回/主动消息/Web 面板综合示例 |
-| `@plugins/system/main.py` | 内置系统插件 (信息、管理) |
-| `@plugins/game_services/main.py` | 大型插件示例 (子模块组织) |
+| `plugins/alone/示例插件.py` | 媒体/ark/按钮/交互回调/引用消息/撤回/主动消息/Web 面板综合示例 |
+| `plugins/system/main.py` | 内置系统插件 (信息、管理) |
+| `plugins/game_services/main.py` | 大型插件示例 (子模块组织) |
 
-> 将 `.ban` 后缀移除即可启用示例插件 (默认禁用以避免污染)。
+> **启用/禁用插件**: 在 Web 面板「插件」页切换即可, 状态持久化到 `data/plugins_disabled.json`。旧版以 `.py.ban` 后缀禁用的方式已废弃, 框架启动时会自动迁移为新机制。
 
 ---
 

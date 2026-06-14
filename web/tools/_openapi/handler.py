@@ -14,11 +14,15 @@ _openapi_user_data: dict = {}
 _openapi_login_tasks: dict = {}
 _data_file = ''
 _bot_api = None
+_bot_manager = None
+
+_WEBHOOK_ALLOWED_PORTS = {'80', '8080', '443', '8443'}
 
 
-def set_context(base_dir: str):
-    global _data_file
+def set_context(base_dir: str, bot_manager=None):
+    global _data_file, _bot_manager
     _data_file = os.path.join(base_dir, 'data', 'openapi.json')
+    _bot_manager = bot_manager
     _load_data()
 
 
@@ -404,3 +408,202 @@ async def handle_execute_delete_ip(request: web.Request):
 
 async def handle_batch_add_whitelist(request: web.Request):
     return await _batch_whitelist_op(await request.json(), 'add')
+
+
+# ==================== 事件订阅 ====================
+
+# 开放平台列表接口不会返回的全量事件, 手动补充以便订阅
+_EXTRA_EVENTS = [
+    {
+        'id': 'GROUP_MESSAGE_CREATE',
+        'name': '群消息事件 (全量)',
+        'description': '群消息事件',
+        'type': '群事件',
+        'is_subscribed': False,
+        'weight': 200,
+    },
+]
+
+
+async def handle_get_event_list(request: web.Request):
+    body = await request.json()
+    api, ud, err = _require_api_and_login(body)
+    if err:
+        return err
+    appid = body.get('appid') or ud.get('appId')
+    if not appid:
+        return _err('缺少 AppID')
+    res = await api.get_event_list(
+        appid=appid,
+        uin=ud.get('uin'),
+        uid=ud.get('developerId'),
+        ticket=ud.get('ticket'),
+    )
+    if res.get('code', 0) != 0:
+        return _err(res.get('msg') or '获取事件列表失败')
+    events = res.get('data', [])
+    existing = {e.get('id') for e in events}
+    for extra in _EXTRA_EVENTS:
+        if extra['id'] not in existing:
+            events.append(dict(extra))
+    events.sort(key=lambda e: e.get('weight', 9999))
+    return _ok(data={'events': events})
+
+
+async def handle_get_event_auth_qr(request: web.Request):
+    body = await request.json()
+    api, ud, err = _require_api_and_login(body)
+    if err:
+        return err
+    appid = body.get('appid') or ud.get('appId')
+    if not appid:
+        return _err('缺少 AppID')
+    qr_result = await api.create_white_login_qr(
+        appid=appid,
+        uin=ud.get('uin'),
+        uid=ud.get('developerId'),
+        ticket=ud.get('ticket'),
+        qr_type=50,
+    )
+    if qr_result.get('code', 0) != 0:
+        return _err('创建授权二维码失败')
+    qrcode, qr_url = qr_result.get('qrcode', ''), qr_result.get('url', '')
+    if not qrcode or not qr_url:
+        return _err('获取授权二维码失败')
+    qr_img = f'https://api.2dcode.biz/v1/create-qr-code?data={quote(qr_url)}'
+    return _ok(qrcode=qrcode, url=qr_img, message='获取授权二维码成功')
+
+
+async def handle_modify_event_subscription(request: web.Request):
+    body = await request.json()
+    api, ud, err = _require_api_and_login(body)
+    if err:
+        return err
+    appid = body.get('appid') or ud.get('appId')
+    qrcode = body.get('qrcode', '')
+    event_ids = body.get('event_ids')
+    if not appid or not qrcode or event_ids is None:
+        return _err('缺少必要参数')
+    res = await api.modify_event_subscription(
+        appid=appid,
+        event_ids=event_ids,
+        qrcode=qrcode,
+        uin=ud.get('uin'),
+        uid=ud.get('developerId'),
+        ticket=ud.get('ticket'),
+    )
+    if res.get('code', 0) != 0:
+        return _err(res.get('msg') or '修改订阅失败')
+    return _ok(message='订阅更新成功')
+
+
+# ==================== 回调地址 (Webhook) ====================
+
+
+async def handle_get_webhook(request: web.Request):
+    body = await request.json()
+    api, ud, err = _require_api_and_login(body)
+    if err:
+        return err
+    appid = body.get('appid') or ud.get('appId')
+    if not appid:
+        return _err('缺少 AppID')
+    res = await api.get_webhook(
+        appid=appid,
+        uin=ud.get('uin'),
+        uid=ud.get('developerId'),
+        ticket=ud.get('ticket'),
+    )
+    if res.get('code', 0) != 0:
+        return _err(res.get('msg') or '获取回调地址失败')
+    return _ok(data={'webhook_url': res.get('data', {}).get('webhook_url', '')})
+
+
+async def handle_webhook_suggest(request: web.Request):
+    """当本面板端口为 80/8080/443/8443 且框架本地存在该 appid 机器人时, 返回可自动填入的本机回调地址"""
+    body = await request.json()
+    api, ud, err = _require_api_and_login(body)
+    if err:
+        return err
+    appid = body.get('appid') or ud.get('appId')
+    if not appid:
+        return _err('缺少 AppID')
+    has_bot = bool(_bot_manager and str(appid) in _bot_manager._bots)
+    scheme = request.headers.get('X-Forwarded-Proto', request.scheme)
+    host = request.headers.get('X-Forwarded-Host', request.host)
+    port = host.split(':')[1] if ':' in host else ('443' if scheme == 'https' else '80')
+    port_allowed = port in _WEBHOOK_ALLOWED_PORTS
+    url = f'{scheme}://{host}/?appid={appid}'
+    return _ok(
+        available=has_bot and port_allowed,
+        url=url,
+        has_bot=has_bot,
+        port_allowed=port_allowed,
+    )
+
+
+async def handle_check_webhook(request: web.Request):
+    body = await request.json()
+    api, ud, err = _require_api_and_login(body)
+    if err:
+        return err
+    appid = body.get('appid') or ud.get('appId')
+    webhook_url = body.get('webhook_url', '')
+    if not appid or not webhook_url:
+        return _err('缺少必要参数')
+    res = await api.check_webhook(
+        appid=appid,
+        webhook_url=webhook_url,
+        uin=ud.get('uin'),
+        uid=ud.get('developerId'),
+        ticket=ud.get('ticket'),
+    )
+    valid = res.get('code', 0) == 0
+    return _ok(valid=valid, message=res.get('msg') or ('地址校验通过' if valid else '地址校验未通过'))
+
+
+async def handle_get_webhook_auth_qr(request: web.Request):
+    body = await request.json()
+    api, ud, err = _require_api_and_login(body)
+    if err:
+        return err
+    appid = body.get('appid') or ud.get('appId')
+    if not appid:
+        return _err('缺少 AppID')
+    qr_result = await api.create_white_login_qr(
+        appid=appid,
+        uin=ud.get('uin'),
+        uid=ud.get('developerId'),
+        ticket=ud.get('ticket'),
+        qr_type=50,
+    )
+    if qr_result.get('code', 0) != 0:
+        return _err('创建授权二维码失败')
+    qrcode, qr_url = qr_result.get('qrcode', ''), qr_result.get('url', '')
+    if not qrcode or not qr_url:
+        return _err('获取授权二维码失败')
+    qr_img = f'https://api.2dcode.biz/v1/create-qr-code?data={quote(qr_url)}'
+    return _ok(qrcode=qrcode, url=qr_img, message='获取授权二维码成功')
+
+
+async def handle_set_webhook(request: web.Request):
+    body = await request.json()
+    api, ud, err = _require_api_and_login(body)
+    if err:
+        return err
+    appid = body.get('appid') or ud.get('appId')
+    qrcode = body.get('qrcode', '')
+    webhook_url = body.get('webhook_url', '')
+    if not appid or not qrcode or not webhook_url:
+        return _err('缺少必要参数')
+    res = await api.set_webhook(
+        appid=appid,
+        webhook_url=webhook_url,
+        qrcode=qrcode,
+        uin=ud.get('uin'),
+        uid=ud.get('developerId'),
+        ticket=ud.get('ticket'),
+    )
+    if res.get('code', 0) != 0:
+        return _err(res.get('msg') or '设置回调地址失败')
+    return _ok(message='回调地址设置成功')

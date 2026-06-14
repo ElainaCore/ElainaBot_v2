@@ -3,6 +3,7 @@
 
 import asyncio
 import contextlib
+import contextvars
 import json
 import os
 import random
@@ -37,6 +38,11 @@ from core.module.hook import get_hook_manager as _get_hooks
 
 def _msg_seq():
     return random.randint(10000, 999999)
+
+
+# 发送失败处理上下文: None=不在处理链路内; 否则为 {'failed': bool},
+# 记录链路内(插件补救/模板回发)是否又发送失败 —— 用于「补救也失败时仍回发模板」并切断递归。
+_failure_ctx = contextvars.ContextVar('_failure_ctx', default=None)
 
 
 class MessageSender(_HttpMixin, _MediaSendMixin):
@@ -262,6 +268,7 @@ class MessageSender(_HttpMixin, _MediaSendMixin):
                 tb=f'endpoint: {endpoint}\npayload: {json.dumps(payload, ensure_ascii=False, default=str)[:500]}',
                 appid=self._appid,
             )
+            await self._handle_send_failure(endpoint, data)
         return ok, data, payload
 
     def _log_push(self, endpoint, payload, content, resp_data=None):
@@ -542,6 +549,7 @@ class MessageSender(_HttpMixin, _MediaSendMixin):
                 context=json.dumps(payload, ensure_ascii=False, default=str),
                 appid=self._appid,
             )
+            await self._handle_send_failure(endpoint, data, event)
             return False, data
 
         self._log_sent(payload, event, content, media_label, data)
@@ -559,6 +567,44 @@ class MessageSender(_HttpMixin, _MediaSendMixin):
                 },
             )
         return True, data
+
+    async def _handle_send_failure(self, endpoint, data, event=None):
+        """发送失败处理: 回传插件(send_failed 钩子)补救; 插件未处理、或补救也失败时回发 api_error 模板。
+
+        send_failed 管道钩子返回 None 视为已处理。重入保护: 链路内(补救/模板)再失败只
+        标记 failed、不递归; 据此在补救也失败时仍回发模板。模板被动用当前 msg_id, 主动直接推送。
+        """
+        ctx = _failure_ctx.get()
+        if ctx is not None:
+            ctx['failed'] = True
+            return
+        code = data.get('code', '') if isinstance(data, dict) else ''
+        message = data.get('message', '') if isinstance(data, dict) else str(data)
+        ctx = {'failed': False}
+        token = _failure_ctx.set(ctx)
+        try:
+            hooks = _get_hooks()
+            if hooks.has('send_failed'):
+                handled = await hooks.pipeline('send_failed', {
+                    'endpoint': endpoint, 'data': data, 'event': event,
+                    'appid': self._appid, 'code': code, 'message': message,
+                }) is None
+                if handled and not ctx['failed']:
+                    return  # 插件已处理且补救成功, 不发模板
+            if tpl.get_raw('api_error', self._appid) is None:
+                return
+            content, buttons = tpl.render_error(
+                error_code=code, error_message=message, appid=self._appid,
+                user_id=getattr(event, 'user_id', '') or '',
+                group_id=getattr(event, 'group_id', '') or '',
+            )
+            if not content:
+                return
+            payload = self._build_payload(event, content, buttons, None, None) if event is not None else self._build_core_payload(content, buttons, None, None)
+            with contextlib.suppress(Exception):
+                await self.post_json(endpoint, payload)
+        finally:
+            _failure_ctx.reset(token)
 
     def _log_sent(self, payload, event, content, media_label='', resp_data=None):
         """发送成功后的日志记录 (Web面板 + 持久化)"""
