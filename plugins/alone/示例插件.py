@@ -103,6 +103,21 @@ async def send_buttons(event, match):
     await event.reply("📌 按钮功能演示", buttons=buttons)
 
 
+@handler(r'^小按钮$', name='小按钮示例', desc='发送小按钮 (键盘级 font_size)', owner_only=True)
+async def send_small_buttons(event, match):
+    # 小按钮: buttons 传 dict, rows 放原二维数组, font_size 取 small/middle/large
+    rows = [
+        [
+            {'text': '点我回调', 'data': 'callback_1', 'type': 1},
+            {'text': '输入框', 'data': '/帮助', 'type': 2},
+        ],
+        [
+            {'text': '打开链接', 'link': 'https://i.elaina.vin/'},
+        ],
+    ]
+    await event.reply("📌 小按钮演示 (font_size=small)", buttons={'rows': rows, 'font_size': 'small'})
+
+
 # ==================== 交互回调示例 ====================
 # 回调按钮 (type=1) 被点击时, 框架会下发 INTERACTION_CREATE 事件,
 # event.content 就是按钮的 data。用 set_callback_code 应答这次点击。
