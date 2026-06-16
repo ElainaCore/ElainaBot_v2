@@ -4,9 +4,23 @@
 from core.base.config import cfg
 
 
-def build_keyboard(button_rows, appid=None):
-    """按钮行列表 → QQ InlineKeyboard 结构"""
+def build_keyboard(button_rows, appid=None, *, font_size=None, style=None):
+    """按钮行列表 → QQ InlineKeyboard 结构
+
+    小按钮: 通过键盘级样式 content.style.font_size 控制按钮大小 (对应官方
+    botgo CustomKeyboard.Style.FontSize), 取值 small / middle / large,
+    small 即「小按钮」。两种用法:
+      - 关键字: build_keyboard(rows, appid, font_size='small')
+        或 reply(buttons=rows, button_font_size='small')
+      - dict 包装: build_keyboard({'rows': rows, 'font_size': 'small'})
+    """
     button_enter_to_send = cfg.get_bot_setting(appid, 'message.button_enter_to_send', False) if appid else False
+
+    # 顶层 dict 包装: 携带键盘级样式, 同时兼容 rows/buttons/btns 取行
+    if isinstance(button_rows, dict):
+        font_size = font_size or button_rows.get('font_size')
+        style = style or button_rows.get('style')
+        button_rows = button_rows.get('rows') or button_rows.get('buttons') or button_rows.get('btns') or []
 
     rows = []
     for row in button_rows:
@@ -68,7 +82,14 @@ def build_keyboard(button_rows, appid=None):
 
             buttons.append(b)
         rows.append({'buttons': buttons})
-    return {'content': {'rows': rows}}
+
+    content = {'rows': rows}
+    kb_style = dict(style) if isinstance(style, dict) else {}
+    if font_size:
+        kb_style.setdefault('font_size', font_size)
+    if kb_style:
+        content['style'] = kb_style
+    return {'content': content}
 
 
 def build_prompt_keyboard(prompt_buttons):

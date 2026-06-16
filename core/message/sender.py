@@ -483,6 +483,8 @@ class MessageSender(_HttpMixin, _MediaSendMixin):
         skip_suffix = kwargs.pop('skip_suffix', False)
         message_reference = kwargs.pop('message_reference', None)
         message_reference_id = kwargs.pop('message_reference_id', None) or kwargs.pop('reference_message_id', None)
+        button_font_size = kwargs.pop('button_font_size', None)
+        button_style = kwargs.pop('button_style', None)
         use_md = cfg.get_bot_setting(self._appid, 'message.use_markdown', True)
         payload = {'msg_seq': _msg_seq()}
         for k in ('msg_id', 'event_id'):
@@ -505,7 +507,8 @@ class MessageSender(_HttpMixin, _MediaSendMixin):
             payload['content'] = content or ''
 
         if buttons:
-            payload['keyboard'] = build_keyboard(buttons, self._appid)
+            payload['keyboard'] = build_keyboard(
+                buttons, self._appid, font_size=button_font_size, style=button_style)
         if message_reference:
             payload['message_reference'] = message_reference
         elif message_reference_id:
