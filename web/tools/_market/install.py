@@ -22,15 +22,32 @@ from web.tools._market.shared import (
     log,
 )
 
+# 单文件插件统一安装目录 (位于 plugins/ 下)
+_ALONE_DIR = 'alone'
+
 # ==================== 版本/已安装 ====================
 
 
+def _alone_dir():
+    """单文件插件目录 plugins/alone/"""
+    return os.path.join(_plugins_dir(), _ALONE_DIR)
+
+
+def _get_installed_alone_names():
+    """plugins/alone/ 下的单文件插件 (文件名去掉 .py) 视为已安装插件名"""
+    alone_dir = _alone_dir()
+    if not os.path.isdir(alone_dir):
+        return set()
+    return {f[:-3] for f in os.listdir(alone_dir) if f.endswith('.py') and not f.startswith(('.', '_'))}
+
+
 def _get_installed_names():
-    """获取已安装的插件目录名列表"""
+    """获取已安装的插件名列表 (独立目录 + plugins/alone/ 下的单文件插件)"""
     plugins_dir = _plugins_dir()
     if not os.path.isdir(plugins_dir):
         return set()
-    return {d for d in os.listdir(plugins_dir) if os.path.isdir(os.path.join(plugins_dir, d)) and not d.startswith(('.', '__'))}
+    names = {d for d in os.listdir(plugins_dir) if os.path.isdir(os.path.join(plugins_dir, d)) and not d.startswith(('.', '__'))}
+    return names | _get_installed_alone_names()
 
 
 def _get_installed_module_names():
@@ -70,7 +87,8 @@ def _get_local_plugin_version(name):
     """读取本地插件的 __plugin_meta__['version'] (入口文件优先, 否则扫描目录内其它 .py)"""
     pdir = os.path.join(_plugins_dir(), name)
     if not os.path.isdir(pdir):
-        return ''
+        # 单文件插件: plugins/alone/<name>.py
+        return _read_meta_version(os.path.join(_alone_dir(), f'{name}.py'), '__plugin_meta__')
     for entry in _PLUGIN_ENTRY_NAMES:
         ver = _read_meta_version(os.path.join(pdir, entry), '__plugin_meta__')
         if ver:
@@ -166,16 +184,17 @@ async def handle_market_preview(request: web.Request):
 
 
 def _install_py(content, plugin_name, url):
-    plugins_dir = _plugins_dir()
-    fname = url.split('/')[-1].split('?')[0]
-    if not fname.endswith('.py'):
-        fname = f'{plugin_name}.py'
-    safe = _safe_name(plugin_name) or fname.replace('.py', '')
-    dest_dir = os.path.join(plugins_dir, safe)
-    os.makedirs(dest_dir, exist_ok=True)
-    with open(os.path.join(dest_dir, fname), 'wb') as f:
+    """单文件插件: 统一安装到 plugins/alone/<name>.py, 不再为每个插件单独建目录"""
+    safe = _safe_name(plugin_name)
+    if not safe:
+        fname = url.split('/')[-1].split('?')[0]
+        safe = _safe_name(fname[:-3] if fname.endswith('.py') else fname) or 'plugin'
+    alone_dir = _alone_dir()
+    os.makedirs(alone_dir, exist_ok=True)
+    rel = f'{_ALONE_DIR}/{safe}.py'
+    with open(os.path.join(alone_dir, f'{safe}.py'), 'wb') as f:
         f.write(content)
-    return {'success': True, 'message': f'已安装到 plugins/{safe}/{fname}'}
+    return {'success': True, 'message': f'已安装到 plugins/{rel}', 'path': f'plugins/{rel}'}
 
 
 def _install_zip(content, plugin_name):
@@ -378,10 +397,20 @@ async def handle_market_uninstall(request: web.Request):
         dest_dir = os.path.join(_modules_dir(), safe)
         label = f'modules/{safe}'
     else:
-        dest_dir = os.path.join(_plugins_dir(), safe)
-        label = f'plugins/{safe}'
         if safe == 'system':
             return web.json_response({'success': False, 'message': '系统插件不可卸载'})
+        dest_dir = os.path.join(_plugins_dir(), safe)
+        label = f'plugins/{safe}'
+        # 单文件插件: 未建独立目录, 文件位于 plugins/alone/<safe>.py
+        if not os.path.isdir(dest_dir):
+            alone_py = os.path.join(_alone_dir(), f'{safe}.py')
+            if os.path.isfile(alone_py):
+                try:
+                    os.remove(alone_py)
+                    log.info(f'plugins/{_ALONE_DIR}/{safe}.py 已卸载')
+                    return web.json_response({'success': True, 'message': f'已卸载 plugins/{_ALONE_DIR}/{safe}.py'})
+                except Exception as e:
+                    return web.json_response({'success': False, 'message': f'删除失败: {e}'})
 
     if not os.path.isdir(dest_dir):
         return web.json_response({'success': False, 'message': f'{label} 不存在'})
