@@ -103,6 +103,21 @@ async def send_buttons(event, match):
     await event.reply("📌 按钮功能演示", buttons=buttons)
 
 
+@handler(r'^小按钮$', name='小按钮示例', desc='发送小按钮 (键盘级 font_size)', owner_only=True)
+async def send_small_buttons(event, match):
+    # 小按钮: buttons 传 dict, rows 放原二维数组, font_size 取 small/middle/large
+    rows = [
+        [
+            {'text': '点我回调', 'data': 'callback_1', 'type': 1},
+            {'text': '输入框', 'data': '/帮助', 'type': 2},
+        ],
+        [
+            {'text': '打开链接', 'link': 'https://i.elaina.vin/'},
+        ],
+    ]
+    await event.reply("📌 小按钮演示 (font_size=small)", buttons={'rows': rows, 'font_size': 'small'})
+
+
 # ==================== 交互回调示例 ====================
 # 回调按钮 (type=1) 被点击时, 框架会下发 INTERACTION_CREATE 事件,
 # event.content 就是按钮的 data。用 set_callback_code 应答这次点击。
@@ -116,6 +131,27 @@ async def send_interaction_button(event, match):
 @handler(r'^demo_ack$', name='交互回调演示', desc='处理回调按钮点击', event_types=['INTERACTION_CREATE'])
 async def on_demo_ack(event, match):
     event.set_callback_code(0)  # 应答这次交互
+
+
+# ==================== 用户入群回复示例 ====================
+# 群内有新用户加入时, 框架下发 GROUP_MEMBER_ADD 生命周期事件 (用户退群为 GROUP_MEMBER_REMOVE),
+# 用 event_types 订阅即可在用户入群时自动回复 (event.reply 会发到该群)。
+#   - event.user_id / event.member_openid : 入群用户的 openid
+#   - event.group_id                      : 群 openid
+# 注意: 正则 r'' 对生命周期事件恒匹配; 这类事件无消息文本, 不要依赖 match 分组。
+
+@handler(r'', name='用户入群回复', desc='有新成员加入群聊时自动发送欢迎语', event_types=['GROUP_MEMBER_ADD'])
+async def on_group_member_add(event, match):
+    await event.reply(
+        f"欢迎新成员加入本群！🎉\n你的群标识: {event.user_id}\n发送「菜单」即可查看我能做什么～"
+    )
+
+
+# 退群同理: 订阅 GROUP_MEMBER_REMOVE 即可 (此事件无法回复该用户, 通常用于做记录/通知群管理)
+@handler(r'', name='用户退群示例', desc='有成员退出群聊时的处理示例', event_types=['GROUP_MEMBER_REMOVE'])
+async def on_group_member_remove(event, match):
+    # 用户已离开, 无法私聊该用户; 这里仅作演示 (可改为写日志或通知管理群)
+    pass
 
 
 # ==================== 引用消息示例 ====================

@@ -154,9 +154,13 @@ async def convert_message_event(event, id_mapper, self_qq: int) -> dict | None:
     return ob_event
 
 
+# (notice_type, sub_type, group_mode)
+# group_mode: 'robot' = 机器人进退群 (user_id=self), 'member' = 群成员进退群 (user_id=成员), False = 好友事件
 _LIFECYCLE_MAP = {
-    'GROUP_ADD_ROBOT': ('group_increase', 'invite', True),
-    'GROUP_DEL_ROBOT': ('group_decrease', 'kick_me', True),
+    'GROUP_ADD_ROBOT': ('group_increase', 'invite', 'robot'),
+    'GROUP_DEL_ROBOT': ('group_decrease', 'kick_me', 'robot'),
+    'GROUP_MEMBER_ADD': ('group_increase', 'approve', 'member'),
+    'GROUP_MEMBER_REMOVE': ('group_decrease', 'leave', 'member'),
     'FRIEND_ADD': ('friend_add', '', False),
     'FRIEND_DEL': ('friend_recall', '', False),
 }
@@ -168,20 +172,20 @@ async def convert_lifecycle_event(event, id_mapper, self_qq: int) -> dict | None
     if not entry:
         return None
 
-    notice_type, sub_type, need_group = entry
+    notice_type, sub_type, group_mode = entry
     qq_user = await id_mapper.to_qq(event.user_id, 'user') if event.user_id else 0
     result = {
         'time': int(time.time()),
         'self_id': self_qq,
         'post_type': 'notice',
         'notice_type': notice_type,
-        'user_id': self_qq if need_group else qq_user,
         'real_user_id': event.user_id,
         'real_group_id': event.group_id,
+        'user_id': self_qq if group_mode == 'robot' else qq_user,
     }
     if sub_type:
         result['sub_type'] = sub_type
-    if need_group:
+    if group_mode:
         group_id = 0
         if event.group_id:
             group_id = await id_mapper.to_qq(event.group_id, 'group')

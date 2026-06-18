@@ -127,7 +127,8 @@ from core.plugin.decorators import handler, on_load, on_unload, interceptor
 | `AT_MESSAGE_CREATE` | 频道 @ 机器人 |
 | `MESSAGE_CREATE` | 频道公开消息 |
 | `INTERACTION_CREATE` | 按钮/交互回调 |
-| `GROUP_ADD_ROBOT` / `GROUP_DEL_ROBOT` | 加群/退群 |
+| `GROUP_ADD_ROBOT` / `GROUP_DEL_ROBOT` | 机器人加群/退群 |
+| `GROUP_MEMBER_ADD` / `GROUP_MEMBER_REMOVE` | 群成员入群/退群 |
 | `GROUP_MSG_REJECT` / `GROUP_MSG_RECEIVE` | 群消息拒绝/恢复 |
 | `FRIEND_ADD` / `FRIEND_DEL` | 加好友/删好友 |
 | `MESSAGE_REACTION_ADD` / `MESSAGE_REACTION_REMOVE` | 表态(表情回应)添加/移除 |
@@ -343,6 +344,22 @@ buttons = [
 ]
 await event.reply("📌 多功能按钮面板", buttons=buttons)
 ```
+
+#### 小按钮 (键盘级字号)
+
+通过键盘级样式 `content.style.font_size` 控制整组按钮的大小 (对应官方 botgo
+`CustomKeyboard.Style.FontSize`), 取值 `small` / `middle` / `large`, `small`
+即「小按钮」。两种用法:
+
+```python
+# 方式一: reply 关键字 button_font_size
+await event.reply("📌 小按钮面板", buttons=buttons, button_font_size='small')
+
+# 方式二: buttons 用 dict 包装 (适用于所有发送入口, 含主动推送/频道)
+await event.reply("📌 小按钮面板", buttons={'rows': buttons, 'font_size': 'small'})
+```
+
+不传则保持原默认大小。
 
 #### 附: 扩展 prompt 按钮 (最多 3 个)
 

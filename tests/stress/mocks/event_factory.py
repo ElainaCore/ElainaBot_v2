@@ -190,6 +190,19 @@ class EventFactory:
         raw = cls._make_raw(event_type, d)
         return Event.from_websocket(appid, raw)
 
+    @classmethod
+    def group_member(cls, event_type, appid="102000001", user_id="user_001",
+                     group_id="group_001"):
+        """GROUP_MEMBER_ADD, GROUP_MEMBER_REMOVE."""
+        d = {
+            "group_openid": group_id,
+            "member_openid": user_id,
+            "op_member_openid": user_id,
+            "timestamp": int(time.time()),
+        }
+        raw = cls._make_raw(event_type, d)
+        return Event.from_websocket(appid, raw)
+
     # ---- Audit ----
 
     @classmethod

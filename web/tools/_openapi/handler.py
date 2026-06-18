@@ -412,18 +412,6 @@ async def handle_batch_add_whitelist(request: web.Request):
 
 # ==================== 事件订阅 ====================
 
-# 开放平台列表接口不会返回的全量事件, 手动补充以便订阅
-_EXTRA_EVENTS = [
-    {
-        'id': 'GROUP_MESSAGE_CREATE',
-        'name': '群消息事件 (全量)',
-        'description': '群消息事件',
-        'type': '群事件',
-        'is_subscribed': False,
-        'weight': 200,
-    },
-]
-
 
 async def handle_get_event_list(request: web.Request):
     body = await request.json()
@@ -442,10 +430,6 @@ async def handle_get_event_list(request: web.Request):
     if res.get('code', 0) != 0:
         return _err(res.get('msg') or '获取事件列表失败')
     events = res.get('data', [])
-    existing = {e.get('id') for e in events}
-    for extra in _EXTRA_EVENTS:
-        if extra['id'] not in existing:
-            events.append(dict(extra))
     events.sort(key=lambda e: e.get('weight', 9999))
     return _ok(data={'events': events})
 
