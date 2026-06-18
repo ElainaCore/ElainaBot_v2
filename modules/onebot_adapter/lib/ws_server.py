@@ -175,7 +175,7 @@ class OneBotWSServer:
 
                     async for msg in ws:
                         if msg.type == aiohttp.WSMsgType.TEXT:
-                            await self._handle_message(wrapper, msg.data)
+                            asyncio.create_task(self._handle_message(wrapper, msg.data)) 
                         elif msg.type in (
                             aiohttp.WSMsgType.CLOSED,
                             aiohttp.WSMsgType.ERROR,
