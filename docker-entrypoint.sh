@@ -16,7 +16,7 @@ if [ ! -d /app/plugins/system ]; then
 fi
 
 # 如果挂载的 modules 目录为空，复制默认模块
-if [ ! -d /app/modules ]; then
+if [ -z "$(ls -A /app/modules 2>/dev/null)" ]; then
     echo ">>> 首次启动，复制默认模块..."
     mkdir -p /app/modules
     cp -r /app/modules.defaults/* /app/modules/ 2>/dev/null || true
