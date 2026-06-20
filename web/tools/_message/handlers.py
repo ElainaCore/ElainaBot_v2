@@ -607,7 +607,7 @@ def _get_group_roles_sync(group_id):
                     uid = u.get('userid', '')
                     role = u.get('member_role', '')
                     if uid and role:
-                        roles[uid] = role
+                        roles[uid] = str(role)
                 break
         except Exception:
             pass
