@@ -124,8 +124,9 @@ async def handle_get_chats(request: web.Request):
                         'chat_id': gid,
                         'appid': appid_filter or appid_default,
                         'bot_name': getattr(bot, 'name', appid_default) if bot else '',
-                        'nickname': remarks.get(gid) or f'群{gid[-6:]}',
-                        'remark': remarks.get(gid, ''),
+                        'nickname': _remark_name(remarks.get(gid)) or f'群{gid[-6:]}',
+                        'remark': _remark_name(remarks.get(gid)),
+                        'group_qq': _remark_qq(remarks.get(gid)),
                         'is_full_access': gid in fa_ids,
                     } for gid in source_ids]
                 else:
@@ -137,8 +138,12 @@ async def handle_get_chats(request: web.Request):
                             c['nickname'] = nicks.get(c['chat_id'], f'用户{c["chat_id"][-6:]}')
                     else:
                         fa_ids = _get_full_access_group_ids()
+                        remarks = _load_remarks()
                         for c in chats:
-                            c['nickname'] = f'群{c["chat_id"][-6:]}'
+                            r_val = remarks.get(c['chat_id'])
+                            c['nickname'] = _remark_name(r_val) or f'群{c["chat_id"][-6:]}'
+                            c['remark'] = _remark_name(r_val)
+                            c['group_qq'] = _remark_qq(r_val)
                             c['is_full_access'] = c['chat_id'] in fa_ids
                 _chat_list_cache[cache_key] = (time.time(), chats)
 
@@ -477,7 +482,7 @@ def _mark_recalled(bot, message_id):
 
 # ==================== 群备注 (带内存缓存) ====================
 
-_remarks_cache: dict[str, str] | None = None
+_remarks_cache: dict | None = None
 _remarks_cache_ts: float = 0
 _REMARKS_CACHE_TTL = 60
 
@@ -486,7 +491,21 @@ def _remarks_path():
     return os.path.join(_shared._base_dir, 'data', 'group_remarks.json')
 
 
-def _load_remarks() -> dict[str, str]:
+def _remark_name(val):
+    """兼容旧格式 (str) 和新格式 ({name, qq})"""
+    if isinstance(val, dict):
+        return val.get('name', '')
+    return str(val) if val else ''
+
+
+def _remark_qq(val):
+    """获取备注中的群号 (仅新格式有)"""
+    if isinstance(val, dict):
+        return val.get('qq', '')
+    return ''
+
+
+def _load_remarks() -> dict:
     global _remarks_cache, _remarks_cache_ts
     now = time.time()
     if _remarks_cache is not None and now - _remarks_cache_ts < _REMARKS_CACHE_TTL:
@@ -506,7 +525,7 @@ def _load_remarks() -> dict[str, str]:
     return _remarks_cache
 
 
-def _save_remarks(remarks: dict[str, str]):
+def _save_remarks(remarks: dict):
     global _remarks_cache, _remarks_cache_ts
     path = _remarks_path()
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -523,20 +542,25 @@ def _invalidate_remark_caches():
 
 
 async def handle_get_remarks(request: web.Request):
-    """获取所有群备注"""
-    return web.json_response({'success': True, 'data': _load_remarks()})
+    """获取所有群备注 — 返回统一格式 {gid: {name, qq}}"""
+    raw = _load_remarks()
+    out = {}
+    for gid, val in raw.items():
+        out[gid] = {'name': _remark_name(val), 'qq': _remark_qq(val)}
+    return web.json_response({'success': True, 'data': out})
 
 
 async def handle_set_remark(request: web.Request):
-    """设置群备注"""
+    """设置群备注 (支持 name + qq)"""
     body = await request.json()
     group_id = body.get('group_id', '')
     remark = body.get('remark', '').strip()
+    group_qq = body.get('group_qq', '').strip()
     if not group_id:
         return web.json_response({'success': False, 'message': '缺少 group_id'}, status=400)
     remarks = dict(_load_remarks())
-    if remark:
-        remarks[group_id] = remark
+    if remark or group_qq:
+        remarks[group_id] = {'name': remark, 'qq': group_qq}
     else:
         remarks.pop(group_id, None)
     _save_remarks(remarks)
