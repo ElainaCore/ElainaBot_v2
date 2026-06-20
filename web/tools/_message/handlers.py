@@ -587,15 +587,15 @@ _roles_cache: dict[str, tuple[float, dict[str, str]]] = {}
 _ROLES_CACHE_TTL = 120
 
 
-def _get_group_roles_sync(group_id):
-    """从 groups_users 表读取群成员角色映射 {user_id: member_role}"""
+def _get_group_members_sync(group_id):
+    """从 groups_users 表读取群成员信息 {user_id: {role, is_bot}}"""
     now = time.time()
     cached = _roles_cache.get(group_id)
     if cached and now - cached[0] < _ROLES_CACHE_TTL:
         return cached[1]
     if not _shared._bot_manager:
         return {}
-    roles: dict[str, str] = {}
+    members: dict[str, dict] = {}
     for inst in _shared._bot_manager._bots.values():
         try:
             rows = inst.log_service.query_data(
@@ -605,22 +605,29 @@ def _get_group_roles_sync(group_id):
                 users = json.loads(rows[0]['users'])
                 for u in users:
                     uid = u.get('userid', '')
+                    if not uid:
+                        continue
+                    info = {}
                     role = u.get('member_role', '')
-                    if uid and role:
-                        roles[uid] = str(role)
+                    if role:
+                        info['role'] = str(role)
+                    if u.get('is_bot'):
+                        info['is_bot'] = True
+                    if info:
+                        members[uid] = info
                 break
         except Exception:
             pass
-    _roles_cache[group_id] = (now, roles)
-    return roles
+    _roles_cache[group_id] = (now, members)
+    return members
 
 
 async def handle_get_group_roles(request: web.Request):
-    """获取群成员角色 (群主/管理/群员)"""
+    """获取群成员角色与 bot 标记"""
     body = await request.json()
     group_id = body.get('group_id', '')
     if not group_id:
         return web.json_response({'success': False, 'message': '缺少 group_id'}, status=400)
     loop = asyncio.get_event_loop()
-    roles = await loop.run_in_executor(None, _get_group_roles_sync, group_id)
-    return web.json_response({'success': True, 'data': roles})
+    members = await loop.run_in_executor(None, _get_group_members_sync, group_id)
+    return web.json_response({'success': True, 'data': members})

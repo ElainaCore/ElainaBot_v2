@@ -35,10 +35,12 @@ _FULL_ACCESS_CACHE_TTL = 1800
 _DIRTY_FLUSH_THRESHOLD = 500  # 脏群数超过此阈值提前刷写
 
 
-def _new_user_entry(uid, today, member_role=''):
+def _new_user_entry(uid, today, member_role='', is_bot=False):
     entry = {'userid': uid, 'value': 1, 'last_active': today}
     if member_role:
         entry['member_role'] = member_role
+    if is_bot:
+        entry['is_bot'] = True
     return entry
 
 
@@ -363,7 +365,7 @@ class EventHandlerMixin:
         if event.is_direct:
             tasks.append(bot.log_service.wakeup_update(event.user_id))
         if gid and gid != 'c2c':
-            tasks.append(self._add_user_to_group(bot, gid, event.user_id, event.member_role or ''))
+            tasks.append(self._add_user_to_group(bot, gid, event.user_id, event.member_role or '', getattr(event, 'is_bot', False)))
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -429,11 +431,11 @@ class EventHandlerMixin:
         except RuntimeError:
             return json.dumps(list(dict(user_map).values()), ensure_ascii=False)
 
-    def _upsert_group_user(self, user_map, uid, today, member_role=''):
+    def _upsert_group_user(self, user_map, uid, today, member_role='', is_bot=False):
         """更新或新增群成员条目, 返回是否有变更"""
         entry = user_map.get(uid)
         if entry is None:
-            user_map[uid] = _new_user_entry(uid, today, member_role)
+            user_map[uid] = _new_user_entry(uid, today, member_role, is_bot)
             return True
         changed = False
         if entry.get('last_active') != today:
@@ -441,6 +443,9 @@ class EventHandlerMixin:
             changed = True
         if member_role and entry.get('member_role') != member_role:
             entry['member_role'] = member_role
+            changed = True
+        if is_bot and not entry.get('is_bot'):
+            entry['is_bot'] = True
             changed = True
         return changed
 
@@ -551,13 +556,13 @@ class EventHandlerMixin:
                     context={'group_id': group_id},
                 )
 
-    async def _add_user_to_group(self, bot, group_id, user_id, member_role=''):
+    async def _add_user_to_group(self, bot, group_id, user_id, member_role='', is_bot=False):
         uid = str(user_id)
         today = datetime.now().strftime('%Y-%m-%d')
         await self._mutate_group_user(
             bot,
             group_id,
-            lambda user_map: self._upsert_group_user(user_map, uid, today, member_role),
+            lambda user_map: self._upsert_group_user(user_map, uid, today, member_role, is_bot),
             create_if_missing=True,
         )
 
