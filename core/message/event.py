@@ -16,6 +16,8 @@ from core.message.parsers import (
     parse_group_member_add,
     parse_group_member_remove,
     parse_group_message,
+    parse_group_msg_receive,
+    parse_group_msg_reject,
     parse_interaction,
     parse_message_generic,
 )
@@ -128,6 +130,8 @@ _PARSERS = {
     GROUP_MEMBER_REMOVE: parse_group_member_remove,
     FRIEND_ADD: parse_friend_add,
     FRIEND_DEL: parse_friend_del,
+    GROUP_MSG_REJECT: parse_group_msg_reject,
+    GROUP_MSG_RECEIVE: parse_group_msg_receive,
 }
 
 

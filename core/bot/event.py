@@ -16,6 +16,8 @@ from core.message.event import (
     GROUP_MEMBER_ADD,
     GROUP_MEMBER_REMOVE,
     GROUP_MESSAGE_CREATE,
+    GROUP_MSG_RECEIVE,
+    GROUP_MSG_REJECT,
     INTERACTION_CREATE,
     MESSAGE_AUDIT_PASS,
     MESSAGE_AUDIT_REJECT,
@@ -319,6 +321,20 @@ class EventHandlerMixin:
     async def _handle_friend_del(self, bot, event):
         self._log_lifecycle(bot, 'friend_del', {'user_id': event.user_id or ''}, raw_event=event.raw)
 
+    async def _handle_group_msg_reject(self, bot, event):
+        self._log_lifecycle(
+            bot, 'group_msg_reject',
+            {'group_id': event.group_id or '', 'user_id': event.user_id or ''},
+            raw_event=event.raw,
+        )
+
+    async def _handle_group_msg_receive(self, bot, event):
+        self._log_lifecycle(
+            bot, 'group_msg_receive',
+            {'group_id': event.group_id or '', 'user_id': event.user_id or ''},
+            raw_event=event.raw,
+        )
+
     async def _lifecycle_reply(self, bot, event, cfg_key, template, tvars):
         """生命周期欢迎消息 (复用)"""
         if cfg.get_bot_setting(event.appid, cfg_key, False):
@@ -334,6 +350,8 @@ class EventHandlerMixin:
         GROUP_MEMBER_REMOVE: _handle_group_member_remove,
         FRIEND_ADD: _handle_friend_add,
         FRIEND_DEL: _handle_friend_del,
+        GROUP_MSG_REJECT: _handle_group_msg_reject,
+        GROUP_MSG_RECEIVE: _handle_group_msg_receive,
     }
 
     # ==================== 用户/群组追踪 ====================

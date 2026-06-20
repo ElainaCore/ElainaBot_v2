@@ -218,7 +218,7 @@ def _parse_lifecycle_base(event, d, uid_key='openid'):
     event.user_id = event.raw_user_id = d.get(uid_key, '')
     event.group_id = d.get('group_openid', '')
     event.timestamp = d.get('timestamp', '')
-    event.message_id = d.get('id', '') or event.event_id
+    event.message_id = d.get('id', '')
 
 
 def parse_group_add_robot(event, d):
@@ -245,6 +245,18 @@ def parse_group_member_remove(event, d):
     _parse_lifecycle_base(event, d, 'member_openid')
     event.member_openid = event.user_id
     event.content = f'用户 {event.user_id} 退出群聊 {event.group_id}'
+
+
+def parse_group_msg_reject(event, d):
+    """群消息拒绝事件解析"""
+    _parse_lifecycle_base(event, d, 'op_member_openid')
+    event.content = f'群 {event.group_id} 拒绝接收消息'
+
+
+def parse_group_msg_receive(event, d):
+    """群消息恢复接收事件解析"""
+    _parse_lifecycle_base(event, d, 'op_member_openid')
+    event.content = f'群 {event.group_id} 恢复接收消息'
 
 
 def _extract_sharer_id(scene_param):
