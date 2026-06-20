@@ -14,7 +14,7 @@ def _recent_dates(days=1):
 
 
 def _query_chat_messages_sync(chat_type, chat_id, appid_filter, days=3, limit=300):
-    """查某个聊天会话的最近消息 — SQL WHERE 下推, 走索引, 避免全表扶描+Python过滤"""
+    """查某个聊天会话的最近消息 — 优先查今天, 不够再往前补"""
     if not _shared._bot_manager:
         return []
     dates = _recent_dates(days)
@@ -23,7 +23,6 @@ def _query_chat_messages_sync(chat_type, chat_id, appid_filter, days=3, limit=30
         where = 'group_id = ?'
         params = (chat_id,)
     else:
-        # 私聊: user_id 匹配 且 group_id 为空或 'c2c'
         where = "user_id = ? AND (group_id = '' OR group_id = 'c2c')"
         params = (chat_id,)
     sql = f'SELECT * FROM log WHERE {where} ORDER BY id DESC LIMIT {limit}'
@@ -41,6 +40,9 @@ def _query_chat_messages_sync(chat_type, chat_id, appid_filter, days=3, limit=30
                 results.extend(rows)
             except Exception:
                 pass
+            # 今天已经够了就不查更早的日期
+            if len(results) >= limit:
+                break
     results.sort(key=lambda r: (r.get('_date', ''), r.get('id', 0)))
     return results[-limit:]
 

@@ -32,6 +32,7 @@ _USER_CACHE_TTL = 3600
 _DEDUP_TTL = 300
 _GROUP_CACHE_MAX = 10000
 _FULL_ACCESS_CACHE_TTL = 1800
+_DIRTY_FLUSH_THRESHOLD = 500  # 脏群数超过此阈值提前刷写
 
 
 def _new_user_entry(uid, today, member_role=''):
@@ -402,8 +403,8 @@ class EventHandlerMixin:
         self._known_users[uid] = now + _USER_CACHE_TTL
         await self._run_side_tasks(bot, event, gid)
 
-        # 新用户首次私聊 → 欢迎 (合并条件)
-        if not existing and event.is_direct and cfg.get_bot_setting(appid, 'welcome.new_user_welcome', False):
+        # 新用户欢迎 (群聊+私聊)
+        if not existing and cfg.get_bot_setting(appid, 'welcome.new_user_welcome', False):
             try:
                 total = await bot.log_service.db_fetch_value('SELECT COUNT(*) FROM users', default=1)
                 await bot.sender.reply(
@@ -451,20 +452,28 @@ class EventHandlerMixin:
         """标记群缓存待落库, 由 _flush_dirty_groups 批量写回"""
         self._dirty_groups[group_id] = bot
         self._ensure_flush_task()
+        if len(self._dirty_groups) >= _DIRTY_FLUSH_THRESHOLD:
+            self._force_flush_dirty()
+
+    def _force_flush_dirty(self):
+        """脏群数超过阈值时立即刷写, 降低内存峰值"""
+        if not self._dirty_groups:
+            return
+        batch, self._dirty_groups = self._dirty_groups, {}
+        for gid, bot in batch.items():
+            cached = self._group_users_cache.get(gid)
+            if cached:
+                bot.log_service.db_queue(
+                    'UPDATE groups_users SET users=? WHERE group_id=?',
+                    (self._users_json(cached[1]), gid),
+                )
 
     async def _flush_dirty_groups(self):
         while True:
             await asyncio.sleep(30)
             if not self._dirty_groups:
                 continue
-            batch, self._dirty_groups = self._dirty_groups, {}
-            for gid, bot in batch.items():
-                cached = self._group_users_cache.get(gid)
-                if cached:
-                    bot.log_service.db_queue(
-                        'UPDATE groups_users SET users=? WHERE group_id=?',
-                        (self._users_json(cached[1]), gid),
-                    )
+            self._force_flush_dirty()
 
     @staticmethod
     def _parse_user_map(raw_list):

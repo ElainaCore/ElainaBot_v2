@@ -164,6 +164,11 @@ _INDEXES = {
         'CREATE INDEX IF NOT EXISTS idx_msg_user_agg ON log(user_id, id, timestamp)',
         'CREATE INDEX IF NOT EXISTS idx_msg_message_id ON log(message_id)',
         'CREATE INDEX IF NOT EXISTS idx_msg_reference_id ON log(reference_id)',
+        # 覆盖索引: GROUP BY 聚合直接走索引, 不回表 (70w 消息/天场景)
+        'CREATE INDEX IF NOT EXISTS idx_msg_group_cover ON log(group_id, timestamp, id, content)',
+        'CREATE INDEX IF NOT EXISTS idx_msg_user_cover ON log(user_id, group_id, timestamp, id, content)',
+        # 统计服务 _scan_day: WHERE direction='receive' 全表扫描 → 索引扫描
+        'CREATE INDEX IF NOT EXISTS idx_msg_direction ON log(direction, user_id, group_id, content)',
     ],
     'lifecycle': [
         'CREATE INDEX IF NOT EXISTS idx_lc_user_id ON log(user_id)',

@@ -91,6 +91,10 @@ def get_routes() -> list:
         web.post('/api/message/nickname', _(message_handler.handle_get_nickname)),
         web.post('/api/message/nicknames', _(message_handler.handle_get_nicknames_batch)),
         web.post('/api/message/recall', _(message_handler.handle_recall_message)),
+        web.get('/api/message/remarks', _(message_handler.handle_get_remarks)),
+        web.post('/api/message/remarks', _(message_handler.handle_set_remark)),
+        web.post('/api/message/remarks/delete', _(message_handler.handle_delete_remark)),
+        web.post('/api/message/group-roles', _(message_handler.handle_get_group_roles)),
         # ── 统计 ──
         web.get('/api/statistics', _(statistics_handler.handle_get_statistics)),
         web.get('/api/statistics/hourly', _(statistics_handler.handle_get_hourly_statistics)),

@@ -1,8 +1,11 @@
 """插件文件操作 — toggle/reload/read/save/create/upload"""
 
+import contextlib
 import os
 import re
 import shutil
+import tempfile
+import zipfile
 from typing import cast
 
 from aiohttp import BodyPartReader, web
@@ -208,31 +211,114 @@ async def handle_upload_plugin(request: web.Request):
     if not file_field.filename:
         return web.json_response({'success': False, 'message': '没有文件'}, status=400)
     filename = file_field.filename
-    if not filename.endswith('.py'):
-        return web.json_response({'success': False, 'message': '只能上传 .py'}, status=400)
-    safe_name = re.sub(r'[^\w\u4e00-\u9fa5\-\.]', '_', filename)
+    is_zip = filename.lower().endswith('.zip')
+    is_py = filename.lower().endswith('.py')
+    if not is_zip and not is_py:
+        return web.json_response({'success': False, 'message': '仅支持 .py 或 .zip 文件'}, status=400)
 
     pdir = plugins_dir()
-    target_dir = os.path.join(pdir, directory)
-    if not os.path.abspath(target_dir).startswith(os.path.abspath(pdir)):
-        return web.json_response({'success': False, 'message': '无效目录'}, status=403)
-    os.makedirs(target_dir, exist_ok=True)
 
-    dest = os.path.join(target_dir, safe_name)
-    if os.path.exists(dest):
-        base = safe_name[:-3]
-        c = 1
-        while os.path.exists(dest):
-            dest = os.path.join(target_dir, f'{base}_{c}.py')
-            c += 1
+    # ---------- .py 文件：放到 alone 目录 ----------
+    if is_py:
+        safe_name = re.sub(r'[^\w\u4e00-\u9fa5\-\.]', '_', filename)
+        target_dir = os.path.join(pdir, directory)
+        if not os.path.abspath(target_dir).startswith(os.path.abspath(pdir)):
+            return web.json_response({'success': False, 'message': '无效目录'}, status=403)
+        os.makedirs(target_dir, exist_ok=True)
 
-    content = await file_field.read()
-    with open(dest, 'wb') as f:
-        f.write(content)
-    return web.json_response(
-        {
-            'success': True,
-            'message': f'上传成功: {os.path.basename(dest)}',
-            'path': dest.replace('\\', '/'),
-        }
-    )
+        dest = os.path.join(target_dir, safe_name)
+        if os.path.exists(dest):
+            base = safe_name[:-3]
+            c = 1
+            while os.path.exists(dest):
+                dest = os.path.join(target_dir, f'{base}_{c}.py')
+                c += 1
+
+        content = await file_field.read()
+        with open(dest, 'wb') as f:
+            f.write(content)
+        return web.json_response(
+            {
+                'success': True,
+                'message': f'上传成功: {os.path.basename(dest)}',
+                'path': dest.replace('\\', '/'),
+            }
+        )
+
+    # ---------- .zip 文件：解压到插件目录 ----------
+    tmp = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.zip') as tmp:
+            while True:
+                chunk = await file_field.read_chunk()
+                if not chunk:
+                    break
+                tmp.write(chunk)
+
+        if not zipfile.is_zipfile(tmp.name):
+            return web.json_response({'success': False, 'message': '无效的 zip 文件'}, status=400)
+
+        with zipfile.ZipFile(tmp.name, 'r') as zf:
+            names = zf.namelist()
+            if not names:
+                return web.json_response({'success': False, 'message': 'zip 文件为空'}, status=400)
+
+            # 检测顶层目录结构
+            top_dirs = set()
+            top_files = set()
+            for n in names:
+                parts = n.replace('\\', '/').strip('/').split('/')
+                if len(parts) > 1 and parts[0]:
+                    top_dirs.add(parts[0])
+                elif len(parts) == 1 and parts[0]:
+                    top_files.add(parts[0])
+
+            os.makedirs(pdir, exist_ok=True)
+
+            if len(top_dirs) == 1 and not top_files:
+                # zip 内是一个整体文件夹 → 用该文件夹名作为插件目录名
+                folder_name = list(top_dirs)[0]
+                safe_folder = re.sub(r'[^\w\u4e00-\u9fa5\-]', '_', folder_name)
+                target_dir = os.path.join(pdir, safe_folder)
+
+                if os.path.exists(target_dir):
+                    backup = target_dir + '.bak'
+                    if os.path.exists(backup):
+                        shutil.rmtree(backup)
+                    shutil.move(target_dir, backup)
+
+                extract_tmp = tempfile.mkdtemp()
+                zf.extractall(extract_tmp)
+                src = os.path.join(extract_tmp, folder_name)
+                shutil.move(src, target_dir)
+                shutil.rmtree(extract_tmp, ignore_errors=True)
+            else:
+                # zip 内直接是文件 → 用压缩包名字作为插件目录名
+                zip_stem = os.path.splitext(filename)[0]
+                safe_folder = re.sub(r'[^\w\u4e00-\u9fa5\-]', '_', zip_stem)
+                target_dir = os.path.join(pdir, safe_folder)
+
+                if os.path.exists(target_dir):
+                    backup = target_dir + '.bak'
+                    if os.path.exists(backup):
+                        shutil.rmtree(backup)
+                    shutil.move(target_dir, backup)
+
+                os.makedirs(target_dir, exist_ok=True)
+                zf.extractall(target_dir)
+
+            plugin_name = os.path.basename(target_dir)
+
+        return web.json_response(
+            {
+                'success': True,
+                'message': f'插件 {plugin_name} 上传成功',
+                'plugin_name': plugin_name,
+            }
+        )
+    except Exception as e:
+        return web.json_response({'success': False, 'message': str(e)}, status=500)
+    finally:
+        if tmp is not None:
+            with contextlib.suppress(Exception):
+                os.unlink(tmp.name)

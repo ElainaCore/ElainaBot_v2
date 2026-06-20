@@ -23,6 +23,11 @@ from core.storage._schema import (
     _migrate_missing_columns,
 )
 
+
+def _dict_factory(cursor, row):
+    """直接返回 dict, 跳过 sqlite3.Row 中间对象"""
+    return {col[0]: row[idx] for idx, col in enumerate(cursor.description)}
+
 log = get_logger(SERVICE, '日志')
 
 
@@ -72,6 +77,8 @@ class _BaseLogService:
         self._queues = {t: asyncio.Queue(maxsize=_QUEUE_MAXSIZE) for t in queue_types}
         self._conns = {}
         self._conn_locks = {}
+        self._read_conns = {}  # 独立读连接, 避免读写互锁
+        self._read_locks = {}
         self._initialized = set()
         self._init_lock = threading.Lock()  # 保护连接池初始化, 避免多线程竞态
         self._stop = asyncio.Event()
@@ -118,18 +125,37 @@ class _BaseLogService:
             self._conns[db_path] = conn  # 最后赋值, 确保读端看到的连接已完全初始化
             return conn
 
+    def _get_read_conn(self, db_path, log_type):
+        """获取独立的读连接 (WAL 模式下读写不互锁)"""
+        conn = self._read_conns.get(db_path)
+        if conn is not None:
+            return conn
+        # 先确保写连接已初始化 (建表/索引), 在 _init_lock 外调用避免死锁
+        self._get_conn(db_path, log_type)
+        with self._init_lock:
+            conn = self._read_conns.get(db_path)
+            if conn is not None:
+                return conn
+            conn = sqlite3.connect(db_path, check_same_thread=False)
+            conn.row_factory = _dict_factory
+            if self._wal:
+                conn.execute('PRAGMA journal_mode=WAL')
+            conn.execute('PRAGMA synchronous=NORMAL')
+            conn.execute('PRAGMA query_only=ON')
+            self._read_locks.setdefault(db_path, threading.Lock())
+            self._read_conns[db_path] = conn
+            return conn
+
     def query(self, log_type, sql, params=(), date=None):
-        """同步查询, 返回 [dict]"""
+        """同步查询, 返回 [dict] — 使用独立读连接, 不阻塞写入"""
         db_path = self._resolve_db_path(log_type, date)
         if not os.path.isfile(db_path):
             return []
-        conn = self._get_conn(db_path, log_type)
-        lock = self._conn_locks.get(db_path)
+        conn = self._get_read_conn(db_path, log_type)
+        lock = self._read_locks.get(db_path)
         try:
             with lock:
-                conn.row_factory = sqlite3.Row
-                rows = conn.execute(sql, params).fetchall()
-            return [dict(r) for r in rows]
+                return conn.execute(sql, params).fetchall()
         except Exception as e:
             log.warning(f'[{self._log_tag}] 查询失败 [{log_type}]: {e}')
             return []
@@ -256,6 +282,11 @@ class _BaseLogService:
                     if conn:
                         with contextlib.suppress(Exception):
                             conn.close()
+                    rconn = self._read_conns.pop(db_path, None)
+                    self._read_locks.pop(db_path, None)
+                    if rconn:
+                        with contextlib.suppress(Exception):
+                            rconn.close()
                     self._initialized.discard(db_path)
                 await loop.run_in_executor(None, shutil.rmtree, path, True)
                 removed += 1
@@ -265,7 +296,7 @@ class _BaseLogService:
             log.info(f'[{self._log_tag}] 已清理 {removed} 个过期日志目录')
 
     def _close_stale_conns(self):
-        """关闭非当天 daily 日志的数据库连接, 释放资源"""
+        """关闭非当天 daily 日志的数据库连接 (写+读), 释放资源"""
         today = datetime.now().strftime('%Y-%m-%d')
         with self._init_lock:
             to_close = []
@@ -280,6 +311,12 @@ class _BaseLogService:
                 if conn:
                     with contextlib.suppress(Exception):
                         conn.close()
+                # 同时关闭对应的读连接
+                rconn = self._read_conns.pop(db_path, None)
+                self._read_locks.pop(db_path, None)
+                if rconn:
+                    with contextlib.suppress(Exception):
+                        rconn.close()
         if to_close:
             log.debug(f'[{self._log_tag}] 已关闭 {len(to_close)} 个过期 daily 连接')
 
@@ -314,3 +351,4 @@ class _BaseLogService:
         await _shutdown_tasks(self._tasks, self._stop)
         await self._flush_all()
         _close_all_conns(self._conns, self._conn_locks)
+        _close_all_conns(self._read_conns, self._read_locks)
