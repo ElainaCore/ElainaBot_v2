@@ -88,6 +88,27 @@ def _query_older_messages_sync(chat_type, chat_id, appid_filter, before_date_str
     return [], '', False
 
 
+def _query_lifecycle_events_sync(chat_type, chat_id, appid_filter, dates, limit=100):
+    """查某个群聊的成员加入/退出事件"""
+    if not _shared._bot_manager or chat_type != 'group':
+        return []
+    sql = "SELECT * FROM log WHERE group_id = ? AND type IN ('group_member_add', 'group_member_del') ORDER BY id DESC LIMIT ?"
+    params = (chat_id, limit)
+    results = []
+    for appid, inst in _iter_bots(appid_filter):
+        for d in dates:
+            try:
+                rows = inst.log_service.query('lifecycle', sql, params, date=d)
+                for r in rows:
+                    r['appid'] = appid
+                    r['_date'] = d
+                results.extend(rows)
+            except Exception:
+                pass
+    results.sort(key=lambda r: (r.get('_date', ''), r.get('id', 0)))
+    return results[-limit:]
+
+
 def _aggregate_chats_sync(chat_type, appid_filter, days=1):
     """SQL 聚合聊天列表 — 仅查 1 天, 30s 缓存"""
     if not _shared._bot_manager:
