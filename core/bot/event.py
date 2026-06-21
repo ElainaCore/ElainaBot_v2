@@ -405,8 +405,9 @@ class EventHandlerMixin:
         self._known_users[uid] = now + _USER_CACHE_TTL
         await self._run_side_tasks(bot, event, gid)
 
-        # 新用户欢迎 (群聊+私聊)
-        if not existing and cfg.get_bot_setting(appid, 'welcome.new_user_welcome', False):
+        # 新用户欢迎 (全量群环境不发送)
+        if not existing and event.event_type != GROUP_MESSAGE_CREATE \
+                and cfg.get_bot_setting(appid, 'welcome.new_user_welcome', False):
             try:
                 total = await bot.log_service.db_fetch_value('SELECT COUNT(*) FROM users', default=1)
                 await bot.sender.reply(
