@@ -21,7 +21,9 @@ from web.tools._message.media import _send_ark, _send_media_url, _send_text_with
 from web.tools._message.query import (
     _aggregate_chats_sync,
     _query_chat_messages_sync,
+    _query_lifecycle_events_sync,
     _query_older_messages_sync,
+    _recent_dates,
 )
 from web.tools._message.shared import (
     _batch_get_nicknames,
@@ -203,6 +205,17 @@ async def handle_get_chat_history(request: web.Request):
         oldest_date = _date.today().strftime('%Y-%m-%d')
         has_more = True
 
+    # 查询群成员加入/退出事件
+    lifecycle_rows = []
+    if chat_type == 'group':
+        if before_date:
+            lc_dates = [before_date]
+        else:
+            lc_dates = _recent_dates(1)
+        lifecycle_rows = await loop.run_in_executor(
+            None, _query_lifecycle_events_sync, chat_type, chat_id, appid_filter, lc_dates
+        )
+
     # 收集需要查询的 user_id (仅非bot消息), 批量取昵称
     uid_set = set()
     for r in rows:
@@ -210,6 +223,10 @@ async def handle_get_chat_history(request: web.Request):
             uid = r.get('user_id', '')
             if uid:
                 uid_set.add(uid)
+    for r in lifecycle_rows:
+        uid = r.get('user_id', '')
+        if uid:
+            uid_set.add(uid)
     nicks = await loop.run_in_executor(None, _batch_get_nicknames, list(uid_set)) if uid_set else {}
 
     messages: list[dict[str, object]] = []
@@ -244,6 +261,32 @@ async def handle_get_chat_history(request: web.Request):
                 'recalled': recalled,
             }
         )
+
+    # 将成员加入/退出事件混入消息列表
+    for r in lifecycle_rows:
+        uid = r.get('user_id', '')
+        evt_type = r.get('type', '')
+        messages.append(
+            {
+                'id': f"lc_{r.get('id', 0)}_{r.get('_date', '')}",
+                'message_id': '',
+                'reference_id': '',
+                'user_id': uid,
+                'appid': r.get('appid', ''),
+                'bot_qq': '',
+                'nickname': nicks.get(uid, f'用户{uid[-6:]}' if uid else '未知用户'),
+                'content': '',
+                'timestamp': r.get('timestamp', ''),
+                'is_self': False,
+                'source': '',
+                'raw_message': '',
+                'recalled': False,
+                'event_type': 'member_add' if evt_type == 'group_member_add' else 'member_remove',
+            }
+        )
+
+    # 按 timestamp 排序, 将消息和事件混合
+    messages.sort(key=lambda m: m.get('timestamp', ''))
 
     # 取最近一条非 bot 消息的 message_id 用于发送回复 (仅初始加载)
     last_msg_id = ''
