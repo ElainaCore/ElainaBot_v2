@@ -12,7 +12,7 @@ __plugin_meta__ = {
     'name': '系统管理',
     'author': 'ElainaBot',
     'description': '框架内置系统插件, 提供基础信息、管理、查询、示例等功能',
-    'version': '1.0.0',
+    'version': '1.0.1',
     'github': 'https://github.com/ElainaCore/ElainaBot_v2',
 }
 
