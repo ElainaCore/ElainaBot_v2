@@ -131,10 +131,9 @@ _SCHEMAS = {
             group_id TEXT PRIMARY KEY,
             first_seen TEXT DEFAULT ''
         );
-        CREATE TABLE IF NOT EXISTS group_active_msg (
+        CREATE TABLE IF NOT EXISTS group_bot_admin (
             group_id TEXT PRIMARY KEY,
-            op_user_id TEXT DEFAULT '',
-            created_at TEXT DEFAULT ''
+            updated_at TEXT DEFAULT ''
         );
     """,
 }
