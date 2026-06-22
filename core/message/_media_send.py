@@ -9,7 +9,7 @@ from core.message._http import (
     _MAX_MEDIA_DOWNLOAD,
     MessageType,
 )
-from core.message.media import _resolve_upload_ep, upload_media_bytes
+from core.message.media import _resolve_upload_ep, upload_media_bytes, upload_media_via_url
 from core.message.response import extract_message_id
 
 log = get_logger(FRAMEWORK, '消息发送')
@@ -50,37 +50,47 @@ class _MediaSendMixin:
         if not upload_ep:
             return None
 
-        # 网络地址: 直接记录 URL, 不保存到本地
+        # 网络地址: 优先直接将 URL 传给 QQ API 上传，失败则回退下载后上传
         is_url = isinstance(data, str) and data.startswith(('http://', 'https://'))
         original_url = data if is_url else None
+        type_name = self._MEDIA_TYPE_NAMES.get(file_type, '媒体')
+        file_info = None
 
         if is_url:
-            try:
-                client = await self._ensure_client()
-                resp = await client.get(data)
-                cl = int(resp.headers.get('content-length', 0))
-                if cl > _MAX_MEDIA_DOWNLOAD:
-                    log.warning(f'[{self._appid}] 媒体过大 ({cl} bytes), 跳过下载')
+            file_info = await upload_media_via_url(
+                self, event, data, file_type,
+                file_name=file_name,
+                target_user_id=target_user_id,
+                target_group_id=target_group_id,
+            )
+            if not file_info:
+                log.debug(f'[{self._appid}] URL直传失败, 回退下载上传: {data}')
+                try:
+                    client = await self._ensure_client()
+                    resp = await client.get(data)
+                    cl = int(resp.headers.get('content-length', 0))
+                    if cl > _MAX_MEDIA_DOWNLOAD:
+                        log.warning(f'[{self._appid}] 媒体过大 ({cl} bytes), 跳过下载')
+                        return None
+                    body = resp.content
+                    if len(body) > _MAX_MEDIA_DOWNLOAD:
+                        log.warning(f'[{self._appid}] 媒体实际大小超限 ({len(body)} bytes), 丢弃')
+                        del body
+                        return None
+                    data = body
+                except Exception as e:
+                    log.warning(f'[{self._appid}] 下载媒体失败: {e}')
                     return None
-                body = resp.content
-                if len(body) > _MAX_MEDIA_DOWNLOAD:
-                    log.warning(f'[{self._appid}] 媒体实际大小超限 ({len(body)} bytes), 丢弃')
-                    del body
-                    return None
-                data = body
-            except Exception as e:
-                log.warning(f'[{self._appid}] 下载媒体失败: {e}')
-                return None
-        if not isinstance(data, bytes):
+        if not file_info and not isinstance(data, bytes):
             return None
 
-        type_name = self._MEDIA_TYPE_NAMES.get(file_type, '媒体')
         if original_url:
             media_label = f'[{type_name}]{original_url}'
         else:
             media_label = await self._save_media(data, file_type)
 
-        file_info = await upload_media_bytes(self, data, file_type, upload_ep, file_name=file_name)
+        if not file_info:
+            file_info = await upload_media_bytes(self, data, file_type, upload_ep, file_name=file_name)
         if not file_info:
             return None
         return await self._send_media_payload(
