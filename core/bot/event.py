@@ -305,18 +305,32 @@ class EventHandlerMixin:
         self._log_lifecycle(bot, 'friend_del', {'user_id': event.user_id or ''}, raw_event=event.raw)
 
     async def _handle_group_msg_reject(self, bot, event):
+        gid = event.group_id or ''
+        uid = event.user_id or ''
         self._log_lifecycle(
             bot, 'group_msg_reject',
-            {'group_id': event.group_id or '', 'user_id': event.user_id or ''},
+            {'group_id': gid, 'user_id': uid},
             raw_event=event.raw,
         )
+        if gid:
+            await bot.log_service.db_execute(
+                'DELETE FROM group_active_msg WHERE group_id = ?', (gid,),
+            )
 
     async def _handle_group_msg_receive(self, bot, event):
+        gid = event.group_id or ''
+        uid = event.user_id or ''
         self._log_lifecycle(
             bot, 'group_msg_receive',
-            {'group_id': event.group_id or '', 'user_id': event.user_id or ''},
+            {'group_id': gid, 'user_id': uid},
             raw_event=event.raw,
         )
+        if gid:
+            now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            await bot.log_service.db_execute(
+                'INSERT OR REPLACE INTO group_active_msg (group_id, op_user_id, created_at) VALUES (?, ?, ?)',
+                (gid, uid, now),
+            )
 
     async def _lifecycle_reply(self, bot, event, cfg_key, template, tvars):
         """生命周期欢迎消息 (复用)"""

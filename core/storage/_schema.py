@@ -131,6 +131,11 @@ _SCHEMAS = {
             group_id TEXT PRIMARY KEY,
             first_seen TEXT DEFAULT ''
         );
+        CREATE TABLE IF NOT EXISTS group_active_msg (
+            group_id TEXT PRIMARY KEY,
+            op_user_id TEXT DEFAULT '',
+            created_at TEXT DEFAULT ''
+        );
     """,
 }
 
