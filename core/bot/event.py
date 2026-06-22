@@ -19,8 +19,6 @@ from core.message.event import (
     GROUP_MSG_RECEIVE,
     GROUP_MSG_REJECT,
     INTERACTION_CREATE,
-    MESSAGE_AUDIT_PASS,
-    MESSAGE_AUDIT_REJECT,
     MESSAGE_TYPES,
     SILENT_TYPES,
 )
@@ -125,10 +123,6 @@ class EventHandlerMixin:
             return
 
 
-        if et in (MESSAGE_AUDIT_PASS, MESSAGE_AUDIT_REJECT):
-            await self._handle_audit(bot, event, et)
-            return
-
         # 静默事件
         if et in SILENT_TYPES:
             raw_json = json.dumps(event.raw, ensure_ascii=False)
@@ -221,14 +215,6 @@ class EventHandlerMixin:
                     'event_type': et,
                 },
             )
-
-    # ==================== 消息审核 ====================
-
-    async def _handle_audit(self, bot, event, et):
-        """消息审核事件处理"""
-        if et == MESSAGE_AUDIT_REJECT:
-            d = event.raw.get('d', {}) if isinstance(event.raw, dict) else {}
-            log.warning(f'[{event.appid}] 消息审核未通过: {d.get("audit_id", "")}')
 
     # ==================== 全量群记录 ====================
 
