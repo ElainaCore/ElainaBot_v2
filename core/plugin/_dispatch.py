@@ -117,13 +117,16 @@ class _DispatchMixin:
         if not suppress_reply and getattr(event, 'is_bot', False) and _get(appid, 'message.suppress_bot_system_reply', False):
             suppress_reply = True
 
-        # 过滤仅@其他机器人的全量消息
-        if is_group_msg and getattr(event, 'is_at_other_bot', False) and not is_at_self and _get(appid, 'non_at_message.ignore_at_other_bot', False):
-            return False
-
-        # 过滤仅@其他用户的全量消息
-        if is_group_msg and getattr(event, 'is_at_other_user', False) and not is_at_self and _get(appid, 'non_at_message.ignore_at_other_user', False):
-            return False
+        # 仅@其他机器人 / 仅@其他用户 的全量消息: 标记为待跳过,
+        # 但不立即 return, 让 ignore_at_check=True 的 handler 仍可匹配
+        skip_at_other = (
+            is_group_msg
+            and not is_at_self
+            and (
+                (getattr(event, 'is_at_other_bot', False) and _get(appid, 'non_at_message.ignore_at_other_bot', False))
+                or (getattr(event, 'is_at_other_user', False) and _get(appid, 'non_at_message.ignore_at_other_user', False))
+            )
+        )
 
         # 黑名单
         if not suppress_reply:
@@ -169,10 +172,10 @@ class _DispatchMixin:
         if is_group_msg and _get(appid, 'non_at_message.strip_bot_name_at', False):
             handler_content = _strip_leading_bot_name_at(content, getattr(sender, '_bot_name', '') or '')
 
-        if self._match_handlers(handlers, handler_content, event, appid, is_non_at, non_at_ok, scene, user_id, et, content):
+        if self._match_handlers(handlers, handler_content, event, appid, is_non_at, non_at_ok, scene, user_id, et, content, skip_at_other):
             return True
         alt = handler_content[1:] if handler_content[:1] == '/' else '/' + handler_content
-        if self._match_handlers(handlers, alt, event, appid, is_non_at, non_at_ok, scene, user_id, et, content):
+        if self._match_handlers(handlers, alt, event, appid, is_non_at, non_at_ok, scene, user_id, et, content, skip_at_other):
             return True
 
         # 无匹配 → 默认回复
@@ -195,12 +198,16 @@ class _DispatchMixin:
         user_id,
         et,
         content,
+        skip_at_other=False,
     ):
         """内循环: 遍历 handler 尝试匹配, 匹配成功则 fire-and-forget 并返回 True"""
         for h in handlers:
             # 快速过滤: bot 白名单
             ab = h['_allowed_bots']
             if ab is not None and appid not in ab:
+                continue
+            # 仅@其他机器人/用户的消息: 没有 ignore_at_check 的 handler 跳过
+            if skip_at_other and not h.get('ignore_at_check', False):
                 continue
             # 非AT群消息过滤
             if is_non_at and not h.get('ignore_at_check', False) and not non_at_ok:
