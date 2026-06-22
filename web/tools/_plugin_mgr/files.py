@@ -196,21 +196,19 @@ async def handle_get_folders(request: web.Request):
 
 async def handle_upload_plugin(request: web.Request):
     reader = await request.multipart()
-    file_field = None
+    file_data = None
+    filename = None
     directory = 'alone'
     async for field in reader:
         field = cast(BodyPartReader, field)
         if field.name == 'file':
-            file_field = field
+            filename = field.filename
+            file_data = await field.read()
         elif field.name == 'directory':
             directory = (await field.text()).strip() or 'alone'
 
-    if not file_field:
+    if not file_data or not filename:
         return web.json_response({'success': False, 'message': '没有文件'}, status=400)
-    file_field = cast(BodyPartReader, file_field)
-    if not file_field.filename:
-        return web.json_response({'success': False, 'message': '没有文件'}, status=400)
-    filename = file_field.filename
     is_zip = filename.lower().endswith('.zip')
     is_py = filename.lower().endswith('.py')
     if not is_zip and not is_py:
@@ -234,9 +232,8 @@ async def handle_upload_plugin(request: web.Request):
                 dest = os.path.join(target_dir, f'{base}_{c}.py')
                 c += 1
 
-        content = await file_field.read()
         with open(dest, 'wb') as f:
-            f.write(content)
+            f.write(file_data)
         return web.json_response(
             {
                 'success': True,
@@ -249,11 +246,7 @@ async def handle_upload_plugin(request: web.Request):
     tmp = None
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix='.zip') as tmp:
-            while True:
-                chunk = await file_field.read_chunk()
-                if not chunk:
-                    break
-                tmp.write(chunk)
+            tmp.write(file_data)
 
         if not zipfile.is_zipfile(tmp.name):
             return web.json_response({'success': False, 'message': '无效的 zip 文件'}, status=400)
