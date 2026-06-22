@@ -184,6 +184,8 @@ class EventHandlerMixin:
 
         if et == GROUP_MESSAGE_CREATE and event.group_id:
             self._record_full_access_group(bot, event.group_id)
+            if event.is_at_self and event.bot_member_role in ('admin', 'owner'):
+                self._record_bot_admin(bot, event.group_id)
 
         # 全量群 @全体成员 跳过
         if et == GROUP_MESSAGE_CREATE and event.is_at_all:
@@ -228,6 +230,14 @@ class EventHandlerMixin:
         ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         bot.log_service.db_queue(
             'INSERT OR IGNORE INTO full_access_groups (group_id, first_seen) VALUES (?, ?)',
+            (group_id, ts),
+        )
+
+    def _record_bot_admin(self, bot, group_id):
+        """记录机器人在该群为管理员"""
+        ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        bot.log_service.db_queue(
+            'INSERT OR REPLACE INTO group_bot_admin (group_id, updated_at) VALUES (?, ?)',
             (group_id, ts),
         )
 
@@ -312,10 +322,6 @@ class EventHandlerMixin:
             {'group_id': gid, 'user_id': uid},
             raw_event=event.raw,
         )
-        if gid:
-            await bot.log_service.db_execute(
-                'DELETE FROM group_active_msg WHERE group_id = ?', (gid,),
-            )
 
     async def _handle_group_msg_receive(self, bot, event):
         gid = event.group_id or ''
@@ -325,12 +331,6 @@ class EventHandlerMixin:
             {'group_id': gid, 'user_id': uid},
             raw_event=event.raw,
         )
-        if gid:
-            now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            await bot.log_service.db_execute(
-                'INSERT OR REPLACE INTO group_active_msg (group_id, op_user_id, created_at) VALUES (?, ?, ?)',
-                (gid, uid, now),
-            )
 
     async def _lifecycle_reply(self, bot, event, cfg_key, template, tvars):
         """生命周期欢迎消息 (复用)"""

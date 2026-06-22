@@ -192,6 +192,7 @@ class Event:
         'sharer_id',
         'scene_param',
         'mentions',
+        'bot_member_role',
         'is_at_self',
         'is_at_other_bot',
         'is_at_other_user',
@@ -244,6 +245,7 @@ class Event:
         self.sharer_id = None
         self.scene_param = None
         self.mentions = []
+        self.bot_member_role = ''
         self.is_at_self = False
         self.is_at_other_bot = False
         self.is_at_other_user = False
