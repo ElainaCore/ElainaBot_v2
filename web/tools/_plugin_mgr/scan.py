@@ -1,5 +1,6 @@
 """插件扫描 — handle_scan_plugins / handle_scan_plugin_dirs"""
 
+import ast
 import os
 from datetime import datetime
 
@@ -42,7 +43,23 @@ def _get_plugin_bots_map():
 # ==================== 文件扫描辅助 ====================
 
 
-def _scan_py_files(dir_path, prefix=''):
+def _read_file_meta(py_path):
+    """从 .py 文件静态解析 __plugin_meta__ 字典"""
+    try:
+        with open(py_path, encoding='utf-8') as f:
+            tree = ast.parse(f.read())
+        for node in ast.iter_child_nodes(tree):
+            if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name) and node.targets[0].id == '__plugin_meta__':
+                meta = ast.literal_eval(node.value)
+                if isinstance(meta, dict):
+                    allowed = {'name', 'version', 'author', 'description'}
+                    return {k: str(v) for k, v in meta.items() if k in allowed and v}
+    except Exception:
+        pass
+    return None
+
+
+def _scan_py_files(dir_path, prefix='', read_meta=False):
     """扫描 .py 文件 (只扫描 .py, 不再使用 .py.ban 禁用机制)"""
     files = []
     for fname in sorted(os.listdir(dir_path)):
@@ -55,15 +72,18 @@ def _scan_py_files(dir_path, prefix=''):
             continue
         display = f'{prefix}{fname}' if prefix else fname
         stat = os.stat(fpath)
-        files.append(
-            {
-                'name': display,
-                'path': fpath.replace('\\', '/'),
-                'enabled': True,
-                'size': stat.st_size,
-                'last_modified': datetime.fromtimestamp(stat.st_mtime).strftime('%Y-%m-%d %H:%M:%S'),
-            }
-        )
+        info = {
+            'name': display,
+            'path': fpath.replace('\\', '/'),
+            'enabled': True,
+            'size': stat.st_size,
+            'last_modified': datetime.fromtimestamp(stat.st_mtime).strftime('%Y-%m-%d %H:%M:%S'),
+        }
+        if read_meta:
+            meta = _read_file_meta(fpath)
+            if meta:
+                info['meta'] = meta
+        files.append(info)
     return files
 
 
@@ -139,7 +159,8 @@ def _scan_plugin_dirs():
             continue
         is_system = dir_name == 'system'
         pinfo = plugin_info_map.get(dir_name, {})
-        files = _scan_py_files(dir_path)
+        has_entry = any(e in os.listdir(dir_path) for e in ENTRY_CANDIDATES)
+        files = _scan_py_files(dir_path, read_meta=not has_entry)
 
         # 入口文件禁用 = 整体禁用
         entry_file = next((f['name'] for f in files if f['name'] in ENTRY_CANDIDATES), None)
@@ -158,7 +179,6 @@ def _scan_plugin_dirs():
                 fname = fname[:-3]
             f['allowed_bots'] = bots_map.get(f'{dir_name}/{fname}', [])
 
-        has_entry = any(f['name'] in ENTRY_CANDIDATES for f in files)
         if has_entry:
             app_dir = os.path.join(dir_path, 'app')
             if os.path.isdir(app_dir):

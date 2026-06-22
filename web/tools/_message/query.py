@@ -110,7 +110,7 @@ def _query_lifecycle_events_sync(chat_type, chat_id, appid_filter, dates, limit=
 
 
 def _aggregate_chats_sync(chat_type, appid_filter, days=1):
-    """SQL 聚合聊天列表 — 仅查 1 天, 30s 缓存"""
+    """SQL 聚合聊天列表"""
     if not _shared._bot_manager:
         return []
     dates = _recent_dates(days)

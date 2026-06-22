@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""BotManager — 向后兼容适配层, 委托给 core.application.Application"""
+"""BotManager — 委托给 Application 的适配层"""
 
 from core.application import Application
 
@@ -7,13 +7,13 @@ _bot_manager_ref = None
 
 
 class BotManager:
-    """向后兼容的 BotManager (委托给 Application)"""
+    """委托给 Application 的 BotManager"""
 
     def __init__(self):
         self._app = Application()
         self._base_dir = self._app._base_dir
 
-    # ----- 委托属性 (向后兼容) -----
+    # ----- 属性 -----
 
     @property
     def dau_service(self):
@@ -38,7 +38,7 @@ class BotManager:
     def bot_registry(self):
         return self._app.bot_registry
 
-    # ----- Web 面板日志回调 (web/setup.py 设置 _web_log_cb) -----
+    # ----- Web 面板日志回调 -----
 
     @property
     def _web_log_cb(self):

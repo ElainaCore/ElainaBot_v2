@@ -87,6 +87,10 @@ def setup_web(app: web.Application, bot_manager, base_dir: str):
                 _inst.sender._bot_name = getattr(_inst, 'name', '')
                 _inst.sender._bot_qq = getattr(_inst, 'robot_qq', '')
 
+        # 存储 sender 日志回调到注册表, 以便热连接新机器人时自动绑定
+        if hasattr(bot_manager, 'bot_registry') and bot_manager.bot_registry is not None:
+            bot_manager.bot_registry._sender_log_cb = _ws.push_log
+
         def _push_error(error_data):
             _ws.push_log(
                 'error',

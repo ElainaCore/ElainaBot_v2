@@ -212,7 +212,6 @@ def report_error(module_type, module_name, error, context=None, notify=True):
         'level': 'ERROR',
     }
 
-    # 模块级回调 (向后兼容)
     _fire(_error_callbacks, err_data)
     _fire(_framework_callbacks, fw_data)
 

@@ -338,7 +338,22 @@ async def handle_toggle_bot(request: web.Request):
         return web.json_response({'success': False, 'error': '未找到该机器人'}, status=404)
 
     cfg.set_value('bot', 'bots', bot_configs)
+
+    # 同步等待机器人启停完成, 保证前端 fetchBots 能拿到最新状态
+    from core.application import get_app
+
+    app = get_app()
+    sync_error = ''
+    if app and app.bot_registry is not None:
+        try:
+            await app.bot_registry._sync()
+        except Exception as e:
+            log.error(f'机器人同步失败: {e}')
+            sync_error = str(e)
+
     status = "启用" if enabled else "关闭"
+    if sync_error:
+        return web.json_response({'success': True, 'message': f'机器人 {appid} 已{status} (同步异常: {sync_error})'})
     return web.json_response({'success': True, 'message': f'机器人 {appid} 已{status}'})
 
 

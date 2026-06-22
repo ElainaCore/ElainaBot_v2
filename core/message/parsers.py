@@ -130,9 +130,7 @@ def parse_group_message(event, d):
         if mention.get('scope') == 'all':
             event.is_at_all = True
     if is_full and '<@' in event.content and event.appid:
-        # 全量环境机器人可能有虚拟 id (content 的 <@id> 与 mentions[].id 不一致)。
-        # 未记录齐全且本条仅艾特机器人时, content 里的 <@id> 必指向机器人本身, 记下并标记
-        # done; 之后直接按缓存无脑移除, 不再判断。
+        # 全量环境: 学习并移除 content 中对本机器人的 <@id>
         only_self_at = (
             event.is_at_self
             and not event.is_at_other_bot

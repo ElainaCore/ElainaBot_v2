@@ -32,9 +32,8 @@ from web.tools._message.shared import (
     _get_nickname,
 )
 
-# 聊天列表短期缓存 (避免多次刷新同一详情重复诡汇总查询)
 _chat_list_cache: dict[tuple[str, str, int], tuple[float, list[dict[str, Any]]]] = {}
-_CHAT_LIST_TTL = 60  # 秒 (70w消息/天场景下避免频繁重建)
+_CHAT_LIST_TTL = 60
 _chat_list_lock = None  # asyncio.Lock, 延迟初始化
 
 
@@ -170,11 +169,7 @@ async def handle_get_chats(request: web.Request):
 
 
 async def handle_get_chat_history(request: web.Request):
-    """获取聊天记录 — 支持按日期分页加载
-
-    before_date: 可选, YYYY-MM-DD, 加载该日期之前的消息 (往前搜索到有数据为止)
-    不传则加载今天的消息
-    """
+    """获取聊天记录"""
     try:
         body = await request.json()
     except Exception:
@@ -314,21 +309,7 @@ async def handle_get_chat_history(request: web.Request):
 
 
 async def handle_send_message(request: web.Request):
-    """发送消息 (支持 multipart/form-data)
-
-    参数:
-        chat_type:       group | user
-        chat_id:         群/用户 openid
-        appid:           机器人 appid
-        msg_type:        text | markdown | media | ark
-        content:         文本内容 / 资源URL (media) / ARK kv JSON (ark)
-        msg_id:          回复消息 ID (被动回复需要)
-        message_reference_id: REFIDX_xxx, 显式引用消息时传
-        quote_message_id: 要引用的 message_id, 后端会查 reference_id
-        image:           图片文件 (仅 text 模式, 与 content 一起发送)
-        media_file_type: 富媒体文件类型 1=图片 2=视频 3=语音 4=文件 (仅 media)
-        ark_template_id: ARK 模板 ID (仅 ark)
-    """
+    """发送消息"""
     if not _shared._bot_manager:
         return web.json_response({'success': False, 'message': '机器人管理器未初始化'}, status=500)
 
@@ -459,10 +440,7 @@ async def handle_send_message(request: web.Request):
 
 
 async def handle_recall_message(request: web.Request):
-    """撤回消息
-
-    参数: chat_type, chat_id, appid, message_id
-    """
+    """撤回消息"""
     if not _shared._bot_manager:
         return web.json_response({'success': False, 'message': '机器人管理器未初始化'}, status=500)
     try:
@@ -500,7 +478,7 @@ async def handle_recall_message(request: web.Request):
 
 
 def _mark_recalled(bot, message_id):
-    """在数据库中标记消息为已撤回 (使用写连接, query() 是只读的)"""
+    """在数据库中标记消息为已撤回"""
     from datetime import date as _d
     from datetime import timedelta
 
@@ -535,14 +513,13 @@ def _remarks_path():
 
 
 def _remark_name(val):
-    """兼容旧格式 (str) 和新格式 ({name, qq})"""
     if isinstance(val, dict):
         return val.get('name', '')
     return str(val) if val else ''
 
 
 def _remark_qq(val):
-    """获取备注中的群号 (仅新格式有)"""
+    """获取备注中的群号"""
     if isinstance(val, dict):
         return val.get('qq', '')
     return ''

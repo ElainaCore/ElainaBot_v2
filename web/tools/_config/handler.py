@@ -239,6 +239,14 @@ async def handle_save_config(request: web.Request):
 
         with open(path, 'w', encoding='utf-8') as f:
             f.write(content)
-        return web.json_response({'success': True, 'message': '配置已保存，部分更改需重启生效'})
+
+        # bot 配置保存后立即触发热重载, 新增/移除的机器人无需重启即可连接
+        if file_name == 'bot':
+            from core.base.config import cfg
+
+            mtime = os.path.getmtime(path)
+            cfg._do_reload('bot', path, mtime)
+
+        return web.json_response({'success': True, 'message': '配置已保存'})
     except Exception as e:
         return web.json_response({'success': False, 'error': str(e)}, status=500)

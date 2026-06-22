@@ -263,7 +263,7 @@ class LogService(_BaseLogService, ShareMixin, WakeupMixin):
             SharedLogService._instance.add_sync('framework', log_data)
 
 
-# ==================== 通用日志服务 (框架+错误, 不分机器人) ====================
+# ==================== 通用日志服务 ====================
 
 
 class SharedLogService(_BaseLogService):
