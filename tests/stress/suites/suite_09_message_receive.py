@@ -63,8 +63,6 @@ class ReceiveEventHandler:
         from core.base.config import cfg
         from core.bot.event import (
             INTERACTION_CREATE,
-            MESSAGE_AUDIT_PASS,
-            MESSAGE_AUDIT_REJECT,
             MESSAGE_TYPES,
             SILENT_TYPES,
             _EventDedup,
@@ -107,11 +105,6 @@ class ReceiveEventHandler:
                     'bot_name': bot.name,
                 },
             )
-            self._early_return_count += 1
-            return
-
-        # ── Audit events ──
-        if et in (MESSAGE_AUDIT_PASS, MESSAGE_AUDIT_REJECT):
             self._early_return_count += 1
             return
 

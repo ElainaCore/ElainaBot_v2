@@ -103,10 +103,7 @@ _instance = None
 
 
 def get_hook_manager():
-    """获取全局 HookManager (已弃用, 推荐使用 get_app().hook_manager)
-
-    为向后兼容保留, 优先从 Application 获取, 回退到模块级单例。
-    """
+    """获取全局 HookManager"""
     global _instance
     try:
         from core.application import get_app

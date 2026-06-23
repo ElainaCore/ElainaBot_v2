@@ -23,7 +23,7 @@ def main():
     time.sleep(3)
     main_path = r"{main_py}"
     os.chdir(os.path.dirname(main_path))
-    subprocess.Popen([sys.executable, main_path], creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),  # 旧版Python没有这个字段，进行兼容
+    subprocess.Popen([sys.executable, main_path], creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
                      cwd=os.path.dirname(main_path))
     time.sleep(1)
     try: os.remove(__file__)
@@ -57,7 +57,7 @@ if __name__ == "__main__":
 
 
 async def handle_restart(request: web.Request):
-    # 优雅重启: 触发 Application._stop_event, 让 shutdown() 刷写 SQLite 缓冲后由 main.py 自行 os.execv
+    # 优雅重启
     try:
         from core.application import get_app
         app = get_app()
@@ -69,7 +69,7 @@ async def handle_restart(request: web.Request):
     except Exception:
         pass
 
-    # 兜底: Application 不可用 (旧路径), 用外部脚本重启
+    # 兜底: 用外部脚本重启
     main_py = os.path.join(_base_dir, 'main.py')
     if not os.path.exists(main_py):
         return web.json_response({'success': False, 'error': 'main.py 不存在'})
@@ -91,7 +91,7 @@ async def handle_restart(request: web.Request):
             subprocess.Popen(
                 [sys.executable, restarter],
                 cwd=_base_dir,
-                creationflags=getattr(subprocess, 'CREATE_NEW_CONSOLE', 0), # 旧版Python没有这个字段，进行兼容
+                creationflags=getattr(subprocess, 'CREATE_NEW_CONSOLE', 0),
             )
 
             def _delayed_exit():

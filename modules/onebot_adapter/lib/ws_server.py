@@ -64,6 +64,7 @@ class OneBotWSServer:
         '_reverse_tasks',
         '_reverse_session',
         '_reconnect_interval',
+        '_msg_tasks',
     )
 
     def __init__(
@@ -95,6 +96,7 @@ class OneBotWSServer:
         self._hb_task = None
         self._reverse_tasks: list[asyncio.Task] = []
         self._reverse_session: aiohttp.ClientSession | None = None
+        self._msg_tasks: set[asyncio.Task] = set()
 
     def resolve_qq(self, appid: str = '') -> int:
         """按 appid 获取 self_qq, 兜底用 default_qq"""
@@ -175,7 +177,7 @@ class OneBotWSServer:
 
                     async for msg in ws:
                         if msg.type == aiohttp.WSMsgType.TEXT:
-                            asyncio.create_task(self._handle_message(wrapper, msg.data)) 
+                            self._dispatch_message(wrapper, msg.data)
                         elif msg.type in (
                             aiohttp.WSMsgType.CLOSED,
                             aiohttp.WSMsgType.ERROR,
@@ -204,6 +206,11 @@ class OneBotWSServer:
             t.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         self._reverse_tasks.clear()
+
+        # 等待未完成的消息处理任务
+        if self._msg_tasks:
+            await asyncio.gather(*self._msg_tasks, return_exceptions=True)
+            self._msg_tasks.clear()
 
         if self._reverse_session:
             await self._reverse_session.close()
@@ -255,7 +262,7 @@ class OneBotWSServer:
         try:
             async for msg in ws:
                 if msg.type == web.WSMsgType.TEXT:
-                    await self._handle_message(wrapper, msg.data)
+                    self._dispatch_message(wrapper, msg.data)
                 elif msg.type == web.WSMsgType.ERROR:
                     self._log.warning(f'正向 WS 错误: {ws.exception()}')
         except Exception as e:
@@ -267,6 +274,12 @@ class OneBotWSServer:
         return ws
 
     # ==================== 公共消息处理 ====================
+
+    def _dispatch_message(self, ws: _WSWrapper, raw: str):
+        """将消息处理派发为独立任务, 避免阻塞 WS 接收循环"""
+        task = asyncio.create_task(self._handle_message(ws, raw))
+        self._msg_tasks.add(task)
+        task.add_done_callback(self._msg_tasks.discard)
 
     async def _handle_message(self, ws: _WSWrapper, raw: str):
         """处理客户端发来的 action 请求 (正向/反向共用)"""

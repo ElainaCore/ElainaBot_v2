@@ -102,6 +102,44 @@ def extract_msg_idx(scene):
     return ''
 
 
+def sanitize_content(content):
+    """Standalone content sanitization for fallback parser functions."""
+    return MessageParser.sanitize_content(content)
+
+
+def parse_message_generic(event, d):
+    """通用消息解析 — 提取公共字段 (供解析器类内部及 fallback 使用)"""
+    event.message_id = d.get('id', '')
+    event.raw_content = d.get('content', '')
+    event.content = sanitize_content(event.raw_content)
+    event.timestamp = d.get('timestamp', '')
+    event.message_type = d.get('message_type')
+    event.msg_elements = d.get('msg_elements', [])
+    event.attachments = d.get('attachments', [])
+    event.image_url = MessageParser.extract_image_from_attachments(event.attachments)
+
+    author = d.get('author', {})
+    event.user_id = author.get('member_openid') or author.get('id', '')
+    event.raw_user_id = event.user_id
+    event.username = author.get('username', '')
+    event.member_openid = author.get('member_openid', '')
+    event.member_role = author.get('member_role', '')
+    event.union_openid = author.get('union_openid', '')
+    event.is_bot = author.get('bot', False)
+
+    event.group_id = d.get('group_openid') or d.get('group_id', '')
+    event.group_openid = d.get('group_openid', '')
+    event.guild_id = d.get('guild_id', '')
+    event.channel_id = d.get('channel_id', '')
+
+    if event.image_url and event.content:
+        event.content = f'{event.content}<{event.image_url}>'
+    elif event.image_url:
+        event.content = f'<{event.image_url}>'
+
+    MessageParser.apply_message_scene(event, d)
+
+
 # ==================== 群聊 / 私聊 / 频道消息 ====================
 
 
@@ -268,6 +306,22 @@ class GroupMemberRemoveParser(LifecycleParser):
         self._parse_base(event, d, 'member_openid')
         event.member_openid = event.user_id
         event.content = f'用户 {event.user_id} 退出群聊 {event.group_id}'
+
+
+class GroupMsgRejectParser(LifecycleParser):
+    """群消息拒绝事件解析器"""
+
+    def parse(self, event, d):
+        self._parse_base(event, d, 'op_member_openid')
+        event.content = f'群 {event.group_id} 拒绝接收消息'
+
+
+class GroupMsgReceiveParser(LifecycleParser):
+    """群消息恢复接收事件解析器"""
+
+    def parse(self, event, d):
+        self._parse_base(event, d, 'op_member_openid')
+        event.content = f'群 {event.group_id} 恢复接收消息'
 
 
 class FriendAddParser(LifecycleParser):

@@ -25,8 +25,6 @@ class PluginManager(_LoaderMixin, _WatcherMixin, _DispatchMixin, _BlacklistMixin
         self._all_interceptors = []
         self._handlers_any_et = []
         self._et_merged = {}
-        self._blacklist_users = set()
-        self._blacklist_groups = set()
         self._plugin_bots = {}
         self._disabled_plugins = set()
         self._lock = asyncio.Lock()
@@ -34,10 +32,8 @@ class PluginManager(_LoaderMixin, _WatcherMixin, _DispatchMixin, _BlacklistMixin
         self._file_mtimes = {}
         self._watcher_task = None
         self._watcher_running = False
-        self._load_blacklists()
         self._load_plugin_bots()
         self._load_disabled_plugins()
-        self._migrate_ban_files()
 
     @property
     def plugins(self):
@@ -174,31 +170,6 @@ class PluginManager(_LoaderMixin, _WatcherMixin, _DispatchMixin, _BlacklistMixin
         except Exception as e:
             log.warning(f'保存禁用插件列表失败: {e}')
 
-    def _migrate_ban_files(self):
-        """迁移旧版 .py.ban → .py, 按粒度记录禁用: 大型→目录名, 小型→目录名/文件名"""
-        plugins_dir = self._dir
-        if not os.path.isdir(plugins_dir):
-            return
-        migrated = False
-        for root, _, files in os.walk(plugins_dir):
-            for f in files:
-                if not f.endswith('.py.ban'):
-                    continue
-                ban_path = os.path.join(root, f)
-                original = ban_path[:-4]
-                try:
-                    os.rename(ban_path, original)
-                except OSError as e:
-                    log.warning(f'迁移 .ban 文件失败 [{ban_path}]: {e}')
-                    continue
-                rel = os.path.relpath(root, plugins_dir)
-                plugin_name = rel.split(os.sep)[0] if rel != '.' else os.path.basename(root)
-                key = f'{plugin_name}/{f[:-8]}'  # 统一格式: dir/file_stem
-                self._disabled_plugins.add(key)
-                migrated = True
-                log.info(f'迁移 .ban: {f} → 已禁用 [{key}]')
-        if migrated:
-            self._save_disabled_plugins()
 
 
 def _resolve_allowed_bots(pb, plugin_name, file_name):

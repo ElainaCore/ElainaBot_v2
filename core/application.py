@@ -84,7 +84,7 @@ class Application(EventHandlerMixin):
 
         self._init_event_state()
 
-    # ===== 属性 (向后兼容 manager.py) =====
+    # ===== 属性 =====
 
     @property
     def dau_service(self):
@@ -105,12 +105,10 @@ class Application(EventHandlerMixin):
 
     @property
     def _app(self):
-        """向后兼容: 老插件用 _bot_manager_ref._app 访问 aiohttp web.Application"""
         return self.web_app
 
     @property
     def router(self):
-        """向后兼容: _bot_manager_ref._app.router"""
         app = self.web_app
         return app.router if app else None
 
@@ -120,11 +118,10 @@ class Application(EventHandlerMixin):
 
     @property
     def _bots(self):
-        """向后兼容 EventHandlerMixin"""
-        return self._bot_registry.bots if self._bot_registry else {}
+        return self._bot_registry.bots if self._bot_registry is not None else {}
 
     def get_bot(self, appid):
-        return self._bot_registry.get(appid) if self._bot_registry else None
+        return self._bot_registry.get(appid) if self._bot_registry is not None else None
 
     def _path(self, *parts):
         return os.path.join(self._base_dir, *parts)
@@ -154,6 +151,8 @@ class Application(EventHandlerMixin):
 
         bot_configs = cfg.get_bot_configs()
         valid_bots = [b for b in bot_configs if b.get('appid') and b.get('secret')]
+        enabled_bots = [b for b in valid_bots if b.get('enabled', True)]
+        disabled_bots = [b for b in valid_bots if not b.get('enabled', True)]
         if not valid_bots:
             log.warning('未配置有效的机器人, 仅启动 Web 面板')
             # 输出诊断信息: 哪个 bot 配置缺失了哪些字段
@@ -165,6 +164,8 @@ class Application(EventHandlerMixin):
                     missing.append('secret (请通过 Web 面板配置)')
                 if missing:
                     log.warning(f'  bot 配置不完整: {b.get("appid", "?")} — 缺失 {", ".join(missing)}')
+        for b in disabled_bots:
+            log.info(f'机器人 {b.get("appid", "?")} 已关闭, 跳过启动')
 
         # 2) HTTP 应用
         from core.server.http_server import HttpServer
@@ -204,7 +205,8 @@ class Application(EventHandlerMixin):
             push_web_log=self._push_web_log,
             media_dir=self._media_dir,
         )
-        if valid_bots:
+        self._bot_registry._loop = asyncio.get_running_loop()
+        if enabled_bots:
             await self._bot_registry.start_all()
 
         cfg.on_change('bot', self._bot_registry.on_config_change)
@@ -248,7 +250,7 @@ class Application(EventHandlerMixin):
         return self._restart_requested
 
     def _install_signal_handlers(self):
-        """注册 SIGTERM/SIGINT 信号处理器, 保证宝塔/systemd/Docker 关闭时优雅退出"""
+        """注册 SIGTERM/SIGINT 信号处理器"""
         import signal
 
         loop = asyncio.get_running_loop()
@@ -284,7 +286,7 @@ class Application(EventHandlerMixin):
         cleanup = [
             self._dau_service and self._dau_service.stop(),
             self._statistics_service and self._statistics_service.stop(),
-            self._bot_registry and self._bot_registry.shutdown(),
+            self._bot_registry.shutdown() if self._bot_registry is not None else None,
             self._module_manager and self._module_manager.shutdown(),
             self._shared_log and self._shared_log.shutdown(),
         ]
@@ -318,7 +320,7 @@ class Application(EventHandlerMixin):
         return web.json_response(
             {
                 'status': 'ok',
-                'bots': len(self._bot_registry) if self._bot_registry else 0,
+                'bots': len(self._bot_registry) if self._bot_registry is not None else 0,
                 'plugins': self._plugin_manager.handler_count if self._plugin_manager else 0,
             }
         )
@@ -344,7 +346,7 @@ class Application(EventHandlerMixin):
     def hook_manager(self):
         return self._hook_manager
 
-    # ===== 日志回调 (替代 logger.py 模块级全局列表) =====
+    # ===== 日志回调 =====
 
     def on_error(self, callback):
         """注册错误回调"""

@@ -328,6 +328,23 @@ async def _install_module(github_url, module_name, branch='main', mirror=None):
         return {'success': False, 'message': str(e)}
 
 
+async def _auto_enable_plugin(plugin_name, is_single_file=False):
+    """安装后自动加载插件"""
+    try:
+        from core.application import get_app
+
+        app = get_app()
+        if not app or not app.plugin_manager:
+            return
+        safe = _safe_name(plugin_name)
+        if not safe:
+            return
+        await app.plugin_manager.reload(_ALONE_DIR if is_single_file else safe)
+        log.info(f'插件 {safe} 已自动启用')
+    except Exception as e:
+        log.warning(f'插件自动启用失败 [{plugin_name}]: {e}')
+
+
 async def handle_market_install(request: web.Request):
     """安装插件/模块"""
     body = await request.json()
@@ -352,7 +369,10 @@ async def handle_market_install(request: web.Request):
             content = await _download_file(url, mirror=mirror)
             if content is None:
                 return web.json_response({'success': False, 'message': '文件下载失败, 请检查路径或网络'})
-            return web.json_response(_install_py(content, item_name, url))
+            result = _install_py(content, item_name, url)
+            if result.get('success'):
+                await _auto_enable_plugin(item_name, is_single_file=True)
+            return web.json_response(result)
 
         # 插件安装: 无 path → 拉取整个仓库 zip
         is_repo = bool(re.match(r'https?://github\.com/[^/]+/[^/]+/?$', github_url.rstrip('/')))
@@ -367,11 +387,17 @@ async def handle_market_install(request: web.Request):
             return web.json_response({'success': False, 'message': '下载失败, 请检查网络或镜像'})
 
         if content[:4] == b'PK\x03\x04':
-            return web.json_response(_install_zip(content, item_name))
+            result = _install_zip(content, item_name)
+            if result.get('success'):
+                await _auto_enable_plugin(item_name, is_single_file=False)
+            return web.json_response(result)
 
         is_py = url.endswith('.py') or any(k in content[:500] for k in [b'import ', b'def ', b'class '])
         if is_py:
-            return web.json_response(_install_py(content, item_name, url))
+            result = _install_py(content, item_name, url)
+            if result.get('success'):
+                await _auto_enable_plugin(item_name, is_single_file=True)
+            return web.json_response(result)
         return web.json_response({'success': False, 'message': '不支持的文件类型'})
     except Exception as e:
         log.error(f'安装失败 [{item_name}]: {e}')
@@ -381,11 +407,38 @@ async def handle_market_install(request: web.Request):
 # ==================== 卸载 ====================
 
 
+def _remove_dir_keep_data(dest_dir):
+    """删除目录中除 data/ 外的全部文件和子目录"""
+    import shutil
+
+    for item in os.listdir(dest_dir):
+        if item == 'data':
+            continue
+        p = os.path.join(dest_dir, item)
+        if os.path.isdir(p):
+            shutil.rmtree(p)
+        else:
+            os.remove(p)
+
+
+async def _unload_plugin_runtime(plugin_name):
+    """从运行时卸载插件"""
+    try:
+        from core.application import get_app
+
+        app = get_app()
+        if app and app.plugin_manager:
+            await app.plugin_manager.unload(plugin_name)
+    except Exception:
+        pass
+
+
 async def handle_market_uninstall(request: web.Request):
     """卸载已安装的插件/模块"""
     body = await request.json()
     item_name = body.get('name', '')
     item_type = body.get('type', 'plugin')
+    keep_data = body.get('keep_data', False)
     if not item_name:
         return web.json_response({'success': False, 'message': '缺少名称'}, status=400)
 
@@ -401,11 +454,12 @@ async def handle_market_uninstall(request: web.Request):
             return web.json_response({'success': False, 'message': '系统插件不可卸载'})
         dest_dir = os.path.join(_plugins_dir(), safe)
         label = f'plugins/{safe}'
-        # 单文件插件: 未建独立目录, 文件位于 plugins/alone/<safe>.py
+        # 单文件插件: 删除单个 .py 文件
         if not os.path.isdir(dest_dir):
             alone_py = os.path.join(_alone_dir(), f'{safe}.py')
             if os.path.isfile(alone_py):
                 try:
+                    await _unload_plugin_runtime(_ALONE_DIR)
                     os.remove(alone_py)
                     log.info(f'plugins/{_ALONE_DIR}/{safe}.py 已卸载')
                     return web.json_response({'success': True, 'message': f'已卸载 plugins/{_ALONE_DIR}/{safe}.py'})
@@ -418,8 +472,14 @@ async def handle_market_uninstall(request: web.Request):
     import shutil
 
     try:
-        shutil.rmtree(dest_dir)
-        log.info(f'{label} 已卸载')
-        return web.json_response({'success': True, 'message': f'已卸载 {label}'})
+        await _unload_plugin_runtime(safe)
+        if keep_data and os.path.isdir(os.path.join(dest_dir, 'data')):
+            _remove_dir_keep_data(dest_dir)
+            log.info(f'{label} 已卸载 (保留 data/)')
+            return web.json_response({'success': True, 'message': f'已卸载 {label} (保留数据)'})
+        else:
+            shutil.rmtree(dest_dir)
+            log.info(f'{label} 已卸载')
+            return web.json_response({'success': True, 'message': f'已卸载 {label}'})
     except Exception as e:
         return web.json_response({'success': False, 'message': f'删除失败: {e}'})

@@ -2,6 +2,8 @@
 
 import asyncio
 import contextlib
+import json
+import os
 import time
 from datetime import date as _date
 from datetime import timedelta
@@ -19,7 +21,9 @@ from web.tools._message.media import _send_ark, _send_media_url, _send_text_with
 from web.tools._message.query import (
     _aggregate_chats_sync,
     _query_chat_messages_sync,
+    _query_lifecycle_events_sync,
     _query_older_messages_sync,
+    _recent_dates,
 )
 from web.tools._message.shared import (
     _batch_get_nicknames,
@@ -28,9 +32,8 @@ from web.tools._message.shared import (
     _get_nickname,
 )
 
-# 聊天列表短期缓存 (避免多次刷新同一详情重复诡汇总查询)
 _chat_list_cache: dict[tuple[str, str, int], tuple[float, list[dict[str, Any]]]] = {}
-_CHAT_LIST_TTL = 30  # 秒
+_CHAT_LIST_TTL = 60
 _chat_list_lock = None  # asyncio.Lock, 延迟初始化
 
 
@@ -107,18 +110,26 @@ async def handle_get_chats(request: web.Request):
                 chats = cached[1]
             else:
                 loop = asyncio.get_event_loop()
-                if chat_type == 'full_access':
-                    # 全量群直接从 data.db 获取, 不依赖消息日志
+                if chat_type in ('full_access', 'remark'):
+                    # 全量群/备注群直接从 data.db 获取
                     fa_ids = _get_full_access_group_ids()
                     bot = next(iter(_shared._bot_manager._bots.values()), None) if _shared._bot_manager else None
                     appid_default = next(iter(_shared._bot_manager._bots), '') if _shared._bot_manager and _shared._bot_manager._bots else ''
+                    remarks = _load_remarks()
+                    if chat_type == 'remark':
+                        # 仅显示有备注的群
+                        source_ids = set(remarks.keys())
+                    else:
+                        source_ids = fa_ids
                     chats = [{
                         'chat_id': gid,
                         'appid': appid_filter or appid_default,
                         'bot_name': getattr(bot, 'name', appid_default) if bot else '',
-                        'nickname': f'群{gid[-6:]}',
-                        'is_full_access': True,
-                    } for gid in fa_ids]
+                        'nickname': _remark_name(remarks.get(gid)) or f'群{gid[-6:]}',
+                        'remark': _remark_name(remarks.get(gid)),
+                        'group_qq': _remark_qq(remarks.get(gid)),
+                        'is_full_access': gid in fa_ids,
+                    } for gid in source_ids]
                 else:
                     chats = await loop.run_in_executor(None, _aggregate_chats_sync, chat_type, appid_filter, days)
                     if chat_type == 'user':
@@ -128,13 +139,17 @@ async def handle_get_chats(request: web.Request):
                             c['nickname'] = nicks.get(c['chat_id'], f'用户{c["chat_id"][-6:]}')
                     else:
                         fa_ids = _get_full_access_group_ids()
+                        remarks = _load_remarks()
                         for c in chats:
-                            c['nickname'] = f'群{c["chat_id"][-6:]}'
+                            r_val = remarks.get(c['chat_id'])
+                            c['nickname'] = _remark_name(r_val) or f'群{c["chat_id"][-6:]}'
+                            c['remark'] = _remark_name(r_val)
+                            c['group_qq'] = _remark_qq(r_val)
                             c['is_full_access'] = c['chat_id'] in fa_ids
                 _chat_list_cache[cache_key] = (time.time(), chats)
 
     if search:
-        chats = [c for c in chats if search in c['chat_id'].lower() or search in c.get('nickname', '').lower()]
+        chats = [c for c in chats if search in c['chat_id'].lower() or search in c.get('nickname', '').lower() or search in c.get('remark', '').lower()]
 
     total = len(chats)
     start = (page - 1) * page_size
@@ -154,11 +169,7 @@ async def handle_get_chats(request: web.Request):
 
 
 async def handle_get_chat_history(request: web.Request):
-    """获取聊天记录 — 支持按日期分页加载
-
-    before_date: 可选, YYYY-MM-DD, 加载该日期之前的消息 (往前搜索到有数据为止)
-    不传则加载今天的消息
-    """
+    """获取聊天记录"""
     try:
         body = await request.json()
     except Exception:
@@ -189,6 +200,17 @@ async def handle_get_chat_history(request: web.Request):
         oldest_date = _date.today().strftime('%Y-%m-%d')
         has_more = True
 
+    # 查询群成员加入/退出事件
+    lifecycle_rows = []
+    if chat_type == 'group':
+        if before_date:
+            lc_dates = [before_date]
+        else:
+            lc_dates = _recent_dates(1)
+        lifecycle_rows = await loop.run_in_executor(
+            None, _query_lifecycle_events_sync, chat_type, chat_id, appid_filter, lc_dates
+        )
+
     # 收集需要查询的 user_id (仅非bot消息), 批量取昵称
     uid_set = set()
     for r in rows:
@@ -196,6 +218,10 @@ async def handle_get_chat_history(request: web.Request):
             uid = r.get('user_id', '')
             if uid:
                 uid_set.add(uid)
+    for r in lifecycle_rows:
+        uid = r.get('user_id', '')
+        if uid:
+            uid_set.add(uid)
     nicks = await loop.run_in_executor(None, _batch_get_nicknames, list(uid_set)) if uid_set else {}
 
     messages: list[dict[str, object]] = []
@@ -231,6 +257,32 @@ async def handle_get_chat_history(request: web.Request):
             }
         )
 
+    # 将成员加入/退出事件混入消息列表
+    for r in lifecycle_rows:
+        uid = r.get('user_id', '')
+        evt_type = r.get('type', '')
+        messages.append(
+            {
+                'id': f"lc_{r.get('id', 0)}_{r.get('_date', '')}",
+                'message_id': '',
+                'reference_id': '',
+                'user_id': uid,
+                'appid': r.get('appid', ''),
+                'bot_qq': '',
+                'nickname': nicks.get(uid, f'用户{uid[-6:]}' if uid else '未知用户'),
+                'content': '',
+                'timestamp': r.get('timestamp', ''),
+                'is_self': False,
+                'source': '',
+                'raw_message': '',
+                'recalled': False,
+                'event_type': 'member_add' if evt_type == 'group_member_add' else 'member_remove',
+            }
+        )
+
+    # 按 timestamp 排序, 将消息和事件混合
+    messages.sort(key=lambda m: m.get('timestamp', ''))
+
     # 取最近一条非 bot 消息的 message_id 用于发送回复 (仅初始加载)
     last_msg_id = ''
     if not before_date:
@@ -257,21 +309,7 @@ async def handle_get_chat_history(request: web.Request):
 
 
 async def handle_send_message(request: web.Request):
-    """发送消息 (支持 multipart/form-data)
-
-    参数:
-        chat_type:       group | user
-        chat_id:         群/用户 openid
-        appid:           机器人 appid
-        msg_type:        text | markdown | media | ark
-        content:         文本内容 / 资源URL (media) / ARK kv JSON (ark)
-        msg_id:          回复消息 ID (被动回复需要)
-        message_reference_id: REFIDX_xxx, 显式引用消息时传
-        quote_message_id: 要引用的 message_id, 后端会查 reference_id
-        image:           图片文件 (仅 text 模式, 与 content 一起发送)
-        media_file_type: 富媒体文件类型 1=图片 2=视频 3=语音 4=文件 (仅 media)
-        ark_template_id: ARK 模板 ID (仅 ark)
-    """
+    """发送消息"""
     if not _shared._bot_manager:
         return web.json_response({'success': False, 'message': '机器人管理器未初始化'}, status=500)
 
@@ -402,10 +440,7 @@ async def handle_send_message(request: web.Request):
 
 
 async def handle_recall_message(request: web.Request):
-    """撤回消息
-
-    参数: chat_type, chat_id, appid, message_id
-    """
+    """撤回消息"""
     if not _shared._bot_manager:
         return web.json_response({'success': False, 'message': '机器人管理器未初始化'}, status=500)
     try:
@@ -450,6 +485,169 @@ def _mark_recalled(bot, message_id):
     today = _d.today()
     dates = [(today - timedelta(days=i)).strftime('%Y-%m-%d') for i in range(3)]
     sql = "UPDATE log SET raw_message='[recalled]' WHERE message_id=?"
+    svc = bot.log_service
     for d in dates:
-        with contextlib.suppress(Exception):
-            bot.log_service.query('message', sql, (message_id,), date=d)
+        db_path = svc._resolve_db_path('message', date=d)
+        if not os.path.isfile(db_path):
+            continue
+        try:
+            conn = svc._get_conn(db_path, 'message')
+            lock = svc._conn_locks.get(db_path)
+            if lock:
+                with lock:
+                    conn.execute(sql, (message_id,))
+                    conn.commit()
+        except Exception:
+            pass
+
+
+# ==================== 群备注 (带内存缓存) ====================
+
+_remarks_cache: dict | None = None
+_remarks_cache_ts: float = 0
+_REMARKS_CACHE_TTL = 60
+
+
+def _remarks_path():
+    return os.path.join(_shared._base_dir, 'data', 'group_remarks.json')
+
+
+def _remark_name(val):
+    if isinstance(val, dict):
+        return val.get('name', '')
+    return str(val) if val else ''
+
+
+def _remark_qq(val):
+    """获取备注中的群号"""
+    if isinstance(val, dict):
+        return val.get('qq', '')
+    return ''
+
+
+def _load_remarks() -> dict:
+    global _remarks_cache, _remarks_cache_ts
+    now = time.time()
+    if _remarks_cache is not None and now - _remarks_cache_ts < _REMARKS_CACHE_TTL:
+        return _remarks_cache
+    path = _remarks_path()
+    if not os.path.isfile(path):
+        _remarks_cache = {}
+        _remarks_cache_ts = now
+        return _remarks_cache
+    try:
+        with open(path, encoding='utf-8') as f:
+            data = json.load(f)
+        _remarks_cache = data if isinstance(data, dict) else {}
+    except Exception:
+        _remarks_cache = {}
+    _remarks_cache_ts = now
+    return _remarks_cache
+
+
+def _save_remarks(remarks: dict):
+    global _remarks_cache, _remarks_cache_ts
+    path = _remarks_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(remarks, f, ensure_ascii=False, indent=2)
+    _remarks_cache = remarks
+    _remarks_cache_ts = time.time()
+
+
+def _invalidate_remark_caches():
+    for key in list(_chat_list_cache):
+        if key[0] in ('remark', 'full_access'):
+            _chat_list_cache.pop(key, None)
+
+
+async def handle_get_remarks(request: web.Request):
+    """获取所有群备注 — 返回统一格式 {gid: {name, qq}}"""
+    raw = _load_remarks()
+    out = {}
+    for gid, val in raw.items():
+        out[gid] = {'name': _remark_name(val), 'qq': _remark_qq(val)}
+    return web.json_response({'success': True, 'data': out})
+
+
+async def handle_set_remark(request: web.Request):
+    """设置群备注 (支持 name + qq)"""
+    body = await request.json()
+    group_id = body.get('group_id', '')
+    remark = body.get('remark', '').strip()
+    group_qq = body.get('group_qq', '').strip()
+    if not group_id:
+        return web.json_response({'success': False, 'message': '缺少 group_id'}, status=400)
+    remarks = dict(_load_remarks())
+    if remark or group_qq:
+        remarks[group_id] = {'name': remark, 'qq': group_qq}
+    else:
+        remarks.pop(group_id, None)
+    _save_remarks(remarks)
+    _invalidate_remark_caches()
+    return web.json_response({'success': True, 'message': '备注已保存'})
+
+
+async def handle_delete_remark(request: web.Request):
+    """删除群备注"""
+    body = await request.json()
+    group_id = body.get('group_id', '')
+    if not group_id:
+        return web.json_response({'success': False, 'message': '缺少 group_id'}, status=400)
+    remarks = dict(_load_remarks())
+    remarks.pop(group_id, None)
+    _save_remarks(remarks)
+    _invalidate_remark_caches()
+    return web.json_response({'success': True, 'message': '备注已删除'})
+
+
+# ==================== 群成员权限 (带缓存) ====================
+
+_roles_cache: dict[str, tuple[float, dict[str, str]]] = {}
+_ROLES_CACHE_TTL = 120
+
+
+def _get_group_members_sync(group_id):
+    """从 groups_users 表读取群成员信息 {user_id: {role, is_bot}}"""
+    now = time.time()
+    cached = _roles_cache.get(group_id)
+    if cached and now - cached[0] < _ROLES_CACHE_TTL:
+        return cached[1]
+    if not _shared._bot_manager:
+        return {}
+    members: dict[str, dict] = {}
+    for inst in _shared._bot_manager._bots.values():
+        try:
+            rows = inst.log_service.query_data(
+                'SELECT users FROM groups_users WHERE group_id = ?', (group_id,)
+            )
+            if rows and rows[0].get('users'):
+                users = json.loads(rows[0]['users'])
+                for u in users:
+                    uid = u.get('userid', '')
+                    if not uid:
+                        continue
+                    info = {}
+                    role = u.get('member_role', '')
+                    if role:
+                        info['role'] = str(role)
+                    if u.get('is_bot'):
+                        info['is_bot'] = True
+                    if info:
+                        members[uid] = info
+                break
+        except Exception:
+            pass
+    _roles_cache[group_id] = (now, members)
+    return members
+
+
+async def handle_get_group_roles(request: web.Request):
+    """获取群成员角色与 bot 标记"""
+    body = await request.json()
+    group_id = body.get('group_id', '')
+    if not group_id:
+        return web.json_response({'success': False, 'message': '缺少 group_id'}, status=400)
+    loop = asyncio.get_event_loop()
+    members = await loop.run_in_executor(None, _get_group_members_sync, group_id)
+    return web.json_response({'success': True, 'data': members})

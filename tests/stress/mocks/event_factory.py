@@ -18,8 +18,6 @@ from core.message.event import (
     GROUP_DEL_ROBOT,
     GROUP_MESSAGE_CREATE,
     INTERACTION_CREATE,
-    MESSAGE_AUDIT_PASS,
-    MESSAGE_AUDIT_REJECT,
     MESSAGE_REACTION_ADD,
     Event,
 )
@@ -203,25 +201,6 @@ class EventFactory:
         raw = cls._make_raw(event_type, d)
         return Event.from_websocket(appid, raw)
 
-    # ---- Audit ----
-
-    @classmethod
-    def audit_pass(cls, audit_id="audit_001", real_msg_id="real_001", appid="102000001"):
-        """MESSAGE_AUDIT_PASS."""
-        raw = cls._make_raw(MESSAGE_AUDIT_PASS, {
-            "audit_id": audit_id,
-            "message_id": real_msg_id,
-        })
-        return Event.from_websocket(appid, raw)
-
-    @classmethod
-    def audit_reject(cls, audit_id="audit_001", appid="102000001"):
-        """MESSAGE_AUDIT_REJECT."""
-        raw = cls._make_raw(MESSAGE_AUDIT_REJECT, {
-            "audit_id": audit_id,
-        })
-        return Event.from_websocket(appid, raw)
-
     # ---- Silent ----
 
     @classmethod
@@ -275,7 +254,7 @@ class EventFactory:
             elif r < 19:  # 5% FRIEND_ADD (lifecycle)
                 events.append(cls.lifecycle(
                     FRIEND_ADD, appid, f"user_{i:04d}"))
-            else:  # 5% AUDIT
-                events.append(cls.audit_pass(
-                    f"audit_{i}", f"real_{i}", appid))
+            else:  # 5% REACTION (silent)
+                events.append(cls.reaction_add(
+                    f"user_{i:04d}", "group_001", appid))
         return events

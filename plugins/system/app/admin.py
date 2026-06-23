@@ -20,17 +20,7 @@ _PLUGIN_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _DATA_DIR = os.path.join(_PLUGIN_DIR, 'data')
 os.makedirs(_DATA_DIR, exist_ok=True)
 
-# 项目根目录 data/
-_ROOT_DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(_PLUGIN_DIR)), 'data')
-os.makedirs(_ROOT_DATA_DIR, exist_ok=True)
-
-_BLACKLIST_FILE = os.path.join(_ROOT_DATA_DIR, 'blacklist.json')
-_GROUP_BLACKLIST_FILE = os.path.join(_ROOT_DATA_DIR, 'group_blacklist.json')
 _RESTART_STATUS_FILE = os.path.join(_DATA_DIR, 'restart_status.json')
-
-# 内存缓存
-_blacklist = {}
-_group_blacklist = {}
 
 
 def _load_json(path, default=None):
@@ -50,11 +40,16 @@ def _save_json(path, data):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
-@on_load
-def _load_blacklists():
-    global _blacklist, _group_blacklist
-    _blacklist = _load_json(_BLACKLIST_FILE)
-    _group_blacklist = _load_json(_GROUP_BLACKLIST_FILE)
+def _get_plugin_manager():
+    """获取框架的 PluginManager 实例"""
+    try:
+        from core.application import get_app
+        app = get_app()
+        if app:
+            return app.plugin_manager
+    except Exception:
+        pass
+    return None
 
 
 def _mask_id(id_str, mask_char='*'):
@@ -199,25 +194,27 @@ def _check_restart_status():
 
 @handler(r'^黑名单帮助$', name='黑名单帮助', desc='查看黑名单管理帮助', owner_only=True)
 async def show_blacklist_help(event, match):
+    pm = _get_plugin_manager()
     lines = ['📖 黑名单管理']
 
     # 用户黑名单
     lines.append('\n━━━ 🚫 用户黑名单 ━━━')
-    if not _blacklist:
+    user_set = pm._blacklist_users if pm else set()
+    if not user_set:
         lines.append('✅ 空')
     else:
-        for idx, (uid, reason) in enumerate(_blacklist.items(), 1):
-            lines.append(f'{idx}. {_mask_id(uid)}\n   原因: {reason}')
+        for idx, uid in enumerate(sorted(user_set), 1):
+            lines.append(f'{idx}. {_mask_id(uid)}')
 
     # 群黑名单
     lines.append('\n━━━ 🚫 群黑名单 ━━━')
-    if not _group_blacklist:
+    group_set = pm._blacklist_groups if pm else set()
+    if not group_set:
         lines.append('✅ 空')
     else:
-        for idx, (gid, reason) in enumerate(_group_blacklist.items(), 1):
-            lines.append(f'{idx}. {_mask_id(gid)}\n   原因: {reason}')
+        for idx, gid in enumerate(sorted(group_set), 1):
+            lines.append(f'{idx}. {_mask_id(gid)}')
 
-    lines.append('\n>提示：黑名单数据保存在JSON文件中')
     await event.reply('\n'.join(lines))
 
 
@@ -233,7 +230,6 @@ async def view_blacklist(event, match):
     owner_only=True,
 )
 async def add_blacklist(event, match):
-    reason = match.group(1) or '未指明原因'
     user_id = match.group(2)
     if not user_id:
         return await event.reply('请提供用户ID')
@@ -247,9 +243,11 @@ async def add_blacklist(event, match):
     except Exception:
         pass
 
-    _blacklist[user_id] = reason
-    _save_json(_BLACKLIST_FILE, _blacklist)
-    await event.reply(f'已添加用户 {user_id} 到黑名单\n原因: {reason}')
+    pm = _get_plugin_manager()
+    if not pm:
+        return await event.reply('框架未就绪，无法操作黑名单')
+    pm.add_blacklist_user(user_id)
+    await event.reply(f'已添加用户 {user_id} 到黑名单')
 
 
 @handler(
@@ -260,11 +258,13 @@ async def add_blacklist(event, match):
 )
 async def remove_blacklist(event, match):
     user_id = match.group(1)
-    if user_id not in _blacklist:
+    pm = _get_plugin_manager()
+    if not pm:
+        return await event.reply('框架未就绪，无法操作黑名单')
+    if user_id not in pm._blacklist_users:
         return await event.reply(f'用户 {user_id} 不在黑名单中')
-    reason = _blacklist.pop(user_id, '未知')
-    _save_json(_BLACKLIST_FILE, _blacklist)
-    await event.reply(f'已移除用户 {user_id}\n原因: {reason}')
+    pm.remove_blacklist_user(user_id)
+    await event.reply(f'已移除用户 {user_id}')
 
 
 # ==================== 群黑名单 ====================
@@ -277,13 +277,14 @@ async def remove_blacklist(event, match):
     owner_only=True,
 )
 async def add_group_blacklist(event, match):
-    reason = match.group(1) or '未指明原因'
     group_id = match.group(2)
     if not group_id:
-        return await event.reply('❌ 请提供群组ID\n💡 格式：群黑名单添加 [原因] [群ID]')
-    _group_blacklist[group_id] = reason
-    _save_json(_GROUP_BLACKLIST_FILE, _group_blacklist)
-    await event.reply(f'已添加群组 {group_id} 到群黑名单\n原因: {reason}')
+        return await event.reply('❌ 请提供群组ID\n💡 格式：群黑名单添加 [群ID]')
+    pm = _get_plugin_manager()
+    if not pm:
+        return await event.reply('框架未就绪，无法操作黑名单')
+    pm.add_blacklist_group(group_id)
+    await event.reply(f'已添加群组 {group_id} 到群黑名单')
 
 
 @handler(
@@ -294,8 +295,10 @@ async def add_group_blacklist(event, match):
 )
 async def remove_group_blacklist(event, match):
     group_id = match.group(1)
-    if group_id not in _group_blacklist:
+    pm = _get_plugin_manager()
+    if not pm:
+        return await event.reply('框架未就绪，无法操作黑名单')
+    if group_id not in pm._blacklist_groups:
         return await event.reply(f'群组 {group_id} 不在群黑名单中')
-    reason = _group_blacklist.pop(group_id, '未知')
-    _save_json(_GROUP_BLACKLIST_FILE, _group_blacklist)
-    await event.reply(f'已移除群组 {group_id}\n原因: {reason}')
+    pm.remove_blacklist_group(group_id)
+    await event.reply(f'已移除群组 {group_id}')

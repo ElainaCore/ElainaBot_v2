@@ -5,7 +5,6 @@ import asyncio
 import contextlib
 import json
 import os
-import sqlite3
 from datetime import datetime
 
 from core.base.logger import SERVICE, get_logger, on_error
@@ -159,8 +158,15 @@ class LogService(_BaseLogService, ShareMixin, WakeupMixin):
         lock = self._data_lock
         try:
             with lock:
+                # 按 SQL 分组, 相同语句用 executemany 批量执行
+                grouped = {}
                 for sql, params in ops:
-                    conn.execute(sql, params)
+                    grouped.setdefault(sql, []).append(params)
+                for sql, params_list in grouped.items():
+                    if len(params_list) == 1:
+                        conn.execute(sql, params_list[0])
+                    else:
+                        conn.executemany(sql, params_list)
                 conn.commit()
         except Exception as e:
             log.error(f'[{self._appid}] data.db 批量写入失败: {e}')
@@ -208,22 +214,15 @@ class LogService(_BaseLogService, ShareMixin, WakeupMixin):
         return await loop.run_in_executor(None, self._db_fetch_one_sync, sql, params)
 
     def _db_fetch_one_sync(self, sql, params):
-        conn = self._data_conn
-        with self._data_lock:
-            conn.row_factory = sqlite3.Row
-            row = conn.execute(sql, params).fetchone()
-        return dict(row) if row else None
+        rows = self.query('data', sql, params)
+        return rows[0] if rows else None
 
     async def db_fetch_all(self, sql, params=()):
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._db_fetch_all_sync, sql, params)
 
     def _db_fetch_all_sync(self, sql, params):
-        conn = self._data_conn
-        with self._data_lock:
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute(sql, params).fetchall()
-        return [dict(r) for r in rows]
+        return self.query('data', sql, params)
 
     async def db_fetch_value(self, sql, params=(), default=None):
         """查询单个值"""
@@ -264,7 +263,7 @@ class LogService(_BaseLogService, ShareMixin, WakeupMixin):
             SharedLogService._instance.add_sync('framework', log_data)
 
 
-# ==================== 通用日志服务 (框架+错误, 不分机器人) ====================
+# ==================== 通用日志服务 ====================
 
 
 class SharedLogService(_BaseLogService):

@@ -4,7 +4,8 @@
 # 未指定的字段使用程序内置默认值
 
 bots:
-  - appid: ""                          # QQ开发者平台 APPID
+  - enabled: true                      # 机器人开关 (false 时不连接、不登录)
+    appid: ""                          # QQ开发者平台 APPID
     secret: ""                         # QQ开发者平台 密钥
     robot_qq: ""                       # 机器人QQ号
     owner_ids:                         # 主人 OpenID 列表

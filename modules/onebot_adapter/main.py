@@ -33,7 +33,7 @@ if TYPE_CHECKING:
 __module_meta__ = {
     'name': 'OneBot 适配器',
     'description': 'OneBot 11 协议适配器, 将消息/事件推送到外部机器人框架',
-    'version': '1.4.0',
+    'version': '1.5.0',
     'author': 'Elaina',
 }
 

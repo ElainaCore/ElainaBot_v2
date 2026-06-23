@@ -5,7 +5,7 @@ import json
 import re
 
 from core.base.logger import SERVICE, get_logger
-from core.message.response import extract_reference_id, raw_response_text
+from core.message.response import raw_response_text
 
 log = get_logger(SERVICE, '日志')
 
@@ -131,6 +131,10 @@ _SCHEMAS = {
             group_id TEXT PRIMARY KEY,
             first_seen TEXT DEFAULT ''
         );
+        CREATE TABLE IF NOT EXISTS group_bot_admin (
+            group_id TEXT PRIMARY KEY,
+            updated_at TEXT DEFAULT ''
+        );
     """,
 }
 
@@ -155,7 +159,7 @@ _INSERTS = {
               friend_remove_count=friend_remove_count+excluded.friend_remove_count""",
 }
 
-# 表索引 (类型 -> [CREATE INDEX SQL]) — 显著加速 Web 面板的聊天列表/历史查询
+# 表索引
 _INDEXES = {
     'message': [
         'CREATE INDEX IF NOT EXISTS idx_msg_group_id ON log(group_id)',
@@ -164,6 +168,11 @@ _INDEXES = {
         'CREATE INDEX IF NOT EXISTS idx_msg_user_agg ON log(user_id, id, timestamp)',
         'CREATE INDEX IF NOT EXISTS idx_msg_message_id ON log(message_id)',
         'CREATE INDEX IF NOT EXISTS idx_msg_reference_id ON log(reference_id)',
+        # 覆盖索引
+        'CREATE INDEX IF NOT EXISTS idx_msg_group_cover ON log(group_id, timestamp, id, content)',
+        'CREATE INDEX IF NOT EXISTS idx_msg_user_cover ON log(user_id, group_id, timestamp, id, content)',
+
+        'CREATE INDEX IF NOT EXISTS idx_msg_direction ON log(direction, user_id, group_id, content)',
     ],
     'lifecycle': [
         'CREATE INDEX IF NOT EXISTS idx_lc_user_id ON log(user_id)',
@@ -217,117 +226,6 @@ def _migrate_missing_columns(conn, log_type):
             log.info(f'自动迁移: log 表新增列 {col_name} ({log_type})')
         except Exception as e:
             log.warning(f'自动迁移列 {col_name} 失败: {e}')
-
-
-def _rebuild_message_table(conn, existing):
-    """兼容旧 SQLite: 重建 message.log 表以移除废弃的 type 列。"""
-    tmp = 'log_message_migrate_tmp'
-    desired = [
-        'id',
-        'timestamp',
-        'message_id',
-        'reference_id',
-        'user_id',
-        'group_id',
-        'content',
-        'raw_message',
-        'plugin_name',
-        'direction',
-        'context',
-    ]
-    conn.execute(f'DROP TABLE IF EXISTS {tmp}')
-    conn.execute(f'ALTER TABLE log RENAME TO {tmp}')
-    conn.execute(_SCHEMAS['message'])
-    copy_cols = [c for c in desired if c in existing]
-    if copy_cols:
-        cols = ', '.join(copy_cols)
-        conn.execute(f'INSERT INTO log ({cols}) SELECT {cols} FROM {tmp}')
-    conn.execute(f'DROP TABLE IF EXISTS {tmp}')
-    conn.commit()
-
-
-def _backfill_message_reference_id(conn):
-    """把 context 中已有的 REFIDX/ref_idx 回填到 reference_id。"""
-    try:
-        existing = {row[1] for row in conn.execute('PRAGMA table_info(log)').fetchall()}
-        if 'reference_id' not in existing or 'context' not in existing:
-            return
-        rows = conn.execute(
-            "SELECT id, direction, reference_id, context FROM log WHERE context != ''"
-        ).fetchall()
-    except Exception:
-        return
-
-    meta_keys = {'event_type', 'message_reference_id', 'message_scene', 'msg_idx'}
-    changed = False
-    for row in rows:
-        row_id, direction, current_ref, raw_context = row[0], row[1] or '', row[2] or '', row[3] or ''
-        if not raw_context.lstrip().startswith('{'):
-            continue
-        try:
-            ctx = json.loads(raw_context)
-        except Exception:
-            continue
-        if not isinstance(ctx, dict):
-            continue
-        ref = extract_reference_id(ctx)
-        if ref and not current_ref:
-            conn.execute('UPDATE log SET reference_id = ? WHERE id = ?', (str(ref), row_id))
-            changed = True
-        if direction == 'receive' and ctx and set(ctx).issubset(meta_keys):
-            conn.execute('UPDATE log SET context = ? WHERE id = ?', ('', row_id))
-            changed = True
-    if changed:
-        conn.commit()
-        log.info('自动迁移: message.log 已整理 context 与 reference_id')
-
-
-def _migrate_message_table(conn):
-    """message 表专用迁移: 删除 type, 补齐 context/reference_id。"""
-    try:
-        existing = {row[1] for row in conn.execute('PRAGMA table_info(log)').fetchall()}
-    except Exception:
-        return
-
-    desired_defs = {
-        'timestamp': 'TEXT NOT NULL DEFAULT ""',
-        'message_id': 'TEXT DEFAULT ""',
-        'reference_id': 'TEXT DEFAULT ""',
-        'user_id': 'TEXT DEFAULT ""',
-        'group_id': 'TEXT DEFAULT ""',
-        'content': 'TEXT DEFAULT ""',
-        'raw_message': 'TEXT DEFAULT ""',
-        'plugin_name': 'TEXT DEFAULT ""',
-        'direction': 'TEXT DEFAULT ""',
-        'context': 'TEXT DEFAULT ""',
-    }
-    for col_name, col_def in desired_defs.items():
-        if col_name in existing:
-            continue
-        try:
-            conn.execute(f'ALTER TABLE log ADD COLUMN {col_name} {col_def}')
-            conn.commit()
-            existing.add(col_name)
-            log.info(f'自动迁移: message.log 表新增列 {col_name}')
-        except Exception as e:
-            log.warning(f'自动迁移 message.{col_name} 失败: {e}')
-
-    if 'type' not in existing:
-        _backfill_message_reference_id(conn)
-        return
-
-    try:
-        conn.execute('ALTER TABLE log DROP COLUMN type')
-        conn.commit()
-        log.info('自动迁移: message.log 表删除废弃列 type')
-    except Exception as e:
-        log.warning(f'删除 message.type 失败, 尝试重建表: {e}')
-        try:
-            _rebuild_message_table(conn, existing)
-            log.info('自动迁移: message.log 表已重建并删除 type')
-        except Exception as rebuild_err:
-            log.warning(f'重建 message.log 表失败: {rebuild_err}')
-    _backfill_message_reference_id(conn)
 
 
 def _ensure_indexes(conn, log_type):

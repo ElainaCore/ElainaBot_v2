@@ -16,9 +16,9 @@ from core.message.event import (
     GROUP_MEMBER_ADD,
     GROUP_MEMBER_REMOVE,
     GROUP_MESSAGE_CREATE,
+    GROUP_MSG_RECEIVE,
+    GROUP_MSG_REJECT,
     INTERACTION_CREATE,
-    MESSAGE_AUDIT_PASS,
-    MESSAGE_AUDIT_REJECT,
     MESSAGE_TYPES,
     SILENT_TYPES,
 )
@@ -30,12 +30,15 @@ _USER_CACHE_TTL = 3600
 _DEDUP_TTL = 300
 _GROUP_CACHE_MAX = 10000
 _FULL_ACCESS_CACHE_TTL = 1800
+_DIRTY_FLUSH_THRESHOLD = 500  # 脏群数超过此阈值提前刷写
 
 
-def _new_user_entry(uid, today, member_role=''):
+def _new_user_entry(uid, today, member_role='', is_bot=False):
     entry = {'userid': uid, 'value': 1, 'last_active': today}
     if member_role:
         entry['member_role'] = member_role
+    if is_bot:
+        entry['is_bot'] = True
     return entry
 
 
@@ -86,12 +89,7 @@ class EventHandlerMixin:
 
         et = event.event_type
 
-        # 交互事件 (INTERACTION_CREATE) 的 op12 ACK 不再由框架在分发前自动发送,
-        # 改由传输层 (webhook / websocket) 在插件分发后, 用插件经
-        # event.set_callback_code() 设置的状态码发送; 插件未设置则用默认 code。
-        # 参见 core/server/webhook.py 与 core/network/websocket.py。
-
-        # 去重 (setdefault 避免二次查找)
+        # 去重
         if cfg.get_bot_setting(appid, 'dedup.enabled', False):
             dedup = self._dedup.setdefault(appid, _EventDedup())
             if dedup.is_dup(event.message_id, event.event_id):
@@ -109,7 +107,7 @@ class EventHandlerMixin:
             if need_swap:
                 event.user_id, event.union_openid, _ = IdentityHelper.swap_ids(event.raw_user_id, event.union_openid, True)
 
-        # 生命周期事件 → 记录事件日志后, 分发给插件 (允许插件回复入群/退群等事件)
+        # 生命周期事件
         lc = self._LIFECYCLE_HANDLERS.get(et)
         if lc:
             await lc(self, bot, event)
@@ -125,12 +123,8 @@ class EventHandlerMixin:
                     )
             return
 
-        # 消息审核事件
-        if et in (MESSAGE_AUDIT_PASS, MESSAGE_AUDIT_REJECT):
-            await self._handle_audit(bot, event, et)
-            return
 
-        # 静默事件（表态/频道更新）→ 记录日志 + 推送web面板事件日志，不分发插件
+        # 静默事件
         if et in SILENT_TYPES:
             raw_json = json.dumps(event.raw, ensure_ascii=False)
             bot.log_service.add_sync(
@@ -154,7 +148,7 @@ class EventHandlerMixin:
             )
             return
 
-        # 未预设事件 → 记录到错误日志 (LIFECYCLE/SILENT 已在上方 return)
+        # 未预设事件
         if et not in MESSAGE_TYPES and et != INTERACTION_CREATE:
             raw_json = json.dumps(event.raw, ensure_ascii=False)
             report_error(
@@ -164,9 +158,8 @@ class EventHandlerMixin:
                 context={'appid': appid, 'event_type': et, 'raw': raw_json},
             )
 
-        # 消息日志 + 用户追踪 (消息事件和回调事件都记录)
+        # 消息日志 + 用户追踪
         if et in MESSAGE_TYPES or et == INTERACTION_CREATE:
-            # json.dumps 移至轻量 dict 构造后, 仅序列化一次
             msg_id = event.message_id or ''
             uid = event.user_id or ''
             gid = event.group_id or ''
@@ -189,16 +182,17 @@ class EventHandlerMixin:
             if uid:
                 asyncio.create_task(self._track_user(bot, event, appid))
 
-        # 全量群记录
+
         if et == GROUP_MESSAGE_CREATE and event.group_id:
             self._record_full_access_group(bot, event.group_id)
+            if event.is_at_self and event.bot_member_role in ('admin', 'owner'):
+                self._record_bot_admin(bot, event.group_id)
 
-        # 全量群 @全体成员 → 跳过插件处理 (含同时 @机器人, 防止双机器人轮回)
+        # 全量群 @全体成员 跳过
         if et == GROUP_MESSAGE_CREATE and event.is_at_all:
             return
 
         # 屏蔽其他机器人发送的消息 (author.bot=true)
-        if getattr(event, 'is_bot', False) and cfg.get_bot_setting(appid, 'non_at_message.ignore_bot_sender', False):
             return
 
         # 插件分发
@@ -222,18 +216,10 @@ class EventHandlerMixin:
             }
             self._push_web_log('framework', frm_log_item)
 
-    # ==================== 消息审核 ====================
-
-    async def _handle_audit(self, bot, event, et):
-        """MESSAGE_AUDIT_PASS / MESSAGE_AUDIT_REJECT: 仅记录, 不再替换消息 id"""
-        if et == MESSAGE_AUDIT_REJECT:
-            d = event.raw.get('d', {}) if isinstance(event.raw, dict) else {}
-            log.warning(f'[{event.appid}] 消息审核未通过: {d.get("audit_id", "")}')
-
     # ==================== 全量群记录 ====================
 
     def _record_full_access_group(self, bot, group_id):
-        """记录全量群到 data.db, 内存缓存 30 分钟"""
+        """记录全量群到 data.db"""
         now = time.time()
         expire = self._full_access_cache.get(group_id)
         if expire and now < expire:
@@ -242,6 +228,14 @@ class EventHandlerMixin:
         ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         bot.log_service.db_queue(
             'INSERT OR IGNORE INTO full_access_groups (group_id, first_seen) VALUES (?, ?)',
+            (group_id, ts),
+        )
+
+    def _record_bot_admin(self, bot, group_id):
+        """记录机器人在该群为管理员"""
+        ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        bot.log_service.db_queue(
+            'INSERT OR REPLACE INTO group_bot_admin (group_id, updated_at) VALUES (?, ?)',
             (group_id, ts),
         )
 
@@ -318,6 +312,24 @@ class EventHandlerMixin:
     async def _handle_friend_del(self, bot, event):
         self._log_lifecycle(bot, 'friend_del', {'user_id': event.user_id or ''}, raw_event=event.raw)
 
+    async def _handle_group_msg_reject(self, bot, event):
+        gid = event.group_id or ''
+        uid = event.user_id or ''
+        self._log_lifecycle(
+            bot, 'group_msg_reject',
+            {'group_id': gid, 'user_id': uid},
+            raw_event=event.raw,
+        )
+
+    async def _handle_group_msg_receive(self, bot, event):
+        gid = event.group_id or ''
+        uid = event.user_id or ''
+        self._log_lifecycle(
+            bot, 'group_msg_receive',
+            {'group_id': gid, 'user_id': uid},
+            raw_event=event.raw,
+        )
+
     async def _lifecycle_reply(self, bot, event, cfg_key, template, tvars):
         """生命周期欢迎消息 (复用)"""
         if cfg.get_bot_setting(event.appid, cfg_key, False):
@@ -333,6 +345,8 @@ class EventHandlerMixin:
         GROUP_MEMBER_REMOVE: _handle_group_member_remove,
         FRIEND_ADD: _handle_friend_add,
         FRIEND_DEL: _handle_friend_del,
+        GROUP_MSG_REJECT: _handle_group_msg_reject,
+        GROUP_MSG_RECEIVE: _handle_group_msg_receive,
     }
 
     # ==================== 用户/群组追踪 ====================
@@ -343,7 +357,7 @@ class EventHandlerMixin:
         if event.is_direct:
             tasks.append(bot.log_service.wakeup_update(event.user_id))
         if gid and gid != 'c2c':
-            tasks.append(self._add_user_to_group(bot, gid, event.user_id, event.member_role or ''))
+            tasks.append(self._add_user_to_group(bot, gid, event.user_id, event.member_role or '', getattr(event, 'is_bot', False)))
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -383,8 +397,9 @@ class EventHandlerMixin:
         self._known_users[uid] = now + _USER_CACHE_TTL
         await self._run_side_tasks(bot, event, gid)
 
-        # 新用户首次私聊 → 欢迎 (合并条件)
-        if not existing and event.is_direct and cfg.get_bot_setting(appid, 'welcome.new_user_welcome', False):
+        # 新用户欢迎 (全量群环境不发送)
+        if not existing and event.event_type != GROUP_MESSAGE_CREATE \
+                and cfg.get_bot_setting(appid, 'welcome.new_user_welcome', False):
             try:
                 total = await bot.log_service.db_fetch_value('SELECT COUNT(*) FROM users', default=1)
                 await bot.sender.reply(
@@ -409,11 +424,11 @@ class EventHandlerMixin:
         except RuntimeError:
             return json.dumps(list(dict(user_map).values()), ensure_ascii=False)
 
-    def _upsert_group_user(self, user_map, uid, today, member_role=''):
+    def _upsert_group_user(self, user_map, uid, today, member_role='', is_bot=False):
         """更新或新增群成员条目, 返回是否有变更"""
         entry = user_map.get(uid)
         if entry is None:
-            user_map[uid] = _new_user_entry(uid, today, member_role)
+            user_map[uid] = _new_user_entry(uid, today, member_role, is_bot)
             return True
         changed = False
         if entry.get('last_active') != today:
@@ -421,6 +436,9 @@ class EventHandlerMixin:
             changed = True
         if member_role and entry.get('member_role') != member_role:
             entry['member_role'] = member_role
+            changed = True
+        if is_bot and not entry.get('is_bot'):
+            entry['is_bot'] = True
             changed = True
         return changed
 
@@ -432,20 +450,28 @@ class EventHandlerMixin:
         """标记群缓存待落库, 由 _flush_dirty_groups 批量写回"""
         self._dirty_groups[group_id] = bot
         self._ensure_flush_task()
+        if len(self._dirty_groups) >= _DIRTY_FLUSH_THRESHOLD:
+            self._force_flush_dirty()
+
+    def _force_flush_dirty(self):
+        """脏群数超过阈值时立即刷写, 降低内存峰值"""
+        if not self._dirty_groups:
+            return
+        batch, self._dirty_groups = self._dirty_groups, {}
+        for gid, bot in batch.items():
+            cached = self._group_users_cache.get(gid)
+            if cached:
+                bot.log_service.db_queue(
+                    'UPDATE groups_users SET users=? WHERE group_id=?',
+                    (self._users_json(cached[1]), gid),
+                )
 
     async def _flush_dirty_groups(self):
         while True:
             await asyncio.sleep(30)
             if not self._dirty_groups:
                 continue
-            batch, self._dirty_groups = self._dirty_groups, {}
-            for gid, bot in batch.items():
-                cached = self._group_users_cache.get(gid)
-                if cached:
-                    bot.log_service.db_queue(
-                        'UPDATE groups_users SET users=? WHERE group_id=?',
-                        (self._users_json(cached[1]), gid),
-                    )
+            self._force_flush_dirty()
 
     @staticmethod
     def _parse_user_map(raw_list):
@@ -487,8 +513,7 @@ class EventHandlerMixin:
         return self._parse_user_map(raw), True
 
     async def _mutate_group_user(self, bot, group_id, mutate, create_if_missing):
-        """群成员表单次变更的统一入口: 串行锁 + 缓存命中/落库逻辑只此一份。
-        mutate(user_map) 就地改动并返回是否有变更; create_if_missing 控制群不存在时是否新建行。"""
+        """群成员表变更统一入口"""
         async with self._group_lock(group_id):
             # 1. 内存缓存命中: 仅改内存 + 标脏, 由 _flush_dirty_groups 批量落库
             cached = self._group_users_cache.get(group_id)
@@ -523,13 +548,13 @@ class EventHandlerMixin:
                     context={'group_id': group_id},
                 )
 
-    async def _add_user_to_group(self, bot, group_id, user_id, member_role=''):
+    async def _add_user_to_group(self, bot, group_id, user_id, member_role='', is_bot=False):
         uid = str(user_id)
         today = datetime.now().strftime('%Y-%m-%d')
         await self._mutate_group_user(
             bot,
             group_id,
-            lambda user_map: self._upsert_group_user(user_map, uid, today, member_role),
+            lambda user_map: self._upsert_group_user(user_map, uid, today, member_role, is_bot),
             create_if_missing=True,
         )
 
@@ -543,7 +568,6 @@ class EventHandlerMixin:
         )
 
     def _set_group_cache(self, group_id, user_map):
-        """写入群缓存, 超过上限时淘汰最早条目"""
         if len(self._group_users_cache) >= _GROUP_CACHE_MAX and group_id not in self._group_users_cache:
             oldest = next(iter(self._group_users_cache))
             del self._group_users_cache[oldest]

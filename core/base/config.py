@@ -29,6 +29,7 @@ _MISSING = object()
 
 # 机器人设置内置默认值 (bot.yaml 中未配置时使用)
 _BOT_DEFAULTS = {
+    'enabled': True,
     'message.use_markdown': True,
     'message.markdown_suffix': '',
     'message.button_enter_to_send': False,

@@ -107,6 +107,31 @@ def _iter_bots(appid_filter=''):
     return list(_bot_manager._bots.items())
 
 
+_LIFECYCLE_TYPE_MAP = {
+    'group_add': 'group_join_count',
+    'group_del': 'group_leave_count',
+    'friend_add': 'friend_add_count',
+    'friend_del': 'friend_remove_count',
+}
+
+
+def _count_lifecycle_today(appid_filter, date_str):
+    """从 lifecycle.db 实时统计今日进群/退群/加好友/删好友事件"""
+    ev = {'group_join_count': 0, 'group_leave_count': 0, 'friend_add_count': 0, 'friend_remove_count': 0}
+    for _, inst in _iter_bots(appid_filter):
+        with contextlib.suppress(Exception):
+            rows = inst.log_service.query(
+                'lifecycle',
+                'SELECT type, COUNT(*) AS c FROM log GROUP BY type',
+                date=date_str,
+            )
+            for r in rows:
+                key = _LIFECYCLE_TYPE_MAP.get(r.get('type', ''))
+                if key:
+                    ev[key] += r.get('c', 0)
+    return ev
+
+
 def _count_table(appid_filter, table):
     """累计某张表的总行数 (data.db)"""
     total = 0
@@ -321,22 +346,30 @@ def _gather_chart_sync(days, appid_filter):
                         day_groups.update(range(len(day_groups), len(day_groups) + r0.get('groups_', 0)))
                 except Exception:
                     pass
-            # 历史 / 事件: 从 dau.db
-            try:
-                dau_rows = inst.log_service.query('dau', 'SELECT * FROM log WHERE date=?', (date_str,))
-                if dau_rows:
-                    dd = dau_rows[0]
-                    day_join += dd.get('group_join_count', 0)
-                    day_leave += dd.get('group_leave_count', 0)
-                    day_fadd += dd.get('friend_add_count', 0)
-                    day_frem += dd.get('friend_remove_count', 0)
-                    if not is_today:
+            if not is_today:
+                # 历史: 从 dau.db
+                try:
+                    dau_rows = inst.log_service.query('dau', 'SELECT * FROM log WHERE date=?', (date_str,))
+                    if dau_rows:
+                        dd = dau_rows[0]
+                        day_join += dd.get('group_join_count', 0)
+                        day_leave += dd.get('group_leave_count', 0)
+                        day_fadd += dd.get('friend_add_count', 0)
+                        day_frem += dd.get('friend_remove_count', 0)
                         day_total += dd.get('total_messages', 0)
                         day_private += dd.get('private_messages', 0)
                         day_users.update(range(dd.get('active_users', 0)))
                         day_groups.update(range(dd.get('active_groups', 0)))
-            except Exception:
-                pass
+                except Exception:
+                    pass
+
+        if is_today:
+            # 今日事件: 从 lifecycle.db 实时统计
+            today_ev = _count_lifecycle_today(appid_filter, date_str)
+            day_join += today_ev['group_join_count']
+            day_leave += today_ev['group_leave_count']
+            day_fadd += today_ev['friend_add_count']
+            day_frem += today_ev['friend_remove_count']
 
         msg_total.append(day_total)
         msg_private.append(day_private)
@@ -413,17 +446,22 @@ def _gather_stats(force=False, selected_date='', appid_filter=''):
                         k = r.get('k', '')
                         if k:
                             dst[k] = dst.get(k, 0) + r.get('c', 0)
-        with contextlib.suppress(Exception):
-            dau = inst.log_service.query('dau', 'SELECT * FROM log WHERE date=?', (date,))
-            if dau:
-                d = dau[0]
-                for ek in ev:
-                    ev[ek] += d.get(ek, 0)
-                if not is_today:
+        if not is_today:
+            with contextlib.suppress(Exception):
+                dau = inst.log_service.query('dau', 'SELECT * FROM log WHERE date=?', (date,))
+                if dau:
+                    d = dau[0]
+                    for ek in ev:
+                        ev[ek] += d.get(ek, 0)
                     total_msg += d.get('total_messages', 0)
                     priv_msg += d.get('private_messages', 0)
                     n_users += d.get('active_users', 0)
                     n_groups += d.get('active_groups', 0)
+
+    if is_today:
+        today_ev = _count_lifecycle_today(appid_filter, date)
+        for ek in ev:
+            ev[ek] += today_ev.get(ek, 0)
 
     # 每小时分布
     hourly = _aggregate_hourly(appid_filter, date)

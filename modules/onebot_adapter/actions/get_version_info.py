@@ -14,7 +14,7 @@ class GetVersionInfoAction(BaseAction):
         return self._ok(
             {
                 'app_name': 'Elaina-OneBot-Adapter',
-                'app_version': '1.0.0',
+                'app_version': '1.5.0',
                 'protocol_version': 'v11',
             },
             echo=echo,

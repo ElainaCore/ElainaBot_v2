@@ -18,6 +18,8 @@ from core.message.parsers import (
     GroupMessageParser,
     InteractionParser,
     MessageParser,
+    GroupMsgRejectParser,
+    GroupMsgReceiveParser,
 )
 
 # 交互回调 (op12 ACK) 默认状态码与默认等待插件超时 (秒)
@@ -59,9 +61,6 @@ GUILD_UPDATE = 'GUILD_UPDATE'
 AT_MESSAGE_CREATE = 'AT_MESSAGE_CREATE'
 DIRECT_MESSAGE_CREATE = 'DIRECT_MESSAGE_CREATE'
 MESSAGE_CREATE = 'MESSAGE_CREATE'
-MESSAGE_AUDIT_PASS = 'MESSAGE_AUDIT_PASS'
-MESSAGE_AUDIT_REJECT = 'MESSAGE_AUDIT_REJECT'
-
 # 分类集合
 MESSAGE_TYPES = frozenset(
     {
@@ -126,6 +125,8 @@ _FRIEND_DEL_PARSER = FriendDelParser()
 _GROUP_MEMBER_ADD_PARSER = GroupMemberAddParser()
 _GROUP_MEMBER_REMOVE_PARSER = GroupMemberRemoveParser()
 _MESSAGE_PARSER = MessageParser()
+_GROUP_MSG_REJECT_PARSER = GroupMsgRejectParser()
+_GROUP_MSG_RECEIVE_PARSER = GroupMsgReceiveParser()
 
 # 解析器映射表
 _PARSERS = {
@@ -142,6 +143,8 @@ _PARSERS = {
     GROUP_MEMBER_REMOVE: _GROUP_MEMBER_REMOVE_PARSER,
     FRIEND_ADD: _FRIEND_ADD_PARSER,
     FRIEND_DEL: _FRIEND_DEL_PARSER,
+    GROUP_MSG_REJECT: _GROUP_MSG_REJECT_PARSER,
+    GROUP_MSG_RECEIVE: _GROUP_MSG_RECEIVE_PARSER,
 }
 
 
@@ -205,6 +208,7 @@ class Event:
         'sharer_id',
         'scene_param',
         'mentions',
+        'bot_member_role',
         'is_at_self',
         'is_at_other_bot',
         'is_at_other_user',
@@ -257,6 +261,7 @@ class Event:
         self.sharer_id = None
         self.scene_param = None
         self.mentions = []
+        self.bot_member_role = ''
         self.is_at_self = False
         self.is_at_other_bot = False
         self.is_at_other_user = False

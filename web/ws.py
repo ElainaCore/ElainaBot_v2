@@ -89,7 +89,7 @@ class WSBroadcast:
         self._sse_queues.clear()
 
 
-# 模块级单例 (向后兼容)
+# 模块级单例
 _broadcast = WSBroadcast()
 
 

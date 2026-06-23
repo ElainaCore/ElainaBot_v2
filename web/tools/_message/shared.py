@@ -51,9 +51,9 @@ def _batch_get_nicknames(user_ids):
         else:
             pending.append(uid)
     if pending and _bot_manager:
-        # SQLite 占位符限制, 分批 (1万/次 足够)
-        for chunk_start in range(0, len(pending), 500):
-            chunk = pending[chunk_start : chunk_start + 500]
+        # SQLite 占位符限制 999, 分批查询
+        for chunk_start in range(0, len(pending), 900):
+            chunk = pending[chunk_start : chunk_start + 900]
             placeholders = ','.join('?' * len(chunk))
             sql = f'SELECT user_id, name FROM users WHERE user_id IN ({placeholders})'
             for inst in _bot_manager._bots.values():
@@ -92,12 +92,23 @@ def _get_bot(appid=''):
     return next(iter(_bot_manager._bots.values()))
 
 
+_fa_cache: set | None = None
+_fa_cache_ts: float = 0
+_FA_CACHE_TTL = 120
+
+
 def _get_full_access_group_ids():
-    """返回所有全量群 group_id 集合"""
+    """返回所有全量群 group_id 集合 (带 120s 内存缓存)"""
+    global _fa_cache, _fa_cache_ts
+    now = time.time()
+    if _fa_cache is not None and now - _fa_cache_ts < _FA_CACHE_TTL:
+        return _fa_cache
     if not _bot_manager:
         return set()
     try:
         rows = _bot_manager.get_full_access_groups()
-        return {r['group_id'] for r in rows if r.get('group_id')}
+        _fa_cache = {r['group_id'] for r in rows if r.get('group_id')}
     except Exception:
-        return set()
+        _fa_cache = set()
+    _fa_cache_ts = now
+    return _fa_cache
