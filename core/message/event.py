@@ -6,20 +6,20 @@ import json
 from functools import partial
 
 from core.message.parsers import (
-    parse_channel_direct_message,
-    parse_channel_message,
-    parse_direct_message,
-    parse_friend_add,
-    parse_friend_del,
-    parse_group_add_robot,
-    parse_group_del_robot,
-    parse_group_member_add,
-    parse_group_member_remove,
-    parse_group_message,
-    parse_group_msg_receive,
-    parse_group_msg_reject,
-    parse_interaction,
-    parse_message_generic,
+    ChannelDirectMessageParser,
+    ChannelMessageParser,
+    DirectMessageParser,
+    FriendAddParser,
+    FriendDelParser,
+    GroupAddRobotParser,
+    GroupDelRobotParser,
+    GroupMemberAddParser,
+    GroupMemberRemoveParser,
+    GroupMessageParser,
+    InteractionParser,
+    MessageParser,
+    GroupMsgRejectParser,
+    GroupMsgReceiveParser,
 )
 
 # 交互回调 (op12 ACK) 默认状态码与默认等待插件超时 (秒)
@@ -112,23 +112,39 @@ _REPLY_ENDPOINTS = {
     MESSAGE_CREATE: lambda e: f'/channels/{e.channel_id}/messages',
 }
 
+# 解析器实例（无状态，可复用）
+_GROUP_PARSER = GroupMessageParser()
+_DIRECT_PARSER = DirectMessageParser()
+_CHANNEL_PARSER = ChannelMessageParser()
+_CHANNEL_DM_PARSER = ChannelDirectMessageParser()
+_INTERACTION_PARSER = InteractionParser()
+_GROUP_ADD_PARSER = GroupAddRobotParser()
+_GROUP_DEL_PARSER = GroupDelRobotParser()
+_FRIEND_ADD_PARSER = FriendAddParser()
+_FRIEND_DEL_PARSER = FriendDelParser()
+_GROUP_MEMBER_ADD_PARSER = GroupMemberAddParser()
+_GROUP_MEMBER_REMOVE_PARSER = GroupMemberRemoveParser()
+_MESSAGE_PARSER = MessageParser()
+_GROUP_MSG_REJECT_PARSER = GroupMsgRejectParser()
+_GROUP_MSG_RECEIVE_PARSER = GroupMsgReceiveParser()
+
 # 解析器映射表
 _PARSERS = {
-    GROUP_AT_MESSAGE_CREATE: parse_group_message,
-    GROUP_MESSAGE_CREATE: parse_group_message,
-    C2C_MESSAGE_CREATE: parse_direct_message,
-    AT_MESSAGE_CREATE: parse_channel_message,
-    DIRECT_MESSAGE_CREATE: parse_channel_direct_message,
-    MESSAGE_CREATE: parse_channel_message,
-    INTERACTION_CREATE: parse_interaction,
-    GROUP_ADD_ROBOT: parse_group_add_robot,
-    GROUP_DEL_ROBOT: parse_group_del_robot,
-    GROUP_MEMBER_ADD: parse_group_member_add,
-    GROUP_MEMBER_REMOVE: parse_group_member_remove,
-    FRIEND_ADD: parse_friend_add,
-    FRIEND_DEL: parse_friend_del,
-    GROUP_MSG_REJECT: parse_group_msg_reject,
-    GROUP_MSG_RECEIVE: parse_group_msg_receive,
+    GROUP_AT_MESSAGE_CREATE: _GROUP_PARSER,
+    GROUP_MESSAGE_CREATE: _GROUP_PARSER,
+    C2C_MESSAGE_CREATE: _DIRECT_PARSER,
+    AT_MESSAGE_CREATE: _CHANNEL_PARSER,
+    DIRECT_MESSAGE_CREATE: _CHANNEL_DM_PARSER,
+    MESSAGE_CREATE: _CHANNEL_PARSER,
+    INTERACTION_CREATE: _INTERACTION_PARSER,
+    GROUP_ADD_ROBOT: _GROUP_ADD_PARSER,
+    GROUP_DEL_ROBOT: _GROUP_DEL_PARSER,
+    GROUP_MEMBER_ADD: _GROUP_MEMBER_ADD_PARSER,
+    GROUP_MEMBER_REMOVE: _GROUP_MEMBER_REMOVE_PARSER,
+    FRIEND_ADD: _FRIEND_ADD_PARSER,
+    FRIEND_DEL: _FRIEND_DEL_PARSER,
+    GROUP_MSG_REJECT: _GROUP_MSG_REJECT_PARSER,
+    GROUP_MSG_RECEIVE: _GROUP_MSG_RECEIVE_PARSER,
 }
 
 
@@ -300,9 +316,9 @@ class Event:
 
         parser = _PARSERS.get(et)
         if parser:
-            parser(self, d)
+            parser.parse(self, d)
         elif et in MESSAGE_TYPES:
-            parse_message_generic(self, d)
+            _MESSAGE_PARSER.parse(self, d)
 
     # ==================== 属性 ====================
 

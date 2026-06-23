@@ -22,7 +22,7 @@ from core.message.event import (
     MESSAGE_TYPES,
     SILENT_TYPES,
 )
-from core.message.parsers import swap_ids
+from core.message.parsers import IdentityHelper
 
 log = get_logger(FRAMEWORK, '事件处理')
 
@@ -104,7 +104,7 @@ class EventHandlerMixin:
                 else cfg.get_bot_setting(appid, 'identity.use_union_id_for_group', False)
             )
             if need_swap:
-                event.user_id, event.union_openid, _ = swap_ids(event.raw_user_id, event.union_openid, True)
+                event.user_id, event.union_openid, _ = IdentityHelper.swap_ids(event.raw_user_id, event.union_openid, True)
 
         # 生命周期事件
         lc = self._LIFECYCLE_HANDLERS.get(et)
