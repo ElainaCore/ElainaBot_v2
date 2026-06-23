@@ -173,10 +173,12 @@ _INDEXES = {
         'CREATE INDEX IF NOT EXISTS idx_msg_user_cover ON log(user_id, group_id, timestamp, id, content)',
 
         'CREATE INDEX IF NOT EXISTS idx_msg_direction ON log(direction, user_id, group_id, content)',
+        'CREATE INDEX IF NOT EXISTS idx_msg_plugin_name ON log(plugin_name)',
     ],
     'lifecycle': [
         'CREATE INDEX IF NOT EXISTS idx_lc_user_id ON log(user_id)',
         'CREATE INDEX IF NOT EXISTS idx_lc_group_id ON log(group_id)',
+        'CREATE INDEX IF NOT EXISTS idx_lc_type ON log(type)',
     ],
 }
 

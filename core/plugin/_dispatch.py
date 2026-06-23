@@ -269,7 +269,6 @@ class _DispatchMixin:
         et: str,
         content: str,
     ) -> None:
-        t0: float = time.time()
         try:
             fn = h['func']
             coro = fn(event, match) if h['is_coro'] else asyncio.get_running_loop().run_in_executor(None, fn, event, match)
@@ -300,9 +299,6 @@ class _DispatchMixin:
                 },
             )
         finally:
-            dt: float = time.time() - t0
-            if dt > 3:
-                log.warning(f'[性能] 处理器 [{plugin_name}] 耗时 {dt * 1000:.0f}ms content={content[:50]}')
             event.raw = event._reply_log_cb = None
 
     # ---------- 日志服务 ----------

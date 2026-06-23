@@ -97,6 +97,11 @@ def get_routes() -> list:
         web.post('/api/message/group-roles', _(message_handler.handle_get_group_roles)),
         # ── 统计 ──
         web.get('/api/statistics', _(statistics_handler.handle_get_statistics)),
+        web.get('/api/statistics/summary', _(statistics_handler.handle_get_summary)),
+        web.get('/api/statistics/active', _(statistics_handler.handle_get_active)),
+        web.get('/api/statistics/top', _(statistics_handler.handle_get_top)),
+        web.get('/api/statistics/events', _(statistics_handler.handle_get_events)),
+        web.get('/api/statistics/totals', _(statistics_handler.handle_get_totals)),
         web.get('/api/statistics/hourly', _(statistics_handler.handle_get_hourly_statistics)),
         web.get('/api/statistics/chart', _(statistics_handler.handle_get_chart_data)),
         web.get(

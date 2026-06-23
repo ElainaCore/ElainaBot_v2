@@ -81,7 +81,6 @@ class EventHandlerMixin:
     # ==================== 事件入口 ====================
 
     async def _on_event(self, event):
-        _t0 = time.time()
         appid = event.appid
         bot = self._bots.get(appid)
         if not bot:
@@ -206,16 +205,6 @@ class EventHandlerMixin:
             report_error(FRAMEWORK, '事件分发', e, context=ctx)
             web_log_err_item = {'appid': appid, 'source': '事件分发', 'content': str(e), 'event_type': et}
             self._push_web_log('error', web_log_err_item)
-        _dt = time.time() - _t0
-        if _dt > 1:
-            msg = f'[性能] 事件处理耗时 {_dt * 1000:.0f}ms content={event.content[:50] if event.content else ""}'
-            log.warning(msg)
-            frm_log_item = {
-                'appid': appid,
-                'source': '性能',
-                'content': msg,
-            }
-            self._push_web_log('framework', frm_log_item)
 
     # ==================== 全量群记录 ====================
 
