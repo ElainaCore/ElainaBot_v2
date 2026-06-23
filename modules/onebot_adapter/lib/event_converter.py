@@ -146,7 +146,7 @@ async def convert_message_event(event, id_mapper, self_qq: int) -> dict | None:
     if is_group:
         ob_event['group_id'] = qq_group
         ob_event['sender']['card'] = ''
-        ob_event['sender']['role'] = 'member'
+        ob_event['sender']['role'] = event.member_role
         ob_event['anonymous'] = None
     else:
         ob_event['sub_type'] = 'friend'

@@ -13,6 +13,8 @@ from core.message.parsers import (
     FriendDelParser,
     GroupAddRobotParser,
     GroupDelRobotParser,
+    GroupMemberAddParser,
+    GroupMemberRemoveParser,
     GroupMessageParser,
     InteractionParser,
     MessageParser,
@@ -121,6 +123,8 @@ _GROUP_ADD_PARSER = GroupAddRobotParser()
 _GROUP_DEL_PARSER = GroupDelRobotParser()
 _FRIEND_ADD_PARSER = FriendAddParser()
 _FRIEND_DEL_PARSER = FriendDelParser()
+_GROUP_MEMBER_ADD_PARSER = GroupMemberAddParser()
+_GROUP_MEMBER_REMOVE_PARSER = GroupMemberRemoveParser()
 _MESSAGE_PARSER = MessageParser()
 
 # 解析器映射表
@@ -134,8 +138,8 @@ _PARSERS = {
     INTERACTION_CREATE: _INTERACTION_PARSER,
     GROUP_ADD_ROBOT: _GROUP_ADD_PARSER,
     GROUP_DEL_ROBOT: _GROUP_DEL_PARSER,
-    GROUP_MEMBER_ADD: parse_group_member_add,
-    GROUP_MEMBER_REMOVE: parse_group_member_remove,
+    GROUP_MEMBER_ADD: _GROUP_MEMBER_ADD_PARSER,
+    GROUP_MEMBER_REMOVE: _GROUP_MEMBER_REMOVE_PARSER,
     FRIEND_ADD: _FRIEND_ADD_PARSER,
     FRIEND_DEL: _FRIEND_DEL_PARSER,
 }

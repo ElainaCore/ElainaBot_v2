@@ -40,7 +40,7 @@ class MessageParser:
             if not isinstance(att, dict):
                 continue
             if att.get('content_type', '').startswith('image/'):
-                return html.unescape(att.get('url', '')) or None
+                return html.unescape(att.get('url', '') or None)
         return None
 
     def parse(self, event, d):
@@ -59,8 +59,29 @@ class MessageParser:
         event.raw_user_id = event.user_id
         event.username = author.get('username', '')
         event.member_openid = author.get('member_openid', '')
+        event.member_role = author.get('member_role', '')
         event.union_openid = author.get('union_openid', '')
         event.is_bot = author.get('bot', False)
+
+        event.group_id = d.get('group_openid') or d.get('group_id', '')
+        event.group_openid = d.get('group_openid', '')
+        event.guild_id = d.get('guild_id', '')
+        event.channel_id = d.get('channel_id', '')
+
+        if event.image_url and event.content:
+            event.content = f'{event.content}<{event.image_url}>'
+        elif event.image_url:
+            event.content = f'<{event.image_url}>'
+
+        self.apply_message_scene(event, d)
+
+    @staticmethod
+    def apply_message_scene(event, d):
+        """填充 message_scene / message_reference_id / scene_source (供交互回调等非文本消息复用)"""
+        scene = d.get('message_scene', {})
+        event.message_scene = scene if isinstance(scene, dict) else {}
+        event.message_reference_id = extract_msg_idx(scene)
+        event.scene_source = scene.get('source', '') if isinstance(scene, dict) else ''
 
 
 def extract_msg_idx(scene):
@@ -75,174 +96,10 @@ def extract_msg_idx(scene):
     for item in ext:
         if not isinstance(item, str):
             continue
-        m = _MSG_IDX_PATTERN.search(item)
+        m = MessageParser._MSG_IDX_PATTERN.search(item)
         if m:
             return unquote(m.group(1))
     return ''
-
-
-# ==================== 通用消息解析 ====================
-
-
-def parse_message_generic(event, d):
-    """通用消息解析 (兜底)"""
-    event.message_id = d.get('id', '')
-    event.raw_content = d.get('content', '')
-    event.content = sanitize_content(event.raw_content)
-    event.timestamp = d.get('timestamp', '')
-    event.message_type = d.get('message_type')
-    event.msg_elements = d.get('msg_elements', [])
-    event.attachments = d.get('attachments', [])
-    event.image_url = extract_image_from_attachments(event.attachments)
-
-    author = d.get('author', {})
-    event.user_id = author.get('member_openid') or author.get('id', '')
-    event.raw_user_id = event.user_id
-    event.username = author.get('username', '')
-    event.member_openid = author.get('member_openid', '')
-    event.member_role = author.get('member_role', '')
-    event.union_openid = author.get('union_openid', '')
-    event.is_bot = author.get('bot', False)
-
-    event.group_id = d.get('group_openid') or d.get('group_id', '')
-    event.group_openid = d.get('group_openid', '')
-    event.guild_id = d.get('guild_id', '')
-    event.channel_id = d.get('channel_id', '')
-
-    scene = d.get('message_scene', {})
-    event.message_scene = scene if isinstance(scene, dict) else {}
-    event.message_reference_id = extract_msg_idx(scene)
-    event.scene_source = scene.get('source', '') if isinstance(scene, dict) else ''
-
-    if event.image_url and event.content:
-        event.content = f'{event.content}<{event.image_url}>'
-    elif event.image_url:
-        event.content = f'<{event.image_url}>'
-
-
-# ==================== 专属解析器 ====================
-
-
-def parse_group_message(event, d):
-    """群聊消息解析"""
-    parse_message_generic(event, d)
-    mentions = d.get('mentions')
-    if not isinstance(mentions, list):
-        return
-    event.mentions = mentions
-    is_full = event.event_type == 'GROUP_MESSAGE_CREATE'
-    for mention in mentions:
-        if isinstance(mention, dict) is False:
-            continue
-        is_you = mention.get('is_you')
-        if is_you is True:
-            event.is_at_self = True
-            if is_full:
-                mid = mention.get('id')
-                if mid and event.appid:
-                    bot_openid.add(event.appid, mid)
-        if mention.get('bot') is True and not is_you:
-            event.is_at_other_bot = True
-        if not mention.get('bot') and not is_you and mention.get('scope') != 'all':
-            event.is_at_other_user = True
-        if mention.get('scope') == 'all':
-            event.is_at_all = True
-    if is_full and '<@' in event.content and event.appid:
-        # 全量环境机器人可能有虚拟 id (content 的 <@id> 与 mentions[].id 不一致)。
-        # 未记录齐全且本条仅艾特机器人时, content 里的 <@id> 必指向机器人本身, 记下并标记
-        # done; 之后直接按缓存无脑移除, 不再判断。
-        only_self_at = (
-            event.is_at_self
-            and not event.is_at_other_bot
-            and not event.is_at_other_user
-            and not event.is_at_all
-        )
-        if only_self_at and not bot_openid.is_done(event.appid):
-            bot_openid.learn(event.appid, event.content)
-        event.content = bot_openid.strip_self_at(event.appid, event.content)
-
-
-def parse_direct_message(event, d):
-    """C2C 私聊消息解析"""
-    parse_message_generic(event, d)
-    event.is_group = False
-    event.is_direct = True
-
-
-def parse_channel_message(event, d):
-    """频道消息解析: 去除 @bot 前缀"""
-    parse_message_generic(event, d)
-    mentions = d.get('mentions')
-    if isinstance(mentions, list) and mentions:
-        bot_id = mentions[0].get('id')
-        if bot_id and event.raw_content:
-            for prefix in [f'<@!{bot_id}>', f'<@{bot_id}>']:
-                if event.raw_content.startswith(prefix):
-                    cleaned = event.raw_content[len(prefix) :].lstrip()
-                    event.content = sanitize_content(cleaned)
-                    break
-    event.group_id = d.get('channel_id', '')
-
-
-def parse_channel_direct_message(event, d):
-    """频道私信解析"""
-    parse_message_generic(event, d)
-    event.guild_id = d.get('guild_id', '')
-
-
-def parse_interaction(event, d):
-    """交互事件解析 (按钮回调等)"""
-    event.interaction_data = d
-    event.message_id = d.get('id', '')
-
-    if d.get('type') == 13:
-        event.content = ''
-        return
-    event.timestamp = d.get('timestamp', '')
-
-    chat_type = d.get('chat_type')
-    scene = d.get('scene')
-    event.chat_type_code = chat_type
-    event.scene = scene
-
-    if chat_type == 1 or scene == 'group':
-        event.group_id = d.get('group_openid') or d.get('group_id', '')
-        event.group_openid = d.get('group_openid', '')
-        event.guild_id = d.get('guild_id', '')
-        event.channel_id = d.get('channel_id', '')
-
-        if event.image_url and event.content:
-            event.content = f'{event.content}<{event.image_url}>'
-        elif event.image_url:
-            event.content = f'<{event.image_url}>'
-
-        self.apply_message_scene(event, d)
-
-    @classmethod
-    def extract_msg_idx(cls, scene):
-        """从 message_scene.ext 中提取可用于 message_reference 的 REFIDX。"""
-        if not isinstance(scene, dict):
-            return ''
-        ext = scene.get('ext', [])
-        if isinstance(ext, str):
-            ext = [ext]
-        if not isinstance(ext, list):
-            return ''
-        for item in ext:
-            if not isinstance(item, str):
-                continue
-            m = cls._MSG_IDX_PATTERN.search(item)
-            if m:
-                return unquote(m.group(1))
-        return ''
-
-    @staticmethod
-    def apply_message_scene(event, d):
-        """填充 message_scene / message_reference_id / scene_source (供交互回调等非文本消息复用)"""
-        scene = d.get('message_scene', {})
-        event.message_scene = scene if isinstance(scene, dict) else {}
-        event.message_reference_id = MessageParser.extract_msg_idx(scene)
-        event.scene_source = scene.get('source', '') if isinstance(scene, dict) else ''
 
 
 # ==================== 群聊 / 私聊 / 频道消息 ====================
@@ -251,13 +108,11 @@ def parse_interaction(event, d):
 class GroupMessageParser(MessageParser):
     """群聊消息解析器"""
 
-    def parse(self, event, d):
-        super().parse(event, d)
+    def handle_metions(self, event, d: dict, is_full: bool):
         mentions = d.get('mentions')
         if not isinstance(mentions, list):
             return
         event.mentions = mentions
-        is_full = event.event_type == 'GROUP_MESSAGE_CREATE'
         for mention in mentions:
             if isinstance(mention, dict) is False:
                 continue
@@ -274,10 +129,12 @@ class GroupMessageParser(MessageParser):
                 event.is_at_other_user = True
             if mention.get('scope') == 'all':
                 event.is_at_all = True
+
+    def parse(self, event, d: dict):
+        super().parse(event, d)
+        is_full = event.event_type == 'GROUP_MESSAGE_CREATE'
+        self.handle_metions(event, d, is_full)
         if is_full and '<@' in event.content and event.appid:
-            # 全量环境机器人可能有虚拟 id (content 的 <@id> 与 mentions[].id 不一致)。
-            # 未记录齐全且本条仅艾特机器人时, content 里的 <@id> 必指向机器人本身, 记下并标记
-            # done; 之后直接按缓存无脑移除, 不再判断。
             only_self_at = event.is_at_self and not event.is_at_other_bot and not event.is_at_other_user and not event.is_at_all
             if only_self_at and not bot_openid.is_done(event.appid):
                 bot_openid.learn(event.appid, event.content)
@@ -363,29 +220,6 @@ class InteractionParser(MessageParser):
         resolved = d.get('data', {}).get('resolved', {})
         button_data = resolved.get('button_data', '') or resolved.get('button_id', '')
         event.content = self.sanitize_content(button_data)
-def parse_group_member_add(event, d):
-    """用户入群事件解析"""
-    _parse_lifecycle_base(event, d, 'member_openid')
-    event.member_openid = event.user_id
-    event.content = f'用户 {event.user_id} 加入群聊 {event.group_id}'
-
-
-def parse_group_member_remove(event, d):
-    """用户退群事件解析"""
-    _parse_lifecycle_base(event, d, 'member_openid')
-    event.member_openid = event.user_id
-    event.content = f'用户 {event.user_id} 退出群聊 {event.group_id}'
-
-
-def _extract_sharer_id(scene_param):
-    """从 scene_param 提取分享者 ID"""
-    if not scene_param:
-        return None
-    try:
-        sp = json.loads(scene_param) if isinstance(scene_param, str) else scene_param
-        return sp.get('callbackData', '') if isinstance(sp, dict) else str(scene_param)
-    except (json.JSONDecodeError, AttributeError):
-        return str(scene_param)
 
 
 # ==================== 生命周期事件 ====================
@@ -416,6 +250,24 @@ class GroupDelRobotParser(LifecycleParser):
     def parse(self, event, d):
         self._parse_base(event, d, 'op_member_openid')
         event.content = f'机器人被移出群聊 {event.group_id}'
+
+
+class GroupMemberAddParser(LifecycleParser):
+    """用户入群事件解析器"""
+
+    def parse(self, event, d):
+        self._parse_base(event, d, 'member_openid')
+        event.member_openid = event.user_id
+        event.content = f'用户 {event.user_id} 加入群聊 {event.group_id}'
+
+
+class GroupMemberRemoveParser(LifecycleParser):
+    """用户退群事件解析器"""
+
+    def parse(self, event, d):
+        self._parse_base(event, d, 'member_openid')
+        event.member_openid = event.user_id
+        event.content = f'用户 {event.user_id} 退出群聊 {event.group_id}'
 
 
 class FriendAddParser(LifecycleParser):
