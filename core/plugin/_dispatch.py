@@ -186,6 +186,9 @@ class _DispatchMixin:
 
         if self._match_handlers(handlers, handler_content, event, appid, is_non_at, non_at_ok, scene, user_id, et, content, skip_at_other):
             return True
+        alt = handler_content[1:] if handler_content[:1] == '/' else '/' + handler_content
+        if self._match_handlers(handlers, alt, event, appid, is_non_at, non_at_ok, scene, user_id, et, content, skip_at_other):
+            return True
 
         # 无匹配 → 默认回复
         should_default: bool = not suppress_reply and (et in ('GROUP_AT_MESSAGE_CREATE', 'C2C_MESSAGE_CREATE') or (is_group_msg and is_at_self))

@@ -5,22 +5,23 @@ import asyncio
 import json
 from functools import partial
 
-from core.message.parsers import (
-    ChannelDirectMessageParser,
-    ChannelMessageParser,
-    DirectMessageParser,
+from core.message.parsers.base import (
+    GroupMsgRejectParser,
+    GroupMsgReceiveParser,
+)
+from core.message.parsers.channel import ChannelDirectMessageParser, ChannelMessageParser
+from core.message.parsers.direct import DirectMessageParser
+from core.message.parsers.group import GroupMessageParser
+from core.message.parsers.interaction import InteractionParser
+from core.message.parsers.lifecycle import (
     FriendAddParser,
     FriendDelParser,
     GroupAddRobotParser,
     GroupDelRobotParser,
     GroupMemberAddParser,
     GroupMemberRemoveParser,
-    GroupMessageParser,
-    InteractionParser,
-    MessageParser,
-    GroupMsgRejectParser,
-    GroupMsgReceiveParser,
 )
+from core.message.parsers.base import MessageParser
 
 # 交互回调 (op12 ACK) 默认状态码与默认等待插件超时 (秒)
 _DEFAULT_CALLBACK_CODE = 0
