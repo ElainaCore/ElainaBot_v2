@@ -407,15 +407,114 @@ def _gather_chart_sync(days, appid_filter):
 
 
 def _gather_stats(force=False, selected_date='', appid_filter=''):
-    """收集统计数据 — 实时 message.db + 已存 dau.db"""
+    """收集统计数据 — 实时 message.db + 已存 dau.db (兼容旧接口, 汇总所有子查询)"""
     now = datetime.now()
-    bots_count = len(_bot_manager._bots) if _bot_manager else 0
     date = selected_date or now.strftime('%Y-%m-%d')
-    is_today = date == now.strftime('%Y-%m-%d')
 
-    total_msg, priv_msg, n_users, n_groups = 0, 0, 0, 0
+    summary = _gather_summary(date, appid_filter)
+    active = _gather_active(date, appid_filter)
+    top = _gather_top(date, appid_filter)
+    events = _gather_events(date, appid_filter)
+    totals = _gather_totals(appid_filter)
+
+    hourly = _aggregate_hourly(appid_filter, date)
+    peak_h = max(hourly, key=hourly.get) if hourly else '00'
+    hourly_dist = [hourly.get(f'{h:02d}', 0) for h in range(24)]
+    yesterday_dist = None
+    if not selected_date:
+        yh = _aggregate_hourly(appid_filter, (now - timedelta(days=1)).strftime('%Y-%m-%d'))
+        yesterday_dist = [yh.get(f'{h:02d}', 0) for h in range(24)]
+
+    return {
+        'today': {
+            'message_stats': {
+                'total_messages': summary['total_messages'],
+                'private_messages': summary['private_messages'],
+                'active_users': active['active_users'],
+                'active_groups': active['active_groups'],
+                'peak_hour': int(peak_h) if peak_h.isdigit() else 0,
+                'peak_hour_count': hourly.get(peak_h, 0),
+            },
+            'hourly_distribution': hourly_dist,
+            'yesterday_hourly_distribution': yesterday_dist,
+            'top_groups': top['top_groups'],
+            'top_users': top['top_users'],
+            'top_commands': top['top_commands'],
+            'event_stats': events,
+            'total_users': totals['total_users'],
+            'total_groups': totals['total_groups'],
+        },
+        'bots_count': summary['bots_count'],
+        'cache_date': date,
+    }
+
+
+# ==================== 拆分子查询 ====================
+
+
+def _gather_summary(date, appid_filter):
+    """消息总量 / 私聊量 — 单次 COUNT, 不含 DISTINCT, 快"""
+    now = datetime.now()
+    is_today = date == now.strftime('%Y-%m-%d')
+    bots_count = len(_bot_manager._bots) if _bot_manager else 0
+    total_msg, priv_msg = 0, 0
+
+    for _, inst in _iter_bots(appid_filter):
+        if is_today:
+            with contextlib.suppress(Exception):
+                rows = inst.log_service.query(
+                    'message',
+                    "SELECT COUNT(*) as cnt, "
+                    "COUNT(CASE WHEN group_id='c2c' OR group_id='' THEN 1 END) as private "
+                    "FROM log", date=date,
+                )
+                if rows:
+                    total_msg += rows[0].get('cnt', 0)
+                    priv_msg += rows[0].get('private', 0)
+        else:
+            with contextlib.suppress(Exception):
+                dau = inst.log_service.query('dau', 'SELECT * FROM log WHERE date=?', (date,))
+                if dau:
+                    total_msg += dau[0].get('total_messages', 0)
+                    priv_msg += dau[0].get('private_messages', 0)
+
+    return {'total_messages': total_msg, 'private_messages': priv_msg, 'bots_count': bots_count}
+
+
+def _gather_active(date, appid_filter):
+    """活跃用户 / 群数 — COUNT(DISTINCT), 百万行级最慢的查询"""
+    now = datetime.now()
+    is_today = date == now.strftime('%Y-%m-%d')
+    n_users, n_groups = 0, 0
+
+    for _, inst in _iter_bots(appid_filter):
+        if is_today:
+            with contextlib.suppress(Exception):
+                rows = inst.log_service.query(
+                    'message',
+                    "SELECT "
+                    "COUNT(DISTINCT CASE WHEN user_id!='' THEN user_id END) as users, "
+                    "COUNT(DISTINCT CASE WHEN group_id!='' AND group_id!='c2c' THEN group_id END) as groups_ "
+                    "FROM log", date=date,
+                )
+                if rows:
+                    n_users += rows[0].get('users', 0)
+                    n_groups += rows[0].get('groups_', 0)
+        else:
+            with contextlib.suppress(Exception):
+                dau = inst.log_service.query('dau', 'SELECT * FROM log WHERE date=?', (date,))
+                if dau:
+                    n_users += dau[0].get('active_users', 0)
+                    n_groups += dau[0].get('active_groups', 0)
+
+    return {'active_users': n_users, 'active_groups': n_groups}
+
+
+def _gather_top(date, appid_filter):
+    """TOP 排行 — GROUP BY + ORDER BY, 有索引后较快"""
+    now = datetime.now()
+    is_today = date == now.strftime('%Y-%m-%d')
     group_msg, user_msg, cmd_msg = {}, {}, {}
-    ev = {'group_join_count': 0, 'group_leave_count': 0, 'friend_add_count': 0, 'friend_remove_count': 0}
 
     top_sql = {
         'groups': "SELECT group_id AS k, COUNT(*) AS c FROM log WHERE group_id!='' AND group_id!='c2c' GROUP BY k ORDER BY c DESC LIMIT 10",
@@ -425,70 +524,106 @@ def _gather_stats(force=False, selected_date='', appid_filter=''):
 
     for _, inst in _iter_bots(appid_filter):
         if is_today:
-            with contextlib.suppress(Exception):
-                rows = inst.log_service.query(
-                    'message',
-                    'SELECT COUNT(*) as cnt, '
-                    "COUNT(DISTINCT CASE WHEN user_id!='' THEN user_id END) as users, "
-                    "COUNT(DISTINCT CASE WHEN group_id!='' AND group_id!='c2c' THEN group_id END) as groups_, "
-                    "COUNT(CASE WHEN group_id='c2c' OR group_id='' THEN 1 END) as private "
-                    'FROM log', date=date,
-                )
-                if rows:
-                    r = rows[0]
-                    total_msg += r.get('cnt', 0)
-                    priv_msg += r.get('private', 0)
-                    n_users += r.get('users', 0)
-                    n_groups += r.get('groups_', 0)
-                for label, sql in top_sql.items():
-                    dst = {'groups': group_msg, 'users': user_msg, 'cmds': cmd_msg}[label]
+            for label, sql in top_sql.items():
+                dst = {'groups': group_msg, 'users': user_msg, 'cmds': cmd_msg}[label]
+                with contextlib.suppress(Exception):
                     for r in inst.log_service.query('message', sql, date=date):
                         k = r.get('k', '')
                         if k:
                             dst[k] = dst.get(k, 0) + r.get('c', 0)
-        if not is_today:
-            with contextlib.suppress(Exception):
-                dau = inst.log_service.query('dau', 'SELECT * FROM log WHERE date=?', (date,))
-                if dau:
-                    d = dau[0]
-                    for ek in ev:
-                        ev[ek] += d.get(ek, 0)
-                    total_msg += d.get('total_messages', 0)
-                    priv_msg += d.get('private_messages', 0)
-                    n_users += d.get('active_users', 0)
-                    n_groups += d.get('active_groups', 0)
+
+    return {
+        'top_groups': [{'group_id': k, 'message_count': c} for k, c in sorted(group_msg.items(), key=lambda x: x[1], reverse=True)[:10]],
+        'top_users': [{'user_id': k, 'message_count': c} for k, c in sorted(user_msg.items(), key=lambda x: x[1], reverse=True)[:10]],
+        'top_commands': [{'command': k, 'count': c} for k, c in sorted(cmd_msg.items(), key=lambda x: x[1], reverse=True)[:10]],
+    }
+
+
+def _gather_events(date, appid_filter):
+    """生命周期事件统计 — lifecycle.db 小表, 快"""
+    now = datetime.now()
+    is_today = date == now.strftime('%Y-%m-%d')
+    ev = {'group_join_count': 0, 'group_leave_count': 0, 'friend_add_count': 0, 'friend_remove_count': 0}
 
     if is_today:
         today_ev = _count_lifecycle_today(appid_filter, date)
         for ek in ev:
             ev[ek] += today_ev.get(ek, 0)
+    else:
+        for _, inst in _iter_bots(appid_filter):
+            with contextlib.suppress(Exception):
+                dau = inst.log_service.query('dau', 'SELECT * FROM log WHERE date=?', (date,))
+                if dau:
+                    for ek in ev:
+                        ev[ek] += dau[0].get(ek, 0)
+    return ev
 
-    # 每小时分布
-    hourly = _aggregate_hourly(appid_filter, date)
-    peak_h = max(hourly, key=hourly.get) if hourly else '00'
-    hourly_dist = [hourly.get(f'{h:02d}', 0) for h in range(24)]
 
-    yesterday_dist = None
-    if not selected_date:
-        yh = _aggregate_hourly(appid_filter, (now - timedelta(days=1)).strftime('%Y-%m-%d'))
-        yesterday_dist = [yh.get(f'{h:02d}', 0) for h in range(24)]
-
+def _gather_totals(appid_filter):
+    """累计用户 / 群组数 — data.db 小表 COUNT, 快"""
     return {
-        'today': {
-            'message_stats': {
-                'total_messages': total_msg, 'private_messages': priv_msg,
-                'active_users': n_users, 'active_groups': n_groups,
-                'peak_hour': int(peak_h) if peak_h.isdigit() else 0,
-                'peak_hour_count': hourly.get(peak_h, 0),
-            },
-            'hourly_distribution': hourly_dist,
-            'yesterday_hourly_distribution': yesterday_dist,
-            'top_groups': [{'group_id': k, 'message_count': c} for k, c in sorted(group_msg.items(), key=lambda x: x[1], reverse=True)[:10]],
-            'top_users': [{'user_id': k, 'message_count': c} for k, c in sorted(user_msg.items(), key=lambda x: x[1], reverse=True)[:10]],
-            'top_commands': [{'command': k, 'count': c} for k, c in sorted(cmd_msg.items(), key=lambda x: x[1], reverse=True)[:10]],
-            'event_stats': ev,
-            'total_users': _count_table(appid_filter, 'users'),
-            'total_groups': _count_table(appid_filter, 'groups_users'),
-        },
-        'bots_count': bots_count, 'cache_date': date,
+        'total_users': _count_table(appid_filter, 'users'),
+        'total_groups': _count_table(appid_filter, 'groups_users'),
     }
+
+
+# ==================== 拆分接口 Handler ====================
+
+
+async def handle_get_summary(request: web.Request):
+    """消息总量 (快)"""
+    appid = request.query.get('appid', '')
+    date = request.query.get('date', '') or datetime.now().strftime('%Y-%m-%d')
+    try:
+        loop = asyncio.get_running_loop()
+        data = await loop.run_in_executor(None, _gather_summary, date, appid)
+        return web.json_response({'success': True, 'data': data})
+    except Exception as e:
+        return web.json_response({'success': False, 'error': str(e)}, status=500)
+
+
+async def handle_get_active(request: web.Request):
+    """活跃用户/群 (慢 — COUNT DISTINCT)"""
+    appid = request.query.get('appid', '')
+    date = request.query.get('date', '') or datetime.now().strftime('%Y-%m-%d')
+    try:
+        loop = asyncio.get_running_loop()
+        data = await loop.run_in_executor(None, _gather_active, date, appid)
+        return web.json_response({'success': True, 'data': data})
+    except Exception as e:
+        return web.json_response({'success': False, 'error': str(e)}, status=500)
+
+
+async def handle_get_top(request: web.Request):
+    """TOP 排行 (中等)"""
+    appid = request.query.get('appid', '')
+    date = request.query.get('date', '') or datetime.now().strftime('%Y-%m-%d')
+    try:
+        loop = asyncio.get_running_loop()
+        data = await loop.run_in_executor(None, _gather_top, date, appid)
+        return web.json_response({'success': True, 'data': data})
+    except Exception as e:
+        return web.json_response({'success': False, 'error': str(e)}, status=500)
+
+
+async def handle_get_events(request: web.Request):
+    """生命周期事件 (快)"""
+    appid = request.query.get('appid', '')
+    date = request.query.get('date', '') or datetime.now().strftime('%Y-%m-%d')
+    try:
+        loop = asyncio.get_running_loop()
+        data = await loop.run_in_executor(None, _gather_events, date, appid)
+        return web.json_response({'success': True, 'data': data})
+    except Exception as e:
+        return web.json_response({'success': False, 'error': str(e)}, status=500)
+
+
+async def handle_get_totals(request: web.Request):
+    """累计用户/群组 (快)"""
+    appid = request.query.get('appid', '')
+    try:
+        loop = asyncio.get_running_loop()
+        data = await loop.run_in_executor(None, _gather_totals, appid)
+        return web.json_response({'success': True, 'data': data})
+    except Exception as e:
+        return web.json_response({'success': False, 'error': str(e)}, status=500)
