@@ -2,7 +2,7 @@
 """群聊消息解析器"""
 
 from core.message import bot_openid
-from core.message.parsers.base import MessageParser, sanitize_content
+from core.message.parsers.base import MessageParser
 
 
 class GroupMessageParser(MessageParser):

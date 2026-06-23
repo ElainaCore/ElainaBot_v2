@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """交互事件解析器 (按钮回调等)"""
 
-from core.message.parsers.base import MessageParser, sanitize_content
+from core.message.parsers.base import MessageParser, MessageUtils
 
 
 class InteractionParser(MessageParser):
@@ -45,4 +45,4 @@ class InteractionParser(MessageParser):
 
         resolved = d.get('data', {}).get('resolved', {})
         button_data = resolved.get('button_data', '') or resolved.get('button_id', '')
-        event.content = sanitize_content(button_data)
+        event.content = MessageUtils.sanitize_content(button_data)

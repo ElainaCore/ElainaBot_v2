@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """频道消息解析器"""
 
-from core.message.parsers.base import MessageParser, sanitize_content
+from core.message.parsers.base import MessageParser, MessageUtils
 
 
 class ChannelMessageParser(MessageParser):
@@ -16,7 +16,7 @@ class ChannelMessageParser(MessageParser):
                 for prefix in [f'<@!{bot_id}>', f'<@{bot_id}>']:
                     if event.raw_content.startswith(prefix):
                         cleaned = event.raw_content[len(prefix):].lstrip()
-                        event.content = sanitize_content(cleaned)
+                        event.content = MessageUtils.sanitize_content(cleaned)
                         break
         event.group_id = d.get('channel_id', '')
 
