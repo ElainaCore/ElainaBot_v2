@@ -128,6 +128,7 @@ async def convert_message_event(event, id_mapper, self_qq: int) -> dict | None:
         'message_type': 'group' if is_group else 'private',
         'sub_type': 'normal',
         'message_id': msg_id,
+        'raw_msg_id': event.message_id,
         'user_id': qq_user,
         'message': segments,
         'raw_message': raw_message,
@@ -145,7 +146,7 @@ async def convert_message_event(event, id_mapper, self_qq: int) -> dict | None:
     if is_group:
         ob_event['group_id'] = qq_group
         ob_event['sender']['card'] = ''
-        ob_event['sender']['role'] = 'member'
+        ob_event['sender']['role'] = event.member_role
         ob_event['anonymous'] = None
     else:
         ob_event['sub_type'] = 'friend'
@@ -178,6 +179,8 @@ async def convert_lifecycle_event(event, id_mapper, self_qq: int) -> dict | None
         'self_id': self_qq,
         'post_type': 'notice',
         'notice_type': notice_type,
+        'real_user_id': event.user_id,
+        'real_group_id': event.group_id,
         'user_id': self_qq if group_mode == 'robot' else qq_user,
     }
     if sub_type:

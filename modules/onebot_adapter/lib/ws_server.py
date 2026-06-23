@@ -171,7 +171,8 @@ class OneBotWSServer:
                 async with self._reverse_session.ws_connect(url, headers=headers, ssl=False) as ws:
                     wrapper = _WSWrapper(ws, remote=url, is_client=True, appid=appid, self_qq=self_qq)
                     self._clients.add(wrapper)
-                    self._log.info(f'反向 WS 已连接: {url} (self_qq={self_qq}, 当前 {len(self._clients)} 个)')
+                    msg = f'反向 WS 已连接: {url} (self_qq={self_qq}, appid={appid}, 当前 {len(self._clients)} 个)'
+                    self._log.info(msg)
                     await wrapper.send_str(self._lifecycle_json(self_qq))
 
                     async for msg in ws:
@@ -184,11 +185,11 @@ class OneBotWSServer:
                             break
 
                     self._clients.discard(wrapper)
-                    self._log.warning(f'反向 WS 断开: {url}')
+                    self._log.warning(f'反向 WS 断开: {url}, appid={appid}, 当前 {len(self._clients)} 个)')
             except asyncio.CancelledError:
                 return
             except Exception as e:
-                self._log.warning(f'反向 WS 连接失败 [{url}]: {e}')
+                self._log.warning(f'反向 WS 连接失败 [{url}], appid={appid}: {e}')
 
             await asyncio.sleep(self._reconnect_interval)
 
