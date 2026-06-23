@@ -5,10 +5,6 @@ import asyncio
 import json
 from functools import partial
 
-from core.message.parsers.base import (
-    GroupMsgRejectParser,
-    GroupMsgReceiveParser,
-)
 from core.message.parsers.channel import ChannelDirectMessageParser, ChannelMessageParser
 from core.message.parsers.direct import DirectMessageParser
 from core.message.parsers.group import GroupMessageParser
@@ -20,6 +16,8 @@ from core.message.parsers.lifecycle import (
     GroupDelRobotParser,
     GroupMemberAddParser,
     GroupMemberRemoveParser,
+    GroupMsgRejectParser,
+    GroupMsgReceiveParser,
 )
 from core.message.parsers.base import MessageParser
 
