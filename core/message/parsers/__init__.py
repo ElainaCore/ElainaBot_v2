@@ -3,6 +3,7 @@
 
 from core.message.parsers.base import (
     MessageParser,
+    MessageUtils,
     apply_message_scene,
     extract_msg_idx,
     extract_image_from_attachments,
@@ -29,6 +30,7 @@ from core.message.parsers.lifecycle import (
 __all__ = [
     # base
     'MessageParser',
+    'MessageUtils',
     'apply_message_scene',
     'extract_msg_idx',
     'extract_image_from_attachments',
