@@ -157,7 +157,8 @@ _DIM_PATTERN = re.compile(r'_(\d+)x(\d+)\.[^.]+$')
 # ==================== 模块入口 ====================
 
 async def setup(ctx):
-    global _instance
+    global _instance, _executor
+    _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix='img_host')
     cfg = ctx.ensure_config(_DEFAULTS, comments=_COMMENTS)
     _instance = ImageHosting(cfg, ctx)
     _instance.initialize()
