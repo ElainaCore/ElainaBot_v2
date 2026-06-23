@@ -193,6 +193,7 @@ class EventHandlerMixin:
             return
 
         # 屏蔽其他机器人发送的消息 (author.bot=true)
+        if getattr(event, 'is_bot', False) and cfg.get_bot_setting(appid, 'non_at_message.ignore_bot_sender', False):
             return
 
         # 插件分发
