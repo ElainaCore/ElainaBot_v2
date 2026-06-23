@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import logging
 import os
+from collections.abc import Callable
 
 from core.base.config import cfg
 from core.base.logger import SYSTEM, get_logger
@@ -13,6 +14,7 @@ from core.bot.registry import BotRegistry
 from core.module.hook import HookManager
 from core.module.manager import ModuleManager
 from core.plugin.manager import PluginManager
+from core.server.http_server import HttpServer
 from core.services.config_watcher import ConfigWatcherService
 from core.services.media_cleanup import MediaCleanupService
 from core.services.scheduler import RestartScheduler
@@ -27,10 +29,11 @@ def _tune_malloc():
     """调优 glibc malloc: 限制 arena, 降低碎片 (进程级)"""
     try:
         import ctypes
+
         libc = ctypes.CDLL('libc.so.6')
-        libc.mallopt(-8, 2)          # M_ARENA_MAX: 2
-        libc.mallopt(-1, 128 * 1024) # M_TRIM_THRESHOLD: 128KB
-        log.info("glibc malloc 已调优 (arena_max=2, trim=128K)")
+        libc.mallopt(-8, 2)  # M_ARENA_MAX: 2
+        libc.mallopt(-1, 128 * 1024)  # M_TRIM_THRESHOLD: 128KB
+        log.info('glibc malloc 已调优 (arena_max=2, trim=128K)')
     except Exception:
         pass  # Windows / musl
 
@@ -55,28 +58,29 @@ class Application(EventHandlerMixin):
 
         # 核心组件
         self._bot_registry = None
-        self._plugin_manager = None
-        self._module_manager = None
+        self._plugin_manager: PluginManager | None = None
+        self._module_manager: ModuleManager | None = None
         self._hook_manager = HookManager()
-        self._shared_log = None
-        self._dau_service = None
+        self._shared_log: SharedLogService | None = None
+        self._dau_service: DAUService | None = None
         self._statistics_service = None
-        self._http_server = None
+        self._http_server: HttpServer | None = None
 
         # 服务
-        self._config_watcher = None
-        self._media_cleanup = None
-        self._restart_scheduler = None
+        self._config_watcher: ConfigWatcherService | None = None
+        self._media_cleanup: MediaCleanupService | None = None
+        self._restart_scheduler: RestartScheduler | None = None
 
         # 状态
-        self._web_log_cb = None
+        self._web_log_cb: Callable[[str, dict], None] | None = None
         self._log_base = ''
         self._media_dir = ''
-        self._stop_event = None
+        self._stop_event: asyncio.Event | None = None
         self._restart_requested = False
 
-        self._error_callbacks: list = []
-        self._framework_callbacks: list = []
+        # 日志回调 (替代模块级全局列表)
+        self._error_callbacks: list[Callable[[dict], None]] = []
+        self._framework_callbacks: list[Callable[[dict], None]] = []
 
         self._init_event_state()
 
@@ -130,6 +134,7 @@ class Application(EventHandlerMixin):
 
         try:
             from core.bot import manager as _bot_manager_module
+
             _bot_manager_module._bot_manager_ref = self
         except Exception:
             pass
@@ -247,6 +252,7 @@ class Application(EventHandlerMixin):
     def _install_signal_handlers(self):
         """注册 SIGTERM/SIGINT 信号处理器"""
         import signal
+
         loop = asyncio.get_running_loop()
 
         def _handle(signame):
