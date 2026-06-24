@@ -140,11 +140,13 @@ async def on_demo_ack(event, match):
 #   - event.group_id                      : 群 openid
 # 注意: 正则 r'' 对生命周期事件恒匹配; 这类事件无消息文本, 不要依赖 match 分组。
 
-@handler(r'', name='用户入群回复', desc='有新成员加入群聊时自动发送欢迎语', event_types=['GROUP_MEMBER_ADD'])
+@handler(r'', name='用户入群回复', desc='有新成员加入群聊时的处理示例（默认不发送，避免影响正常使用）', event_types=['GROUP_MEMBER_ADD'])
 async def on_group_member_add(event, match):
-    await event.reply(
-        f"欢迎新成员加入本群！🎉\n你的群标识: {event.user_id}\n发送「菜单」即可查看我能做什么～"
-    )
+    # 如需启用入群欢迎，取消下方注释:
+    # await event.reply(
+    #     f"欢迎新成员加入本群！🎉\n你的群标识: {event.user_id}\n发送「菜单」即可查看我能做什么～"
+    # )
+    pass
 
 
 # 退群同理: 订阅 GROUP_MEMBER_REMOVE 即可 (此事件无法回复该用户, 通常用于做记录/通知群管理)
