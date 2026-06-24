@@ -60,6 +60,14 @@ _DEFAULTS = {
         '--disable-software-rasterizer',
         '--disable-extensions',
         '--disable-background-networking',
+        # 省内存: 去掉 zygote 预热进程 + 限制 renderer 进程数 + 关闭进程级站点隔离,
+        # 常驻 chromium 空闲 RSS 约 -80MB、少 2 个进程 (本地自包含 HTML 渲染无副作用)。
+        '--no-zygote',
+        '--renderer-process-limit=1',
+        '--disable-features=site-per-process,TranslateUI',
+        '--disable-accelerated-2d-canvas',
+        '--disable-background-timer-throttling',
+        '--mute-audio',
     ],
 }
 
@@ -320,6 +328,7 @@ class PlaywrightRenderer:
         wait_ms=0,
         selector=None,
         base_url=None,
+        wait_until='load',
     ):
         """截图 HTML 字符串, 返回图片 bytes
 
@@ -332,6 +341,9 @@ class PlaywrightRenderer:
             wait_ms     — set_content 后额外等待毫秒
             selector    — CSS 选择器, 指定则只截取该元素
             base_url    — HTML 中相对路径的基础 URL
+            wait_until  — set_content 等待策略, 默认 'load' (自包含 HTML 用
+                          'networkidle' 会白等 ~500ms 空闲窗口; 含外链懒加载资源
+                          时才需要传 'networkidle')
         """
         fmt = image_format or self._cfg.get('image_format', 'jpeg')
         q = quality or self._cfg.get('image_quality', 90)
@@ -340,7 +352,7 @@ class PlaywrightRenderer:
             kw = {}
             if base_url:
                 kw['base_url'] = base_url
-            await page.set_content(html, wait_until='networkidle', **kw)
+            await page.set_content(html, wait_until=wait_until, **kw)
             if wait_ms > 0:
                 await page.wait_for_timeout(wait_ms)
             return await self._take_screenshot(page, full_page, fmt, q, selector)
