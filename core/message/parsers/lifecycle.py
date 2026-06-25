@@ -14,7 +14,7 @@ class LifecycleParser(MessageParser):
         event.user_id = event.raw_user_id = d.get(uid_key, '')
         event.group_id = d.get('group_openid', '')
         event.timestamp = d.get('timestamp', '')
-        event.message_id = d.get('id', '') or event.event_id
+        event.message_id = d.get('id', '')
 
 
 class GroupAddRobotParser(LifecycleParser):
