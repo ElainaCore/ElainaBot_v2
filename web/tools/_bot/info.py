@@ -52,7 +52,12 @@ async def handle_get_robot_info(request: web.Request):
 
         host = cfg.get('settings', 'server.host', '0.0.0.0')
         port = cfg.get('settings', 'server.port', 5200)
-        display_host = request.host.split(':')[0] if request.host else host
+        req_host = request.host or ''
+        # 从请求 Host 头提取地址 (兼容 IPv6 方括号格式 [::1]:port)
+        if req_host.startswith('['):
+            display_host = req_host.rsplit(']', 1)[0] + ']'
+        else:
+            display_host = req_host.split(':')[0] or (host if isinstance(host, str) else host[0])
         webhook_url = f'http://{display_host}:{port}/?appid={appid}'
     base = {
         'appid': appid,
