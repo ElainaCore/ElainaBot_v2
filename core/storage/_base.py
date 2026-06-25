@@ -28,6 +28,7 @@ def _dict_factory(cursor, row):
     return {col[0]: row[idx] for idx, col in enumerate(cursor.description)}
 
 log = get_logger(SERVICE, '日志')
+_DATE_DIR_RE = re.compile(r'\d{4}-\d{2}-\d{2}$')
 
 
 async def _shutdown_tasks(tasks, stop_event):
@@ -271,11 +272,12 @@ class _BaseLogService:
         try:
             for name in os.listdir(self._base_dir):
                 path = os.path.join(self._base_dir, name)
-                if not (os.path.isdir(path) and len(name) == 10 and name < cutoff):
+                if not (os.path.isdir(path) and _DATE_DIR_RE.fullmatch(name) and name < cutoff):
                     continue
                 for db_file in os.listdir(path):
                     db_path = os.path.join(path, db_file)
                     conn = self._conns.pop(db_path, None)
+                    self._conn_locks.pop(db_path, None)
                     if conn:
                         with contextlib.suppress(Exception):
                             conn.close()
@@ -299,7 +301,7 @@ class _BaseLogService:
             to_close = []
             for db_path in list(self._conns):
                 parent = os.path.basename(os.path.dirname(db_path))
-                if parent != today and re.fullmatch(r'\d{4}-\d{2}-\d{2}', parent):
+                if parent != today and _DATE_DIR_RE.fullmatch(parent):
                     to_close.append(db_path)
             for db_path in to_close:
                 conn = self._conns.pop(db_path, None)
