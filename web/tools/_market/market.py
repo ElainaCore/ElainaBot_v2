@@ -4,6 +4,8 @@ from aiohttp import web
 
 from web.tools._market.fetch import _extract_plugins, _fetch_plugin_json
 from web.tools._market.install import (
+    TYPE_MODULE,
+    _canonical_type,
     _get_installed_module_names,
     _get_installed_names,
     _get_local_module_version,
@@ -39,7 +41,7 @@ async def handle_market_list(request: web.Request):
     installed_modules = _get_installed_module_names()
     for p in plugins:
         safe = _safe_name(p.get('name', ''))
-        if p.get('type') == 'module':
+        if _canonical_type(p.get('type', '')) == TYPE_MODULE:
             p['installed'] = safe in installed_modules
             if p['installed']:
                 local_ver = _get_local_module_version(safe)

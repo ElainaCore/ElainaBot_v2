@@ -3,7 +3,6 @@
 import ast
 import io
 import os
-import re
 import zipfile
 
 from aiohttp import web
@@ -22,8 +21,24 @@ from web.tools._market.shared import (
     log,
 )
 
-# 单文件插件统一安装目录 (位于 plugins/ 下)
+# 共享单文件插件目录 (位于 plugins/ 下), 仅当 single 插件显式声明 alone=True 时使用
 _ALONE_DIR = 'alone'
+
+# 插件类型 (来源于市场清单的 type 字段, 不再依据是否有 path 推断)
+TYPE_COMPLETE = 'complete'  # 完整插件: 整仓库 / 仓库内某子目录, 装到 plugins/<name>/
+TYPE_SINGLE = 'single'  # 独立插件: 单/多文件, 默认装到专属目录 plugins/<name>/
+TYPE_MODULE = 'module'  # 模块: 装到 modules/<name>/
+
+
+def _canonical_type(item_type):
+    """规范化插件类型为 complete / single / module"""
+    t = (item_type or '').strip().lower()
+    if t in ('module', 'mod'):
+        return TYPE_MODULE
+    if t in ('single', 'standalone', 'alone'):
+        return TYPE_SINGLE
+    return TYPE_COMPLETE
+
 
 # ==================== 版本/已安装 ====================
 
@@ -197,8 +212,29 @@ def _install_py(content, plugin_name, url):
     return {'success': True, 'message': f'已安装到 plugins/{rel}', 'path': f'plugins/{rel}'}
 
 
-def _install_zip(content, plugin_name):
-    """解压 zip 到 plugins/<plugin_name>/, 自动去除 GitHub archive 的根目录"""
+def _resolve_subdir(flist, root_prefix, subdir_path):
+    """解析仓库内子目录的提取前缀 (含末尾 /); subdir_path 可为目录或目录下的文件路径。
+    找不到返回 None。"""
+    p = (subdir_path or '').strip('/').replace('\\', '/')
+    if not p:
+        return root_prefix
+    # 候选: path 本身是目录, 或 path 是文件时取其父目录
+    candidates = [p]
+    if '/' in p:
+        candidates.append(p.rsplit('/', 1)[0])
+    for cand in candidates:
+        if not cand:
+            continue
+        prefix = f'{root_prefix}{cand}/'
+        if any(f.startswith(prefix) for f in flist):
+            return prefix
+    return None
+
+
+def _extract_zip_subset(content, plugin_name, subdir_path=''):
+    """从仓库 zip 解压到 plugins/<name>/。
+    - subdir_path: 仅解压该子目录 (剥离子目录前缀); 为空则整仓库
+    自动去除 GitHub archive 根目录 (repo-branch/)。"""
     plugins_dir = _plugins_dir()
     safe = _safe_name(plugin_name) or 'unknown'
     dest_dir = os.path.join(plugins_dir, safe)
@@ -209,21 +245,28 @@ def _install_zip(content, plugin_name):
                 return {'success': False, 'message': '空压缩包'}
             # GitHub archive zip 总有一个根目录 (如 repo-main/), 自动去除
             roots = {f.split('/')[0] for f in flist if '/' in f and f.split('/')[0]}
-            strip_root = len(roots) == 1
-            root_prefix = list(roots)[0] + '/' if strip_root else ''
+            root_prefix = (list(roots)[0] + '/') if len(roots) == 1 else ''
+
+            strip_prefix = _resolve_subdir(flist, root_prefix, subdir_path)
+            if strip_prefix is None:
+                return {'success': False, 'message': f'仓库内未找到: {subdir_path}'}
+            selected = [f for f in flist if f.startswith(strip_prefix) and not f.endswith('/')]
+
             os.makedirs(dest_dir, exist_ok=True)
             extracted = []
-            for fp in flist:
-                if fp.endswith('/') or '__pycache__' in fp or '/.git/' in fp:
+            for fp in selected:
+                if '__pycache__' in fp or '/.git/' in fp:
                     continue
-                rel = fp[len(root_prefix) :] if strip_root and fp.startswith(root_prefix) else fp
+                rel = fp[len(strip_prefix) :] if fp.startswith(strip_prefix) else fp
                 if not rel:
                     continue
                 dest = os.path.join(dest_dir, rel)
-                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                os.makedirs(os.path.dirname(dest) or dest_dir, exist_ok=True)
                 with zf.open(fp) as src, open(dest, 'wb') as dst:
                     dst.write(src.read())
                 extracted.append(rel)
+            if not extracted:
+                return {'success': False, 'message': '未找到要安装的文件'}
             py_count = sum(1 for f in extracted if f.endswith('.py'))
             total = len(extracted)
             log.info(f'插件 {safe} 安装完成: {total} 个文件 ({py_count} 个 .py)')
@@ -328,21 +371,68 @@ async def _install_module(github_url, module_name, branch='main', mirror=None):
         return {'success': False, 'message': str(e)}
 
 
-async def _auto_enable_plugin(plugin_name, is_single_file=False):
-    """安装后自动加载插件"""
+async def _auto_enable_plugin(reload_name):
+    """安装后自动加载插件; reload_name 为插件目录名 (single 共享安装时为 'alone')"""
+    if not reload_name:
+        return
     try:
         from core.application import get_app
 
         app = get_app()
         if not app or not app.plugin_manager:
             return
-        safe = _safe_name(plugin_name)
-        if not safe:
-            return
-        await app.plugin_manager.reload(_ALONE_DIR if is_single_file else safe)
-        log.info(f'插件 {safe} 已自动启用')
+        await app.plugin_manager.reload(reload_name)
+        log.info(f'插件 {reload_name} 已自动启用')
     except Exception as e:
-        log.warning(f'插件自动启用失败 [{plugin_name}]: {e}')
+        log.warning(f'插件自动启用失败 [{reload_name}]: {e}')
+
+
+async def _install_complete(github_url, plugin_name, subdir_path='', branch='main', mirror=None):
+    """完整插件: 拉取仓库 zip, 解压整仓库或指定子目录到 plugins/<name>/ (支持一仓库多插件)"""
+    url = _github_to_archive(github_url, branch)
+    label = f' [子目录 {subdir_path}]' if subdir_path else ''
+    log.info(f'完整插件安装: {_safe_name(plugin_name)} ← {url}{label}')
+    content = await _download_file(url, mirror=mirror)
+    if content is None:
+        return {'success': False, 'message': '下载失败, 请检查网络或镜像'}
+    if content[:4] != b'PK\x03\x04':
+        return {'success': False, 'message': '下载内容不是有效的 zip 文件'}
+    return _extract_zip_subset(content, plugin_name, subdir_path=subdir_path)
+
+
+async def _install_single(github_url, plugin_name, path='', branch='main', alone=True, mirror=None):
+    """独立插件安装。
+    - alone=True (默认): 单文件下载到共享 plugins/alone/<name>.py
+    - alone=False: 装到专属目录 plugins/<name>/, 支持多文件 (path 子目录 / 单文件)
+    返回 (result, reload_target)。"""
+    safe = _safe_name(plugin_name) or 'plugin'
+
+    # 共享 alone 目录: 仅单文件
+    if alone:
+        src = (path or '').strip('/')
+        url = _repo_raw_url(github_url, src, branch) if src else _convert_github_url(github_url)
+        content = await _download_file(url, mirror=mirror)
+        if content is None:
+            return {'success': False, 'message': '文件下载失败, 请检查路径或网络'}, None
+        return _install_py(content, plugin_name, url), _ALONE_DIR
+
+    p = (path or '').strip('/').replace('\\', '/')
+    # 根级单文件 (无目录层级): 直接下载到专属目录, 避免整仓库 zip
+    if p and '/' not in p and p.endswith('.py'):
+        url = _repo_raw_url(github_url, p, branch)
+        content = await _download_file(url, mirror=mirror)
+        if content is None:
+            return {'success': False, 'message': '文件下载失败, 请检查路径或网络'}, None
+        dest_dir = os.path.join(_plugins_dir(), safe)
+        os.makedirs(dest_dir, exist_ok=True)
+        fname = os.path.basename(p)
+        with open(os.path.join(dest_dir, fname), 'wb') as f:
+            f.write(content)
+        log.info(f'独立插件安装: {safe}/{fname}')
+        return {'success': True, 'message': f'已安装到 plugins/{safe}/{fname}', 'path': f'plugins/{safe}', 'files': 1}, safe
+
+    # 子目录或整仓库: zip 解压 (自动带上同目录 html 等附属文件)
+    return await _install_complete(github_url, plugin_name, subdir_path=p, branch=branch, mirror=mirror), safe
 
 
 async def handle_market_install(request: web.Request):
@@ -350,55 +440,31 @@ async def handle_market_install(request: web.Request):
     body = await request.json()
     github_url = body.get('github', '') or body.get('url', '') or body.get('download_url', '')
     item_name = body.get('name', 'unknown')
-    item_type = body.get('type', 'plugin')
+    item_type = _canonical_type(body.get('type', ''))
     file_path = body.get('path', '')
+    alone = bool(body.get('alone', True))
     branch = body.get('branch', 'main')
     mirror = body.get('mirror', '') or _load_market_mirror()
     if not github_url:
         return web.json_response({'success': False, 'message': '缺少下载地址'}, status=400)
 
     try:
-        # 模块安装: 从仓库 zip 中提取 modules/<name>/ 子目录
-        if item_type == 'module':
+        # 模块: 从仓库 zip 提取 modules/<name>/ 子目录
+        if item_type == TYPE_MODULE:
             return web.json_response(await _install_module(github_url, item_name, branch, mirror=mirror))
 
-        # 插件安装: 有 path → 从仓库下载单个文件
-        if file_path:
-            url = _repo_raw_url(github_url, file_path, branch)
-            log.info(f'插件安装 (单文件): {item_name} ← {url}')
-            content = await _download_file(url, mirror=mirror)
-            if content is None:
-                return web.json_response({'success': False, 'message': '文件下载失败, 请检查路径或网络'})
-            result = _install_py(content, item_name, url)
+        # 独立插件 (single)
+        if item_type == TYPE_SINGLE:
+            result, reload_target = await _install_single(github_url, item_name, path=file_path, branch=branch, alone=alone, mirror=mirror)
             if result.get('success'):
-                await _auto_enable_plugin(item_name, is_single_file=True)
+                await _auto_enable_plugin(reload_target)
             return web.json_response(result)
 
-        # 插件安装: 无 path → 拉取整个仓库 zip
-        is_repo = bool(re.match(r'https?://github\.com/[^/]+/[^/]+/?$', github_url.rstrip('/')))
-        if is_repo:
-            url = _github_to_archive(github_url, branch)
-            log.info(f'插件安装 (仓库): {item_name} ← {url}')
-        else:
-            url = _convert_github_url(github_url)
-
-        content = await _download_file(url, mirror=mirror)
-        if content is None:
-            return web.json_response({'success': False, 'message': '下载失败, 请检查网络或镜像'})
-
-        if content[:4] == b'PK\x03\x04':
-            result = _install_zip(content, item_name)
-            if result.get('success'):
-                await _auto_enable_plugin(item_name, is_single_file=False)
-            return web.json_response(result)
-
-        is_py = url.endswith('.py') or any(k in content[:500] for k in [b'import ', b'def ', b'class '])
-        if is_py:
-            result = _install_py(content, item_name, url)
-            if result.get('success'):
-                await _auto_enable_plugin(item_name, is_single_file=True)
-            return web.json_response(result)
-        return web.json_response({'success': False, 'message': '不支持的文件类型'})
+        # 完整插件 (complete): 整仓库 / 仓库内子目录
+        result = await _install_complete(github_url, item_name, subdir_path=file_path, branch=branch, mirror=mirror)
+        if result.get('success'):
+            await _auto_enable_plugin(_safe_name(item_name))
+        return web.json_response(result)
     except Exception as e:
         log.error(f'安装失败 [{item_name}]: {e}')
         return web.json_response({'success': False, 'message': str(e)})
@@ -437,7 +503,7 @@ async def handle_market_uninstall(request: web.Request):
     """卸载已安装的插件/模块"""
     body = await request.json()
     item_name = body.get('name', '')
-    item_type = body.get('type', 'plugin')
+    item_type = _canonical_type(body.get('type', ''))
     keep_data = body.get('keep_data', False)
     if not item_name:
         return web.json_response({'success': False, 'message': '缺少名称'}, status=400)
@@ -446,7 +512,7 @@ async def handle_market_uninstall(request: web.Request):
     if not safe:
         return web.json_response({'success': False, 'message': '无效名称'}, status=400)
 
-    if item_type == 'module':
+    if item_type == TYPE_MODULE:
         dest_dir = os.path.join(_modules_dir(), safe)
         label = f'modules/{safe}'
     else:

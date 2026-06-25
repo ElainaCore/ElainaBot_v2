@@ -69,9 +69,10 @@ ElainaBot_v2/
 
 - **Web 面板** — 在线浏览、搜索、一键安装
 - **镜像加速** — 自动使用最快 GitHub 镜像下载
-- **两种安装模式**：
-  - 仓库型：拉取整个 GitHub 仓库解压到 `plugins/<name>/`
-  - 单文件型：从仓库中下载指定文件
+- **三种清单类型 (`type`)**：
+  - `complete` 完整插件：解压整仓库或仓库内某子目录到 `plugins/<name>/`，支持一个仓库内放多个插件 (用 `path` 指向子目录)
+  - `single` 独立插件：默认下载单文件到共享目录 `plugins/alone/<name>.py`；显式 `alone: false` 时改为装到专属目录 `plugins/<name>/`，支持多文件 (附带 html 等，用 `path` 指向子目录整目录下载)，彻底避免同名文件冲突
+  - `module` 模块：解压到 `modules/<name>/`
 
 **插件开发者** 请前往 [Elaina-plugins](https://github.com/ElainaCore/Elaina-plugins) 提交 PR，将你的插件加入市场。
 
