@@ -56,11 +56,11 @@ class _EventDedup:
         if now > self._next_purge or len(self._seen) > 5000:
             self._seen = {k: v for k, v in self._seen.items() if v > now}
             self._next_purge = now + 60
-        for eid in ids:
-            if not eid:
-                continue
+        unique = dict.fromkeys(eid for eid in ids if eid)
+        for eid in unique:
             if eid in self._seen:
                 return True
+        for eid in unique:
             self._seen[eid] = now + _DEDUP_TTL
         return False
 
