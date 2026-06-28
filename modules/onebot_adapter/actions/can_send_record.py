@@ -11,4 +11,4 @@ class CanSendRecordAction(BaseAction):
     """can_send_record — 是否支持发送语音"""
 
     async def execute(self, params: dict[str, Any], echo: str | None = None) -> dict[str, Any]:
-        return self._ok({'yes': False}, echo=echo)
+        return self._ok({'yes': True}, echo=echo)

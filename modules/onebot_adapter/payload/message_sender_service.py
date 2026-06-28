@@ -1,8 +1,14 @@
 """统一消息发送服务 — Strategy 模式
 
-封装发送路径的选择策略:
-  - 含图片 → 通过 upload_media_bytes 上传后以 MSG_TYPE_MEDIA 发送
-  - 纯文本 → 通过 send_to_group / send_to_user 发送
+封装发送路径的选择策略, 对应 sender.py 的全部 send 模式:
+  - 含图片   → upload_media_bytes(type=1) → MSG_TYPE_MEDIA 发送
+  - 含语音   → upload_media_bytes(type=3) → MSG_TYPE_MEDIA 发送
+  - 含视频   → upload_media_bytes(type=2) → MSG_TYPE_MEDIA 发送
+  - 含文件   → upload_media_bytes(type=4) 或 URL 直传 → MSG_TYPE_MEDIA 发送
+  - 纯文本   → send_to_group / send_to_user
+  - Markdown → MSG_TYPE_MARKDOWN 发送, 支持 buttons
+  - 按钮     → 通过 keyboard 参数传递
+  - 回复引用 → message_reference 参数传递
 """
 
 from __future__ import annotations
@@ -11,13 +17,14 @@ import random
 from typing import Any
 
 from core.message._http import MessageType
-from core.message.media import upload_media_bytes
+from core.message.media import upload_media_bytes, upload_media_via_url
 from core.message.sender import MessageSender
+from modules.onebot_adapter.payload.segment_parser import ParsedMessage
 from modules.onebot_adapter.payload.payload_converter import PayloadConverter
 
 
 class MessageSenderService:
-    """统一消息发送服务: 纯文本 / 图片 / 图文混合"""
+    """统一消息发送服务: 纯文本 / 图片 / 语音 / 视频 / 文件 / Markdown / 按钮"""
 
     @classmethod
     async def send(
@@ -25,21 +32,73 @@ class MessageSenderService:
         sender: MessageSender,
         group_id: int | str | None,
         user_id: int | str | None,
-        payload: str | dict[str, Any],
-        image_bytes: bytes | str | None,
-        msg_id: int | str | None,
+        parsed: ParsedMessage,
+        msg_id: int | str | None = None,
     ) -> tuple[bool, Any, dict[str, Any]]:
-        """统一发送入口
+        """统一发送入口 — 根据 ParsedMessage 选择策略
 
         Returns:
-            (ok, data, send_payload) — 成功为接口响应, 失败为错误对象
+            (ok, data, send_payload)
         """
         target = group_id or user_id
         prefix = 'groups' if group_id else 'users'
 
-        if image_bytes:
-            return await cls._send_media(sender, target, prefix, payload, image_bytes, msg_id)
-        return await cls._send_text(sender, group_id, user_id, target, payload, msg_id)
+        # 1. 媒体文件 (语音/视频/文件) — 需要先上传再发送
+        if parsed.media_type and parsed.media_type != 1:
+            # voice=3, video=2, file=4
+            return await cls._send_media(sender, target, prefix, parsed, msg_id, group_id=group_id, user_id=user_id)
+
+        # 2. 图片 — 上传后以 MSG_TYPE_MEDIA 发送
+        if parsed.image_data:
+            return await cls._send_media(sender, target, prefix, parsed, msg_id, group_id=group_id, user_id=user_id)
+
+        # 3. Markdown
+        if parsed.msg_type == 'markdown' and parsed.markdown_content:
+            return await cls._send_markdown(sender, group_id, user_id, target, parsed, msg_id)
+
+        # 4. 纯文本 (可能带 buttons)
+        return await cls._send_text(sender, group_id, user_id, target, parsed, msg_id)
+
+    # ==================== 文本发送 ====================
+
+    @classmethod
+    async def _send_text(
+        cls, sender: MessageSender, group_id: int | str | None, user_id: int | str | None, target: int | str, parsed: ParsedMessage, msg_id: int | str | None
+    ) -> tuple[bool, Any, dict[str, Any]]:
+        content = parsed.text_content or '[空的文本消息]'
+        return await cls.send_msg_common(sender, group_id, user_id, target, parsed, msg_id, content)
+
+    # ==================== Markdown 发送 ====================
+
+    @classmethod
+    async def _send_markdown(
+        cls, sender: MessageSender, group_id: int | str | None, user_id: int | str | None, target: int | str, parsed: ParsedMessage, msg_id: int | str | None
+    ) -> tuple[bool, Any, dict[str, Any]]:
+        content = parsed.markdown_content or parsed.text_content
+        return await cls.send_msg_common(sender, group_id, user_id, target, parsed, msg_id, content)
+
+    @classmethod
+    async def send_msg_common(
+        cls,
+        sender: MessageSender,
+        group_id: int | str | None,
+        user_id: int | str | None,
+        target: int | str,
+        parsed: ParsedMessage,
+        msg_id: int | str | None,
+        content: str,
+    ):
+        kwargs: dict[str, Any] = PayloadConverter.convert(content)
+        if parsed.buttons:
+            kwargs['buttons'] = parsed.buttons
+        if parsed.message_reference:
+            kwargs['message_reference'] = parsed.message_reference
+        kwargs['msg_id'] = msg_id
+        func = sender.send_to_group if group_id else sender.send_to_user
+        ok, data, send_payload = await func(target, **kwargs)
+        return ok, data, send_payload
+
+    # ==================== 媒体发送 ====================
 
     @classmethod
     async def _send_media(
@@ -47,37 +106,53 @@ class MessageSenderService:
         sender: MessageSender,
         target: int | str,
         prefix: str,
-        payload: str | dict[str, Any],
-        image_bytes: str | bytes,
+        parsed: ParsedMessage,
         msg_id: int | str | None,
+        *,
+        group_id: int | str | None = None,
+        user_id: int | str | None = None,
     ) -> tuple[bool, Any, dict[str, Any]]:
-        file_info = await upload_media_bytes(sender, image_bytes, 1, f'/v2/{prefix}/{target}/files')
+        """统一媒体发送: image(1)/video(2)/voice(3)/file(4)"""
+        media_type = parsed.media_type or 1
+        media_data = parsed.media_data
+        if not media_data:
+            return False, '媒体数据为空', {}
+
+        upload_ep = f'/v2/{prefix}/{target}/files'
+        file_name = parsed.file_name
+
+        # URL 直传优先 (file/video/voice)
+        if isinstance(media_data, str) and media_data.startswith(('http://', 'https://')):
+            file_info = await upload_media_via_url(
+                sender,
+                None,
+                media_data,
+                media_type,
+                file_name=file_name,
+                target_group_id=group_id,
+                target_user_id=user_id,
+            )
+            if not file_info:
+                return False, f'媒体URL上传失败 (type={media_type})', {}
+        else:
+            file_info = await upload_media_bytes(sender, media_data, media_type, upload_ep, file_name=file_name)
+
         if not file_info:
-            return False, '图片上传失败', {}
+            return False, f'媒体上传失败 (type={media_type})', {}
+
         media_payload: dict[str, Any] = {
             'msg_type': MessageType.MSG_TYPE_MEDIA,
             'msg_seq': random.randint(10000, 999999),
-            'content': payload or '',
+            'content': parsed.text_content or '',
             'media': {'file_info': file_info},
         }
         if msg_id:
             media_payload['msg_id'] = msg_id
-        ok, data = await sender.post_json(f'/v2/{prefix}/{target}/messages', media_payload)
-        return ok, data, media_payload
+        if parsed.message_reference:
+            media_payload['message_reference'] = parsed.message_reference
 
-    @classmethod
-    async def _send_text(
-        cls,
-        sender: MessageSender,
-        group_id: int | str | None,
-        user_id: int | str | None,
-        target: int | str,
-        payload: str | dict[str, Any],
-        msg_id: int | str | None,
-    ) -> tuple[bool, Any, dict[str, Any]]:
-        kwargs = PayloadConverter.convert(payload)
-        if group_id:
-            ok, data, send_payload = await sender.send_to_group(target, msg_id=msg_id, **kwargs)
-        else:
-            ok, data, send_payload = await sender.send_to_user(target, msg_id=msg_id, **kwargs)
-        return ok, data, send_payload
+        ok, data = await sender.post_json(
+            f'/v2/{prefix}/{target}/messages',
+            media_payload,
+        )
+        return ok, data, media_payload
