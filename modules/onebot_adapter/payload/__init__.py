@@ -10,11 +10,12 @@
 from modules.onebot_adapter.payload.image_decoder import ImageDecoder
 from modules.onebot_adapter.payload.message_sender_service import MessageSenderService
 from modules.onebot_adapter.payload.payload_converter import PayloadConverter
-from modules.onebot_adapter.payload.segment_parser import SegmentParser
+from modules.onebot_adapter.payload.segment_parser import ParsedMessage, SegmentParser
 
 __all__ = [
     'ImageDecoder',
     'MessageSenderService',
+    'ParsedMessage',
     'PayloadConverter',
     'SegmentParser',
 ]
