@@ -11,6 +11,7 @@ from modules.onebot_adapter.action_context import ActionContext
 from modules.onebot_adapter.actions import (
     CanSendImageAction,
     CanSendRecordAction,
+    DeleteMessageAction,
     GetFriendListAction,
     GetGroupListAction,
     GetGroupMemberInfoAction,
@@ -66,6 +67,7 @@ class ActionRegistry:
                 'send_msg': SendMessageAction(ctx),
                 'send_group_msg': SendMessageAction(ctx, force_type='group'),
                 'send_private_msg': SendMessageAction(ctx, force_type='private'),
+                'delete_msg': DeleteMessageAction(ctx),
                 'get_login_info': GetLoginInfoAction(ctx),
                 'get_group_list': GetGroupListAction(ctx),
                 'get_friend_list': GetFriendListAction(ctx),
