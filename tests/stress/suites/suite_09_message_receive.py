@@ -65,8 +65,12 @@ class ReceiveEventHandler:
             INTERACTION_CREATE,
             MESSAGE_TYPES,
             SILENT_TYPES,
+            EventHandlerMixin,
             _EventDedup,
         )
+
+        # 生命周期事件类型集 (镜像 core/bot/event.py 的 _LIFECYCLE_HANDLERS 字典键)
+        lifecycle_types = EventHandlerMixin._LIFECYCLE_HANDLERS
 
         appid = event.appid
         bot = self._bots.get(appid)
@@ -109,9 +113,7 @@ class ReceiveEventHandler:
             return
 
         # ── Lifecycle events (simplified: skip actual lifecycle handlers) ──
-        from core.bot.event import LIFECYCLE_TYPES
-
-        if et in LIFECYCLE_TYPES:
+        if et in lifecycle_types:
             self._early_return_count += 1
             return
 

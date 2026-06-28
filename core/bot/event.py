@@ -31,6 +31,23 @@ _DEDUP_TTL = 300
 _GROUP_CACHE_MAX = 10000
 _FULL_ACCESS_CACHE_TTL = 1800
 _DIRTY_FLUSH_THRESHOLD = 500  # 脏群数超过此阈值提前刷写
+_TRACK_WORKERS = 8  # 用户追踪后台 worker 数
+_TRACK_QUEUE_MAX = 5000  # 用户追踪队列上限, 满则丢弃 (背压, 防止突发时任务无界堆积)
+
+
+_today_cache = ('', 0.0)  # (date_str, valid_until_epoch)
+
+
+def _today_str():
+    """缓存当天日期字符串 (秒级失效检查), 避免每条群消息都 datetime.now().strftime。"""
+    global _today_cache
+    now = time.time()
+    if now >= _today_cache[1]:
+        d = datetime.now()
+        # 缓存到当天 23:59:59.x, 跨天自动失效
+        nxt = d.replace(hour=23, minute=59, second=59, microsecond=0).timestamp()
+        _today_cache = (d.strftime('%Y-%m-%d'), nxt)
+    return _today_cache[0]
 
 
 def _new_user_entry(uid, today, member_role='', is_bot=False):
@@ -77,6 +94,40 @@ class EventHandlerMixin:
         self._full_access_cache = {}  # {group_id: expire_ts}
         self._dirty_groups = {}  # {group_id: bot} — 待写入的群缓存
         self._flush_task = None
+        # 用户追踪后台队列 (有界, 背压): 替代每条消息 create_task 无界堆积
+        self._track_queue = None
+        self._track_workers = []
+        self._track_drop_count = 0
+
+    # ==================== 用户追踪后台队列 ====================
+
+    def _ensure_track_workers(self):
+        """惰性创建用户追踪队列与 worker (需在事件循环内调用)"""
+        if self._track_queue is not None:
+            return
+        self._track_queue = asyncio.Queue(maxsize=_TRACK_QUEUE_MAX)
+        self._track_workers = [asyncio.create_task(self._track_worker()) for _ in range(_TRACK_WORKERS)]
+
+    def _enqueue_track(self, bot, event, appid):
+        """投递用户追踪任务到有界队列; 队列满时丢弃 (过载保护, 仅影响追踪非主流程)"""
+        self._ensure_track_workers()
+        try:
+            self._track_queue.put_nowait((bot, event, appid))
+        except asyncio.QueueFull:
+            self._track_drop_count += 1
+            if self._track_drop_count % 1000 == 1:
+                log.warning(f'[用户追踪] 队列已满({_TRACK_QUEUE_MAX}), 累计丢弃 {self._track_drop_count} 条 (过载背压)')
+
+    async def _track_worker(self):
+        q = self._track_queue
+        while True:
+            bot, event, appid = await q.get()
+            try:
+                await self._track_user(bot, event, appid)
+            except Exception as e:
+                report_error(FRAMEWORK, '用户追踪', e, context={'appid': appid})
+            finally:
+                q.task_done()
 
     # ==================== 事件入口 ====================
 
@@ -179,7 +230,7 @@ class EventHandlerMixin:
                 'raw_message': raw_json,
             })
             if uid:
-                asyncio.create_task(self._track_user(bot, event, appid))
+                self._enqueue_track(bot, event, appid)
 
 
         if et == GROUP_MESSAGE_CREATE and event.group_id:
@@ -508,6 +559,9 @@ class EventHandlerMixin:
             # 1. 内存缓存命中: 仅改内存 + 标脏, 由 _flush_dirty_groups 批量落库
             cached = self._group_users_cache.get(group_id)
             if cached and time.time() < cached[0]:
+                # LRU: 命中后移到末尾, 保证热点群在大规模(群数>>缓存上限)下不被冷群挤出
+                self._group_users_cache.pop(group_id, None)
+                self._group_users_cache[group_id] = cached
                 if mutate(cached[1]):
                     self._mark_group_dirty(group_id, bot)
                 return
@@ -540,7 +594,7 @@ class EventHandlerMixin:
 
     async def _add_user_to_group(self, bot, group_id, user_id, member_role='', is_bot=False):
         uid = str(user_id)
-        today = datetime.now().strftime('%Y-%m-%d')
+        today = _today_str()
         await self._mutate_group_user(
             bot,
             group_id,

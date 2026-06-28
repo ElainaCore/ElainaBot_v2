@@ -207,6 +207,12 @@ def _get_suite_classes():
     except ImportError:
         pass
 
+    try:
+        from tests.stress.suites.suite_10_production_scale import ProductionScaleTest
+        suites["production_scale"] = ProductionScaleTest
+    except ImportError as e:
+        print(f"  Import warning: suite_10: {e}")
+
     return suites
 
 
