@@ -302,7 +302,10 @@ class OneBotWSServer:
         try:
             result = await self._on_action(action, params, echo, ws.appid)
         except Exception as e:
-            self._log.error(f"处理 action '{action}' 异常: {e}")
+            import traceback
+
+            trace = traceback.format_exception(e)
+            self._log.error(f'onebot._handle_message.action.{action}:{e}{"\n".join(trace)}')
             result = {
                 'status': 'failed',
                 'retcode': -1,
