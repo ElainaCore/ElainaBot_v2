@@ -134,7 +134,13 @@ class ConfigManager:
         if val is not None:
             self._bot_setting_cache[cache_key] = val
             return val
-        return _BOT_DEFAULTS.get(key, default)
+        # 负缓存: 命中内置默认值的键也缓存, 避免每条消息重复 key.split('.') + 字典遍历
+        # (默认值与传入 default 无关, 仅对 _BOT_DEFAULTS 中存在的键缓存)
+        dft = _BOT_DEFAULTS.get(key, _MISSING)
+        if dft is not _MISSING:
+            self._bot_setting_cache[cache_key] = dft
+            return dft
+        return default
 
     # ------ 热加载 ------
 

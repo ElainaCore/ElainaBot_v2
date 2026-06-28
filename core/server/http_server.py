@@ -20,6 +20,7 @@ class HttpServer:
         self._app: web.Application | None = None
         self._runner: AppRunner | None = None
         self._site: TCPSite | None = None
+        self._sites: list[TCPSite] = []
 
     @property
     def app(self) -> web.Application:
@@ -42,15 +43,28 @@ class HttpServer:
             log.warning(f'Web 面板加载失败: {e}')
 
     async def start(self):
-        """启动 HTTP 服务器"""
+        """启动 HTTP 服务器 (支持 IPv4/IPv6, host 可为字符串或列表)"""
         host = cfg.get('settings', 'server.host', '0.0.0.0')
         port = cfg.get('settings', 'server.port', 5200)
 
         self._runner = AppRunner(self._app)
         await self._runner.setup()
-        self._site = TCPSite(self._runner, host, port)
-        await self._site.start()
-        log.info(f'HTTP 服务器已启动: http://{host}:{port}')
+
+        hosts = host if isinstance(host, list) else [host]
+        for h in hosts:
+            try:
+                site = TCPSite(self._runner, h, port)
+                await site.start()
+                self._sites.append(site)
+                log.info(f'HTTP 服务器已启动: http://{"[" + h + "]" if ":" in str(h) else h}:{port}')
+            except OSError as e:
+                log.warning(f'绑定 {h}:{port} 失败: {e}')
+
+        if not self._sites:
+            raise RuntimeError(f'无法绑定任何地址 ({hosts}:{port})')
+
+        # 兼容旧属性
+        self._site = self._sites[0]
 
     async def stop(self, timeout: float = 5):
         """关闭 HTTP 服务器
@@ -68,7 +82,11 @@ class HttpServer:
         except Exception:
             pass
 
-        if self._site:
+        if self._sites:
+            for site in self._sites:
+                await site.stop()
+            self._sites.clear()
+        elif self._site:
             await self._site.stop()
         if self._runner:
             self._runner._shutdown_timeout = timeout

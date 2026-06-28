@@ -80,3 +80,22 @@ suites:
       bot_count: 1
       handler_count: 10
       duration_per_scenario: 8
+
+  production_scale:
+    enabled: true
+    description: "CI 小规模冒烟: 真实热路径稳态压测 + SLO 护栏"
+    duration_seconds: 0
+    cooldown_seconds: 3
+    overrides:
+      groups: 50000
+      users: 200000
+      peak_rate: 50
+      sustained_seconds: 5
+      ceiling_seconds: 5
+      handler_count: 20
+      dedup: true
+      workers: 16
+      prewarm_groups: 5000
+      prewarm_users: 20000
+      prewarm_group_size: 20
+      task_peak_threshold: 50000
