@@ -99,7 +99,8 @@ class SendMessageAction(BaseAction):
             return self._ok({'message_id': message_id or (hash(str(data)) & 0x7FFFFFFF)}, echo=echo)
 
         self._ctx.log.warning(f'{"群" if is_group else "私聊"} {raw_id} 发送失败: {data}')
-        return self._fail(str(data), echo=echo, retcode=data.get('err_code') or data.get('code') or 1)
+        retcode = (data.get('err_code') or data.get('code') or 1) if isinstance(data, dict) else 1
+        return self._fail(str(data), echo=echo, retcode=retcode)
 
     # ==================== 辅助 ====================
 

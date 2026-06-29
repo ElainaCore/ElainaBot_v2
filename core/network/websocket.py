@@ -4,6 +4,7 @@
 import asyncio
 import contextlib
 import json
+import platform as _platform
 import ssl as _ssl_mod
 
 import websockets
@@ -25,8 +26,22 @@ _OP_HELLO = 10
 _OP_HEARTBEAT_ACK = 11
 _OP_EVENT_ACK = 12
 
-# 事件并发上限 — 避免高频事件下 create_task 无限堆积导致 OOM
+# 事件并发上限, 避免高频事件下 create_task 堆积致 OOM
 _MAX_INFLIGHT_EVENTS = 256
+
+# WS 握手 UA 末段 {名称}/{版本} 即 QQ 前端展示的客户端 (缺省 UA 显示「未知 ws 连接」)
+_UA_PLUGIN_TAG = 'QQBotPlugin/1.7.2'
+_CLIENT_VERSION = '9.9.9'
+_UA_RUNTIME = f'Python/{_platform.python_version()}; {_platform.system().lower()}'
+
+# intents 位掩码 (订阅的事件类型)
+_INTENTS = (1 << 0) | (1 << 10) | (1 << 12) | (1 << 24) | (1 << 25) | (1 << 26) | (1 << 27) | (1 << 30)
+
+
+def build_user_agent(client_name=''):
+    """构建 WS 握手 User-Agent, QQ 前端据末段 {名称}/{版本} 显示连接客户端。"""
+    name = str(client_name).strip() or 'ElainaBot'
+    return f'{_UA_PLUGIN_TAG} ({_UA_RUNTIME}; {name}/{_CLIENT_VERSION})'
 
 
 class WSClient:
@@ -42,6 +57,7 @@ class WSClient:
         max_reconnects=-1,
         custom_url='',
         custom_api_base='',
+        client_name='ElainaBot',
     ):
         self._appid = str(appid)
         self._tm = token_manager
@@ -50,6 +66,7 @@ class WSClient:
         self._max_reconnects = max_reconnects
         self._custom_url = custom_url.strip() if custom_url else ''
         self._custom_api_base = custom_api_base.strip().rstrip('/') if custom_api_base else ''
+        self._client_name = str(client_name).strip() or 'ElainaBot'
 
         self._ws = None
         self._session_id = None
@@ -71,7 +88,9 @@ class WSClient:
                 url = await self._get_gateway_url()
                 log.info(f'[{self._appid}] 正在连接 WebSocket: {url}')
                 _ssl = _ssl_mod.create_default_context() if url.startswith('wss://') else None
-                async with websockets.connect(url, ssl=_ssl) as ws:
+                ua = build_user_agent(self._client_name)
+                kw = {'ssl': _ssl, 'additional_headers': {'User-Agent': ua}}
+                async with websockets.connect(url, **kw) as ws:
                     self._ws = ws
                     self._reconnect_count = 0
                     await self._handle_connection()
@@ -150,8 +169,7 @@ class WSClient:
             event = Event.from_websocket(self._appid, payload)
             log.debug(f'[{self._appid}] WS事件: {event}')
             if event_type == 'INTERACTION_CREATE':
-                # 先分发插件 (插件可 set_callback_code), 再用其 code 发 op12 ACK;
-                # ACK 在独立任务里等待, 不阻塞 WS 读取循环。
+                # 分发插件后用其 code 发 op12 ACK (独立任务等待, 不阻塞读取循环)
                 event.start_ack_countdown()
                 task = asyncio.create_task(self._dispatch_with_backpressure(event))
                 task.add_done_callback(lambda t, ev=event: ev.finish_dispatch())
@@ -190,20 +208,12 @@ class WSClient:
 
     async def _send_identify(self):
         token = await self._tm.get_token()
-        await self._send_op(
-            _OP_IDENTIFY,
-            {
-                'token': f'QQBot {token}',
-                'intents': self._get_intents(),
-                'shard': [0, 1],
-                'properties': {
-                    '$os': 'python',
-                    '$browser': 'elaina-bot',
-                    '$device': 'elaina-bot',
-                },
-            },
-            '已发送鉴权',
-        )
+        payload = {
+            'token': f'QQBot {token}',
+            'intents': _INTENTS,
+            'shard': [0, 1],
+        }
+        await self._send_op(_OP_IDENTIFY, payload, '已发送鉴权')
 
     async def _send_resume(self):
         token = await self._tm.get_token()
@@ -249,8 +259,3 @@ class WSClient:
         if not self._gateway_url:
             raise RuntimeError(f'获取网关失败: {data}')
         return self._gateway_url
-
-    @staticmethod
-    def _get_intents():
-        """构建 intents 位掩码"""
-        return (1 << 0) | (1 << 10) | (1 << 12) | (1 << 24) | (1 << 25) | (1 << 26) | (1 << 27) | (1 << 30)

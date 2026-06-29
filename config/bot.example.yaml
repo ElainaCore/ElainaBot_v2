@@ -19,6 +19,9 @@ bots:
       reconnect_interval: 5            # 重连间隔(秒)
       max_reconnects: -1               # 最大重连次数(-1 无限)
       log_level: "INFO"
+      # WS 握手 User-Agent 上报的客户端名称, QQ 前端据此显示「ws 连接客户端」(仅 WS 模式; 版本固定 9.9.9)
+      identify:
+        name: ""                       # 客户端名称(留空默认 ElainaBot)
 
     # 消息处理 (不写则使用内置默认值)
     message:

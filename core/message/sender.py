@@ -364,7 +364,7 @@ class MessageSender(_HttpMixin, _MediaSendMixin):
     # ==================== 交互 / 撤回 ====================
 
     async def ack_interaction(self, event, code=0, *, interaction_id=None):
-        iid = interaction_id or event.message_id
+        iid = interaction_id or (event.message_id if event else '')
         if not iid:
             return False, {'message': 'no interaction_id'}
         return await self.put(f'/interactions/{iid}', json={'code': code})

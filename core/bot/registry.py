@@ -143,6 +143,7 @@ class BotRegistry:
 
             ws_cfg = new_cfg.get('websocket', {})
             if ws_cfg.get('enabled') and not bot.ws_client:
+                identify_cfg = ws_cfg.get('identify', {}) or {}
                 bot.ws_client = WSClient(
                     appid=appid,
                     token_manager=bot.token_manager,
@@ -151,6 +152,7 @@ class BotRegistry:
                     max_reconnects=ws_cfg.get('max_reconnects', -1),
                     custom_url=ws_cfg.get('custom_url', ''),
                     custom_api_base=new_api_base,
+                    client_name=str(identify_cfg.get('name', '') or ''),
                 )
                 asyncio.create_task(bot.ws_client.connect())
             elif not ws_cfg.get('enabled') and bot.ws_client:

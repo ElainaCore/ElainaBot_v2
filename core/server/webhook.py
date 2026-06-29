@@ -1,5 +1,6 @@
 """Webhook 请求处理 — 验证 / 转发 / 交互响应"""
 
+import asyncio
 import json
 import logging
 
@@ -55,9 +56,8 @@ class WebhookHandler:
             return web.Response(text=sig_resp, content_type='application/json') if success else web.json_response({'error': 'invalid validation'}, status=400)
 
         # 事件构造与分发
-        import asyncio
-
         is_interaction = body.get('t') == 'INTERACTION_CREATE'
+
         try:
             event = Event.from_webhook(headers, body)
             if is_interaction:

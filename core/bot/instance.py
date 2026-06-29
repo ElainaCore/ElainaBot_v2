@@ -71,6 +71,7 @@ class BotInstance:
 
         ws_cfg = self.bot_cfg.get('websocket', {})
         if ws_cfg.get('enabled', False):
+            identify_cfg = ws_cfg.get('identify', {}) or {}
             self.ws_client = WSClient(
                 appid=self.appid,
                 token_manager=self.token_manager,
@@ -79,6 +80,7 @@ class BotInstance:
                 max_reconnects=ws_cfg.get('max_reconnects', -1),
                 custom_url=ws_cfg.get('custom_url', ''),
                 custom_api_base=str(self.bot_cfg.get('api_base', '') or ''),
+                client_name=str(identify_cfg.get('name', '') or ''),
             )
 
         api_info = f', API={self.sender._base_url}' if self.sender._custom_api_base else ''

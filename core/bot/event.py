@@ -23,6 +23,7 @@ from core.message.event import (
     SILENT_TYPES,
 )
 from core.message.parsers import IdentityHelper
+from core.message.parsers.base import MessageUtils
 
 log = get_logger(FRAMEWORK, '事件处理')
 
@@ -213,7 +214,9 @@ class EventHandlerMixin:
             msg_id = event.message_id or ''
             uid = event.user_id or ''
             gid = event.group_id or ''
-            content = event.content or ''
+            content = MessageUtils.sanitize_content(event.raw_content, keep_at=True) or event.content or ''
+            if event.image_url and f'<{event.image_url}>' not in content:
+                content = f'{content}<{event.image_url}>' if content else f'<{event.image_url}>'
             raw_json = json.dumps(event.raw, ensure_ascii=False)
             bot.log_service.add_sync('message', {
                 'message_id': msg_id, 'user_id': uid,

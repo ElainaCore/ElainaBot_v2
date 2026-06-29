@@ -1,7 +1,7 @@
 pyyaml>=6.0
 aiohttp>=3.9
 httpx>=0.27
-websockets>=11.0
+websockets>=14.0
 cryptography>=41.0
 psutil>=5.9
 python-dotenv>=1.0
