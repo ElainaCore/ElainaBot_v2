@@ -55,10 +55,6 @@ class DeleteMessageAction(BaseAction):
 
         # 无提示时依次尝试
         if not endpoints:
-            endpoints = [
-                f'/v2/groups/{message_id}',      # 占位, 实际需替换
-                f'/v2/users/{message_id}',
-            ]
             # 无具体目标 ID 时无法正确构造端点 — 记录日志并失败
             self._ctx.log.warning(f'delete_msg: 未提供 group_id/user_id, 无法构造撤回端点')
             return self._fail('需要提供 group_id 或 user_id 以定位消息', echo=echo, retcode=1)
