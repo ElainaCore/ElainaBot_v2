@@ -14,14 +14,14 @@ class MessageUtils:
     _AT_PATTERN = re.compile(r'<@!?[A-Za-z0-9]+>')
 
     @staticmethod
-    def sanitize_content(content):
-        """内容清洗: face 标签→[face id=X], @圈人信息剔除, 去除首尾空白"""
+    def sanitize_content(content, *, keep_at=False):
+        """内容清洗: face 标签→[face id=X], @圈人信息剔除(keep_at=True 保留), 去首尾空白"""
         if not content:
             return ''
         text = str(content)
         if '<faceType' in text:
             text = MessageUtils._FACE_PATTERN.sub(r'[face id=\1]', text)
-        if '<@' in text:
+        if not keep_at and '<@' in text:
             text = MessageUtils._AT_PATTERN.sub('', text)
         return text.strip()
 
