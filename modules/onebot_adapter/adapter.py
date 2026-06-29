@@ -275,7 +275,7 @@ class OneBotAdapter:
         self_qq = self._actx.qq_map.get(aid, self._actx.default_qq) or self._actx.default_qq
 
         # 缓存 msg_id (用于后续回复 quote)
-        self._cache_msg_id(event, appid)
+        # self._cache_msg_id(event, appid) # 让应用层自己缓存
 
         # 事件转换 (Strategy: message / lifecycle)
         ob_event = None

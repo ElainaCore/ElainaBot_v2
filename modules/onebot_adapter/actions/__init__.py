@@ -4,6 +4,7 @@
 
 重导出:
   - SendMessageAction: send_msg / send_group_msg / send_private_msg
+  - DeleteMessageAction: delete_msg
   - GetLoginInfoAction: get_login_info
   - GetGroupListAction: get_group_list
   - GetFriendListAction: get_friend_list
@@ -18,6 +19,7 @@
 
 from modules.onebot_adapter.actions.can_send_image import CanSendImageAction
 from modules.onebot_adapter.actions.can_send_record import CanSendRecordAction
+from modules.onebot_adapter.actions.delete_msg import DeleteMessageAction
 from modules.onebot_adapter.actions.get_friend_list import GetFriendListAction
 from modules.onebot_adapter.actions.get_group_list import GetGroupListAction
 from modules.onebot_adapter.actions.get_group_member_info import (
@@ -35,6 +37,7 @@ from modules.onebot_adapter.actions.send_message import SendMessageAction
 __all__ = [
     'CanSendImageAction',
     'CanSendRecordAction',
+    'DeleteMessageAction',
     'GetFriendListAction',
     'GetGroupListAction',
     'GetGroupMemberInfoAction',
