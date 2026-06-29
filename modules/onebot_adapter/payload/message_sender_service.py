@@ -19,8 +19,8 @@ from typing import Any
 from core.message._http import MessageType
 from core.message.media import upload_media_bytes, upload_media_via_url
 from core.message.sender import MessageSender
-from modules.onebot_adapter.payload.segment_parser import ParsedMessage
 from modules.onebot_adapter.payload.payload_converter import PayloadConverter
+from modules.onebot_adapter.payload.segment_parser import ParsedMessage
 
 
 class MessageSenderService:
@@ -75,7 +75,7 @@ class MessageSenderService:
         cls, sender: MessageSender, group_id: int | str | None, user_id: int | str | None, target: int | str, parsed: ParsedMessage, msg_id: int | str | None
     ) -> tuple[bool, Any, dict[str, Any]]:
         content = parsed.markdown_content or parsed.text_content
-        return await cls.send_msg_common(sender, group_id, user_id, target, parsed, msg_id, content)
+        return await cls.send_msg_common(sender, group_id, user_id, target, parsed, msg_id, content, msg_type=MessageType.MSG_TYPE_MARKDOWN)
 
     @classmethod
     async def send_msg_common(
@@ -87,8 +87,11 @@ class MessageSenderService:
         parsed: ParsedMessage,
         msg_id: int | str | None,
         content: str,
+        msg_type: int | None = None,
     ):
         kwargs: dict[str, Any] = PayloadConverter.convert(content)
+        if msg_type is not None:
+            kwargs['msg_type'] = msg_type
         if parsed.buttons:
             kwargs['buttons'] = parsed.buttons
         if parsed.message_reference:

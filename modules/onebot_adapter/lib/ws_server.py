@@ -304,8 +304,8 @@ class OneBotWSServer:
         except Exception as e:
             import traceback
 
-            trace = traceback.format_exception(e)
-            self._log.error(f'onebot._handle_message.action.{action}:{e}{"\n".join(trace)}')
+            trace = ''.join(traceback.format_exception(e))
+            self._log.error(f'onebot._handle_message.action.{action}:{e}\n{trace}')
             result = {
                 'status': 'failed',
                 'retcode': -1,
