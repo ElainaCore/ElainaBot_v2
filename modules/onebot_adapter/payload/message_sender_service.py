@@ -120,42 +120,15 @@ class MessageSenderService:
         media_data = parsed.media_data
         if not media_data:
             return False, '媒体数据为空', {}
-
-        upload_ep = f'/v2/{prefix}/{target}/files'
-        file_name = parsed.file_name
-
-        # URL 直传优先 (file/video/voice)
-        if isinstance(media_data, str) and media_data.startswith(('http://', 'https://')):
-            file_info = await upload_media_via_url(
-                sender,
-                None,
-                media_data,
-                media_type,
-                file_name=file_name,
-                target_group_id=group_id,
-                target_user_id=user_id,
-            )
-            if not file_info:
-                return False, f'媒体URL上传失败 (type={media_type})', {}
-        else:
-            file_info = await upload_media_bytes(sender, media_data, media_type, upload_ep, file_name=file_name)
-
-        if not file_info:
-            return False, f'媒体上传失败 (type={media_type})', {}
-
-        media_payload: dict[str, Any] = {
-            'msg_type': MessageType.MSG_TYPE_MEDIA,
-            'msg_seq': random.randint(10000, 999999),
-            'content': parsed.text_content or '',
-            'media': {'file_info': file_info},
-        }
-        if msg_id:
-            media_payload['msg_id'] = msg_id
-        if parsed.message_reference:
-            media_payload['message_reference'] = parsed.message_reference
-
-        ok, data = await sender.post_json(
-            f'/v2/{prefix}/{target}/messages',
-            media_payload,
+        ctn = parsed.text_content
+        data = await sender._send_media(
+            sender,
+            media_data,
+            media_type,
+            ctn,
+            msg_id=msg_id,
+            target_group_id=group_id,
+            target_user_id=user_id,
         )
-        return ok, data, media_payload
+        error = getattr(sender, 'error') if hasattr(sender, 'error') else None
+        return data is not None, data or error, data
