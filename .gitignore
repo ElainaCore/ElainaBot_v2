@@ -26,6 +26,7 @@ Thumbs.db
 # --- Project: Runtime Data ---
 /data
 /web/data
+/.pydeps
 
 # --- Project: Module-local Runtime Data ---
 modules/modules_enabled.json
