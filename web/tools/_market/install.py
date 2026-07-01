@@ -198,18 +198,58 @@ async def handle_market_preview(request: web.Request):
 # ==================== 安装 ====================
 
 
-def _install_py(content, plugin_name, url):
-    """单文件插件: 统一安装到 plugins/alone/<name>.py, 不再为每个插件单独建目录"""
+def _alone_safe_name(plugin_name, url):
+    """alone 单文件插件的安全名: 优先插件名, 否则回退到 URL 文件名。"""
     safe = _safe_name(plugin_name)
     if not safe:
         fname = url.split('/')[-1].split('?')[0]
         safe = _safe_name(fname[:-3] if fname.endswith('.py') else fname) or 'plugin'
+    return safe
+
+
+def _install_py(content, plugin_name, url):
+    """单文件插件安装到 plugins/alone/<name>.py。"""
+    safe = _alone_safe_name(plugin_name, url)
     alone_dir = _alone_dir()
     os.makedirs(alone_dir, exist_ok=True)
     rel = f'{_ALONE_DIR}/{safe}.py'
     with open(os.path.join(alone_dir, f'{safe}.py'), 'wb') as f:
         f.write(content)
-    return {'success': True, 'message': f'已安装到 plugins/{rel}', 'path': f'plugins/{rel}'}
+    return {'success': True, 'message': f'已安装到 plugins/{rel}', 'path': f'plugins/{rel}', 'safe': safe}
+
+
+def _split_paths(path):
+    """path 归一为文件路径列表 (兼容数组/逗号串/单字符串)。"""
+    items = [str(p) for p in path] if isinstance(path, (list, tuple)) else str(path or '').split(',')
+    return [p.strip().strip('/') for p in items if p and p.strip()]
+
+
+def _alone_dep_dest_name(basename, safe):
+    """alone 依赖文件落盘名: requirements.txt→<safe>_requirements.txt, 已命名的原样保留, 其它返回 None。"""
+    if basename == 'requirements.txt':
+        return f'{safe}_requirements.txt'
+    if basename.endswith('_requirements.txt'):
+        return basename
+    return None
+
+
+async def _install_alone_extra(github_url, rel_path, branch, safe, mirror):
+    """下载 path 里声明的依赖清单到 plugins/alone/。"""
+    dest_name = _alone_dep_dest_name(os.path.basename(rel_path), safe)
+    if not dest_name:
+        return
+    try:
+        content = await _download_file(_repo_raw_url(github_url, rel_path, branch), mirror=mirror)
+    except Exception:
+        content = None
+    if not content or content[:4] == b'PK\x03\x04' or b'<html' in content[:200].lower():
+        return
+    try:
+        with open(os.path.join(_alone_dir(), dest_name), 'wb') as f:
+            f.write(content)
+        log.info(f'alone 插件 {safe} 依赖清单已保存: plugins/{_ALONE_DIR}/{dest_name}')
+    except Exception as e:
+        log.warning(f'保存 {dest_name} 失败: {e}')
 
 
 def _resolve_subdir(flist, root_prefix, subdir_path):
@@ -401,23 +441,31 @@ async def _install_complete(github_url, plugin_name, subdir_path='', branch='mai
 
 
 async def _install_single(github_url, plugin_name, path='', branch='main', alone=True, mirror=None):
-    """独立插件安装。
-    - alone=True (默认): 单文件下载到共享 plugins/alone/<name>.py
-    - alone=False: 装到专属目录 plugins/<name>/, 支持多文件 (path 子目录 / 单文件)
-    返回 (result, reload_target)。"""
+    """独立插件安装: alone=True 装到共享 plugins/alone/, alone=False 装到专属目录; 返回 (result, reload_target)。"""
     safe = _safe_name(plugin_name) or 'plugin'
 
-    # 共享 alone 目录: 仅单文件
+    # 共享 alone 目录: .py 为插件主体, path 里其余文件当依赖清单
     if alone:
-        src = (path or '').strip('/')
-        url = _repo_raw_url(github_url, src, branch) if src else _convert_github_url(github_url)
+        files = _split_paths(path)
+        py_files = [f for f in files if f.lower().endswith('.py')]
+        main = py_files[0] if py_files else (files[0] if files else '')  # 无 .py 时退回首个文件/raw
+        url = _repo_raw_url(github_url, main, branch) if main else _convert_github_url(github_url)
         content = await _download_file(url, mirror=mirror)
         if content is None:
             return {'success': False, 'message': '文件下载失败, 请检查路径或网络'}, None
-        return _install_py(content, plugin_name, url), _ALONE_DIR
+        result = _install_py(content, plugin_name, url)
+        if result.get('success'):
+            for extra in files:
+                if extra != main:
+                    await _install_alone_extra(github_url, extra, branch, result.get('safe', ''), mirror)
+        return result, _ALONE_DIR
 
+    # 专属目录: path 单字符串, 误传数组取首个
+    if isinstance(path, (list, tuple)):
+        _lst = _split_paths(path)
+        path = _lst[0] if _lst else ''
     p = (path or '').strip('/').replace('\\', '/')
-    # 根级单文件 (无目录层级): 直接下载到专属目录, 避免整仓库 zip
+    # 根级单文件: 直接下载, 避免整仓库 zip
     if p and '/' not in p and p.endswith('.py'):
         url = _repo_raw_url(github_url, p, branch)
         content = await _download_file(url, mirror=mirror)
@@ -527,6 +575,10 @@ async def handle_market_uninstall(request: web.Request):
                 try:
                     await _unload_plugin_runtime(_ALONE_DIR)
                     os.remove(alone_py)
+                    # 一并清理该插件的依赖清单
+                    alone_req = os.path.join(_alone_dir(), f'{safe}_requirements.txt')
+                    if os.path.isfile(alone_req):
+                        os.remove(alone_req)
                     log.info(f'plugins/{_ALONE_DIR}/{safe}.py 已卸载')
                     return web.json_response({'success': True, 'message': f'已卸载 plugins/{_ALONE_DIR}/{safe}.py'})
                 except Exception as e:
