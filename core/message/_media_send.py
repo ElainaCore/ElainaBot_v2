@@ -33,6 +33,24 @@ class _MediaSendMixin:
             if mid:
                 asyncio.create_task(self._auto_recall(event, mid, delay))
 
+    async def download_media(self, url: str):
+        try:
+            client = await self._ensure_client()
+            resp = await client.get(url)
+            cl = int(resp.headers.get('content-length', 0))
+            if cl > _MAX_MEDIA_DOWNLOAD:
+                log.warning(f'[{self._appid}] 媒体过大 ({cl} bytes), 跳过下载')
+                return None
+            body = resp.content
+            if len(body) > _MAX_MEDIA_DOWNLOAD:
+                log.warning(f'[{self._appid}] 媒体实际大小超限 ({len(body)} bytes), 丢弃')
+                del body
+                return None
+            return body
+        except Exception as e:
+            log.warning(f'[{self._appid}] 下载媒体失败: {e}')
+            return None
+
     async def _send_media(
         self,
         event,
@@ -45,6 +63,7 @@ class _MediaSendMixin:
         target_user_id=None,
         target_group_id=None,
         msg_id=None,
+        max_try: int = 3,
     ):
         upload_ep = _resolve_upload_ep(target_group_id, target_user_id, event)
         if not upload_ep:
@@ -57,30 +76,22 @@ class _MediaSendMixin:
         file_info = None
 
         if is_url:
-            file_info = await upload_media_via_url(
-                self, event, data, file_type,
-                file_name=file_name,
-                target_user_id=target_user_id,
-                target_group_id=target_group_id,
-            )
+            for _ in range(max_try):
+                file_info = await upload_media_via_url(
+                    self,
+                    event,
+                    data,
+                    file_type,
+                    file_name=file_name,
+                    target_user_id=target_user_id,
+                    target_group_id=target_group_id,
+                )
+                if file_info:
+                    break
             if not file_info:
                 log.debug(f'[{self._appid}] URL直传失败, 回退下载上传: {data}')
-                try:
-                    client = await self._ensure_client()
-                    resp = await client.get(data)
-                    cl = int(resp.headers.get('content-length', 0))
-                    if cl > _MAX_MEDIA_DOWNLOAD:
-                        log.warning(f'[{self._appid}] 媒体过大 ({cl} bytes), 跳过下载')
-                        return None
-                    body = resp.content
-                    if len(body) > _MAX_MEDIA_DOWNLOAD:
-                        log.warning(f'[{self._appid}] 媒体实际大小超限 ({len(body)} bytes), 丢弃')
-                        del body
-                        return None
-                    data = body
-                except Exception as e:
-                    log.warning(f'[{self._appid}] 下载媒体失败: {e}')
-                    return None
+                data = await self.download_media(data)
+
         if not file_info and not isinstance(data, bytes):
             return None
 

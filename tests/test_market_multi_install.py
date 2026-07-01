@@ -161,3 +161,56 @@ async def test_complete_subdir(base, monkeypatch):
     assert os.path.isfile(os.path.join(pdir, 'index.py'))
     assert os.path.isfile(os.path.join(pdir, 'x.html'))
     assert not os.path.exists(os.path.join(pdir, 'index.py').replace('A', 'B'))
+
+
+# ==================== single(alone): path 声明 requirements.txt ====================
+
+
+async def test_alone_path_with_requirements(base, monkeypatch):
+    """path 为数组: .py 装到 alone/<名>.py, 声明的 requirements.txt → alone/<名>_requirements.txt"""
+    async def fake_dl(url, **kw):
+        if url.endswith('requirements.txt'):
+            return b'openai>=1.0.0\n'
+        return b'"""x"""\n__plugin_meta__ = {"version": "1.0.0"}\n'
+
+    monkeypatch.setattr(install, '_download_file', fake_dl)
+    result, target = await install._install_single(
+        'https://github.com/u/r', '今日猪猪',
+        path=['alone/今日猪猪.py', 'alone/requirements.txt'], alone=True)
+    assert result['success'], result
+    assert target == install._ALONE_DIR
+    alone = os.path.join(base, 'plugins', 'alone')
+    assert os.path.isfile(os.path.join(alone, '今日猪猪.py'))
+    # 默认名 requirements.txt 加前缀
+    assert os.path.isfile(os.path.join(alone, '今日猪猪_requirements.txt'))
+    assert not os.path.exists(os.path.join(alone, 'requirements.txt'))
+
+
+async def test_alone_path_named_requirements_kept(base, monkeypatch):
+    """作者声明的文件本就是 xxx_requirements.txt → 原样保存, 不加前缀"""
+    async def fake_dl(url, **kw):
+        if url.endswith('.txt'):
+            return b'httpx>=0.27\n'
+        return b'__plugin_meta__ = {"version": "1.0.0"}\n'
+
+    monkeypatch.setattr(install, '_download_file', fake_dl)
+    result, _ = await install._install_single(
+        'https://github.com/u/r', '字符字',
+        path='alone/字符字.py, alone/字符字_requirements.txt', alone=True)
+    assert result['success'], result
+    alone = os.path.join(base, 'plugins', 'alone')
+    assert os.path.isfile(os.path.join(alone, '字符字.py'))
+    assert os.path.isfile(os.path.join(alone, '字符字_requirements.txt'))
+
+
+def test_split_paths_forms():
+    assert install._split_paths(['a.py', 'b.txt']) == ['a.py', 'b.txt']
+    assert install._split_paths('a.py, b.txt') == ['a.py', 'b.txt']
+    assert install._split_paths('/alone/a.py/') == ['alone/a.py']
+    assert install._split_paths('') == []
+
+
+def test_alone_dep_dest_name():
+    assert install._alone_dep_dest_name('requirements.txt', '猪猪') == '猪猪_requirements.txt'
+    assert install._alone_dep_dest_name('字符字_requirements.txt', '猪猪') == '字符字_requirements.txt'
+    assert install._alone_dep_dest_name('config.json', '猪猪') is None

@@ -23,8 +23,9 @@ def handler(
     event_types=None,
     cooldown=0,
     ignore_at_check=False,
+    block=False,
 ):
-    """注册消息处理器"""
+    """注册消息处理器 (block=True 命中即拦截后续插件, 默认 False 放行)"""
 
     def decorator(func):
         _pending_handlers.append(
@@ -43,6 +44,7 @@ def handler(
                 'event_types': frozenset(event_types) if event_types else None,
                 'cooldown': cooldown,
                 'ignore_at_check': ignore_at_check,
+                'block': block,
             }
         )
         return func

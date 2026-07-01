@@ -10,6 +10,7 @@
 
 import asyncio
 import contextlib
+import gc
 import json
 import os
 import re
@@ -252,9 +253,11 @@ class StatisticsService:
             return False
 
         self._merge_into_db(appid, date_str, day_user, day_group)
-        log.info(
-            f'[{appid}] {date_str} 已累加: 用户 {len(day_user)}, 群 {len(day_group)}'
-        )
+        user_count, group_count = len(day_user), len(day_group)
+        # 统计完成后主动释放大对象并触发 GC, 避免内存长期占用不回收
+        del day_user, day_group
+        gc.collect()
+        log.info(f'[{appid}] {date_str} 已累加: 用户 {user_count}, 群 {group_count}')
         return True
 
     def _scan_day(self, db_path, date_str):

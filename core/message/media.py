@@ -96,7 +96,12 @@ async def upload_media_via_url(
     if file_name:
         req_data['file_name'] = file_name
     success, resp = await sender.post_json(endpoint, req_data)
-    return resp.get('file_info') if success else None
+    if success:
+        return resp.get('file_info')
+    log.warning(f'upload_media_via_url.fail:{resp}')
+    if event:
+        event.error = resp
+    return None
 
 
 # ==================== 分片上传 ====================

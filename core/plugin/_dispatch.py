@@ -102,6 +102,7 @@ class _DispatchMixin:
             if not handlers:
                 return False
             scene: int = _event_scene(event)
+            matched: list[tuple[dict[str, Any], re.Match[str]]] = []
             for h in handlers:
                 ab = h['_allowed_bots']
                 if ab is not None and appid not in ab:
@@ -111,13 +112,13 @@ class _DispatchMixin:
                     continue
                 if h['_smask'] & ~scene:
                     continue
-                plugin_name: str = h['name'] or h.get('_plugin', '')
-                log_service = self._get_log_service(event)
-                event._reply_log_cb = _make_reply_log_cb(plugin_name, log_service)
-                event._reply_plugin_name = plugin_name or ''
-                asyncio.create_task(self._run_handler(h, event, m, plugin_name, user_id, et, content))
-                return True
-            return False
+                matched.append((h, m))
+                if h.get('block', False):  # 默认放行, block=True 时拦截后续
+                    break
+            if not matched:
+                return False
+            asyncio.create_task(self._run_chain(matched, event, user_id, et, content))
+            return True
 
         # ── 消息事件: 完整检查链 ──
         _get = cfg.get_bot_setting
@@ -212,7 +213,8 @@ class _DispatchMixin:
         content: str,
         skip_at_other: bool = False,
     ) -> bool:
-        """内循环: 遍历 handler 尝试匹配, 匹配成功则 fire-and-forget 并返回 True"""
+        """内循环: 收集命中的 handler, 遇到 block=True 即停止, 随后顺序执行"""
+        matched: list[tuple[dict[str, Any], re.Match[str]]] = []
         for h in handlers:
             # 快速过滤: bot 白名单
             ab = h['_allowed_bots']
@@ -230,8 +232,9 @@ class _DispatchMixin:
                 continue
             # 场景过滤 (位掩码): handler 要求的场景位 & 事件不具备的场景位 → 不匹配
             if h['_smask'] & ~scene:
-                # 群聊专属指令在私聊环境 → 明确告知用户
+                # 群聊专属指令在私聊环境 → 告知用户并终止
                 if h['group_only'] and not is_non_at:
+                    self._fire_chain(matched, event, user_id, et, content)
                     asyncio.create_task(
                         event.reply(
                             template_name='group_only',
@@ -242,6 +245,7 @@ class _DispatchMixin:
                 continue
             # 权限
             if h['owner_only'] and not self._is_owner(event):
+                self._fire_chain(matched, event, user_id, et, content)
                 if not is_non_at:
                     asyncio.create_task(
                         event.reply(
@@ -250,16 +254,46 @@ class _DispatchMixin:
                         )
                     )
                 return True
-            # 日志绑定
-            plugin_name: str = h['name'] or h.get('_plugin', '')
-            log_service = self._get_log_service(event)
-            event._reply_log_cb = _make_reply_log_cb(plugin_name, log_service)
-            event._reply_plugin_name = plugin_name or ''
-            asyncio.create_task(self._run_handler(h, event, m, plugin_name, user_id, et, content))
-            return True
-        return False
+            matched.append((h, m))
+            if h.get('block', False):  # 默认放行, block=True 时拦截后续
+                break
+        if not matched:
+            return False
+        self._fire_chain(matched, event, user_id, et, content)
+        return True
 
-    async def _run_handler(
+    def _fire_chain(
+        self,
+        matched: list[tuple[dict[str, Any], re.Match[str]]],
+        event: Event,
+        user_id: str,
+        et: str,
+        content: str,
+    ) -> None:
+        """调度命中的 handler 链顺序执行 (空则跳过)"""
+        if matched:
+            asyncio.create_task(self._run_chain(matched, event, user_id, et, content))
+
+    async def _run_chain(
+        self,
+        matched: list[tuple[dict[str, Any], re.Match[str]]],
+        event: Event,
+        user_id: str,
+        et: str,
+        content: str,
+    ) -> None:
+        """顺序执行 handler 链: 逐个绑定日志上下文, 结束后清理 event 引用"""
+        try:
+            for h, match in matched:
+                plugin_name: str = h['name'] or h.get('_plugin', '')
+                log_service = self._get_log_service(event)
+                event._reply_log_cb = _make_reply_log_cb(plugin_name, log_service)
+                event._reply_plugin_name = plugin_name or ''
+                await self._exec_handler(h, event, match, plugin_name, user_id, et, content)
+        finally:
+            event.raw = event._reply_log_cb = None
+
+    async def _exec_handler(
         self,
         h: dict[str, Any],
         event: Event,

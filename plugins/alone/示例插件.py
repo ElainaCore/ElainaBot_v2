@@ -411,3 +411,16 @@ async def panel_broadcast(event, match):
     import web.ws as ws
     ws.broadcast({'type': 'notification', 'message': match.group(1)})
     await event.reply(f"✅ 已广播: {match.group(1)}")
+
+
+# block 示例: 两个处理器同注册 "^拦截示例$", 高优先级设 block=True 命中即拦截, 低优先级不会触发
+@handler(r'^拦截示例$', name='拦截示例-高优先级', desc='block=True 命中即拦截后续插件',
+         priority=10, block=True)
+async def block_demo_high(event, match):
+    await event.reply("🛑 高优先级处理器 (block=True): 已拦截, 低优先级不会再触发")
+
+
+@handler(r'^拦截示例$', name='拦截示例-低优先级', desc='被高优先级 block 拦截, 不会触发',
+         priority=0)
+async def block_demo_low(event, match):
+    await event.reply("⬇️ 低优先级处理器: 你不应该看到这条 (已被 block 拦截)")
