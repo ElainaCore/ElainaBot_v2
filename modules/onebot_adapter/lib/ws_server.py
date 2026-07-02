@@ -1,7 +1,7 @@
 """OneBot 11 WebSocket — 同时支持正向 WS 和反向 WS
 
 正向 WS: 挂载到框架已有端口, 外部框架连接 ws://host:port{path} (可配置多条, 各自 token);
-        配置独立端口 (port) 时启动独立监听, 任意路径均可连接 (如 ws://127.0.0.1:5200)
+        路径配置为 / 时不校验路径, 任意路径均可连接 (如直连 ws://127.0.0.1:5200)
 反向 WS: 主动连接外部框架的 WS 地址, 如 ws://yunzai:2536/OneBot/v11/ws
 遵循 OneBot 11 标准: https://github.com/botuniverse/onebot-11
 """
@@ -69,8 +69,6 @@ class OneBotWSServer:
         '_reverse_session',
         '_msg_tasks',
         '_reverse_status',
-        '_standalone_runners',
-        '_standalone_status',
     )
 
     def __init__(
@@ -102,8 +100,6 @@ class OneBotWSServer:
         self._reverse_session: aiohttp.ClientSession | None = None
         self._msg_tasks: set[asyncio.Task] = set()
         self._reverse_status: dict[str, dict] = {}  # name -> {connected: bool, error: str}
-        self._standalone_runners: list[web.AppRunner] = []
-        self._standalone_status: dict[str, dict] = {}  # name -> {listening: bool, error: str}
 
     def resolve_qq(self, appid: str = '') -> int:
         """按 appid 获取 self_qq, 兜底用 default_qq"""
@@ -132,54 +128,26 @@ class OneBotWSServer:
 
         通过模块级路由表实现热更新: 已注册过的路径直接更新表项即可生效;
         新路径在路由器冻结后无法注册, 需重启框架。
+        路径为 / 时注册通配路由, 不校验路径 (未被其它路由匹配的任意路径均可连接)。
         """
         mounted = []
         for entry in self._forward_entries:
-            if int(entry.get('port', 0) or 0) > 0:
-                continue  # 独立端口连接由 start_standalone 启动
             path = entry['path']
             if path in _ROUTE_TABLE:
                 _ROUTE_TABLE[path] = self
                 mounted.append(path)
                 continue
             try:
-                app.router.add_get(path, _make_ws_route_handler(path))
+                if path == '/':
+                    app.router.add_get('/{onebot_ws_tail:.*}', _make_ws_route_handler(path))
+                else:
+                    app.router.add_get(path, _make_ws_route_handler(path))
                 _ROUTE_TABLE[path] = self
                 mounted.append(path)
-                self._log.info(f'正向 WS 路由已挂载: {path}')
+                self._log.info(f'正向 WS 路由已挂载: {path}' + (' (不校验路径)' if path == '/' else ''))
             except (RuntimeError, ValueError):
                 self._log.warning(f'正向 WS 路由注册跳过 (路由器已冻结, 需重启框架生效): {path}')
         return mounted
-
-    async def start_standalone(self):
-        """为配置了独立端口的正向 WS 启动独立监听 (任意路径均可连接)"""
-        for entry in self._forward_entries:
-            port = int(entry.get('port', 0) or 0)
-            if port <= 0:
-                continue
-            name = entry.get('name', f':{port}')
-
-            def _make_handler(e):
-                async def handler(request: web.Request):
-                    return await self.handle_forward_ws(request, e)
-
-                return handler
-
-            app = web.Application()
-            app.router.add_get('/{tail:.*}', _make_handler(entry))
-            runner = web.AppRunner(app)
-            try:
-                await runner.setup()
-                site = web.TCPSite(runner, '0.0.0.0', port)
-                await site.start()
-                self._standalone_runners.append(runner)
-                self._standalone_status[name] = {'listening': True, 'error': ''}
-                self._log.info(f'正向 WS 独立监听已启动: ws://0.0.0.0:{port} (任意路径)')
-            except Exception as e:
-                self._standalone_status[name] = {'listening': False, 'error': str(e)}
-                self._log.error(f'正向 WS 独立监听启动失败 [:{port}]: {e}')
-                with contextlib.suppress(Exception):
-                    await runner.cleanup()
 
     def detach(self):
         """从路由表摘除本实例 (配置重载/模块停止时调用)"""
@@ -295,12 +263,6 @@ class OneBotWSServer:
                 await ws.close()
         self._clients.clear()
 
-        for runner in self._standalone_runners:
-            with contextlib.suppress(Exception):
-                await runner.cleanup()
-        self._standalone_runners.clear()
-        self._standalone_status.clear()
-
     async def broadcast(self, event: dict, appid: str = ''):
         """推送事件, 按 appid 过滤 (空=全部)"""
         if not self._clients:
@@ -323,14 +285,6 @@ class OneBotWSServer:
         forward_clients = [c for c in self._clients if not c._is_client]
         result = {'forward': {}, 'reverse': {}}
         for entry in self._forward_entries:
-            if int(entry.get('port', 0) or 0) > 0:
-                st = self._standalone_status.get(entry['name'], {'listening': False, 'error': '未启动'})
-                result['forward'][entry['name']] = {
-                    'mounted': st['listening'],
-                    'clients': len(forward_clients),
-                    'error': st['error'] if not st['listening'] else '',
-                }
-                continue
             mounted = _ROUTE_TABLE.get(entry['path']) is self
             result['forward'][entry['name']] = {
                 'mounted': mounted,
@@ -458,6 +412,8 @@ def _make_ws_route_handler(path: str):
     """生成查表分发的路由 handler (支持配置热更新)"""
 
     async def handler(request: web.Request):
+        if path == '/' and 'websocket' not in request.headers.get('Upgrade', '').lower():
+            return web.Response(status=404, text='Not Found')
         server = _ROUTE_TABLE.get(path)
         if server is None:
             return web.Response(status=404, text='Not Found')
