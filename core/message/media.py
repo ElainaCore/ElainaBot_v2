@@ -100,7 +100,8 @@ async def upload_media_via_url(
         return resp.get('file_info')
     log.warning(f'upload_media_via_url.fail:{resp}')
     if event:
-        event.error = resp
+        with contextlib.suppress(AttributeError):
+            event.error = resp
     return None
 
 

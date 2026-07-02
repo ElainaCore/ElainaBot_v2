@@ -216,6 +216,7 @@ class Event:
         '_reply_log_cb',
         '_reply_plugin_name',
         'callback_code',
+        'error',
         '_ack_future',
         '_ack_timer',
         '_ack_timeout',
@@ -270,6 +271,8 @@ class Event:
         self._reply_plugin_name = ''
         # 交互回调 (op12) 状态码: 插件可通过 set_callback_code() 自定义
         self.callback_code = None
+        # 最近一次媒体上传失败的响应 (供插件排查错误)
+        self.error = None
         self._ack_future = None
         self._ack_timer = None
         self._ack_timeout = _DEFAULT_ACK_TIMEOUT
