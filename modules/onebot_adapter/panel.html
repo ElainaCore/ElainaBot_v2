@@ -219,6 +219,7 @@ async function req(method, body) {
 function endpointOf(c) {
   if (TYPES[c.type].mode === 'client') return c.url || '(未填写 URL)';
   const scheme = c.type === 'ws_server' ? 'ws' : 'http';
+  if (c.type === 'ws_server' && c.port > 0) return `ws://127.0.0.1:${c.port}`;
   return `${scheme}://127.0.0.1:${status.port || ''}${c.path || '/'}`;
 }
 
@@ -320,8 +321,13 @@ function uniqueName(base) {
 function typeFieldsHtml(type, c = {}) {
   if (TYPES[type].mode === 'server') {
     const def = type === 'ws_server' ? '/onebot' : '/onebot/http';
-    return `<div class="field"><label>监听路径</label><input type="text" id="f-path" value="${esc(c.path || def)}" placeholder="${def}"></div>
+    let html = `<div class="field"><label>监听路径</label><input type="text" id="f-path" value="${esc(c.path || def)}" placeholder="${def}"></div>
       <p class="form-desc">挂载到框架主端口 (${status.port || '?'})，全新路径需重启框架生效。</p>`;
+    if (type === 'ws_server') {
+      html += `<div class="field"><label>独立端口（可选）</label><input type="number" id="f-port" min="0" max="65535" value="${c.port || ''}" placeholder="如 5200，留空则挂载到主端口"></div>
+      <p class="form-desc">填写后在该端口独立监听且不校验路径，可直接连接 ws://127.0.0.1:端口。</p>`;
+    }
+    return html;
   }
   if (type === 'ws_reverse') {
     return `<div class="field"><label>WebSocket 地址</label><input type="text" id="f-url" value="${esc(c.url || '')}" placeholder="ws://127.0.0.1:2536/OneBot/v11/ws"></div>
@@ -391,6 +397,7 @@ async function confirmEdit() {
     let p = document.getElementById('f-path').value.trim() || (type === 'ws_server' ? '/onebot' : '/onebot/http');
     if (!p.startsWith('/')) p = '/' + p;
     c.path = p;
+    if (type === 'ws_server') c.port = parseInt(document.getElementById('f-port').value) || 0;
   } else {
     c.url = document.getElementById('f-url').value.trim();
     if (!c.url) { toast('请填写连接 URL', false); return; }

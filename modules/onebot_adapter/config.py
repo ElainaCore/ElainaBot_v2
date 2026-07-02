@@ -1,7 +1,8 @@
 """OneBot 适配器配置 — Value Object
 
 连接以列表形式管理 (类似 NapCat / OneBot 实现端的网络配置):
-  ws_server    — 正向 WS: 框架作为服务端, 外部框架连入 ws://host:port{path}
+  ws_server    — 正向 WS: 框架作为服务端, 外部框架连入 ws://host:port{path};
+                 配置独立端口 (port) 时监听该端口且不校验路径, 可直接连接 ws://host:port
   ws_reverse   — 反向 WS: 框架作为客户端, 主动连接外部框架的 WS 地址
   http_server  — 正向 HTTP: 框架提供 OneBot HTTP API (POST {path}/{action})
   http_webhook — 反向 HTTP: 框架将事件 POST 上报到外部 URL (HTTP POST 上报)
@@ -31,6 +32,8 @@ def normalize_connection(conn: dict) -> dict:
             path = '/' + path
         c['path'] = path
         c.pop('url', None)
+        if ctype == 'ws_server':
+            c['port'] = int(c.get('port', 0) or 0)
     else:
         c['url'] = str(c.get('url', '') or '')
         c.pop('path', None)
@@ -72,7 +75,7 @@ class OneBotConfig:
     def comments(cls) -> dict:
         """返回配置项注释字典"""
         return {
-            'connections': '网络连接列表 (可在 Web 面板「OneBot 网络」页可视化管理), type: ws_server/ws_reverse/http_server/http_webhook',
+            'connections': '网络连接列表 (可在 Web 面板「OneBot 网络」页可视化管理), type: ws_server/ws_reverse/http_server/http_webhook; ws_server 可设 port 独立监听端口 (不校验路径)',
             'heartbeat_interval': '心跳间隔 (秒)',
             'debug': '调试模式, 输出完整收发载荷',
         }
