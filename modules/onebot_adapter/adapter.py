@@ -245,7 +245,15 @@ class OneBotAdapter:
 
         # 正向 WS (服务端)
         ws_forward_entries = [
-            {'name': c['name'], 'path': c['path'], 'token': c['access_token'], 'appid': c['appid'], 'enable': True} for c in self.cfg.by_type('ws_server')
+            {
+                'name': c['name'],
+                'path': c['path'],
+                'port': int(c.get('port', 0) or 0),
+                'token': c['access_token'],
+                'appid': c['appid'],
+                'enable': True,
+            }
+            for c in self.cfg.by_type('ws_server')
         ]
         # 反向 WS (客户端)
         ws_reverse_entries = [
@@ -276,8 +284,10 @@ class OneBotAdapter:
             for path in self.ws_server.attach(app):
                 suffix = ' (不校验路径)' if path == '/' else path
                 self.log.info(f'正向 WS 已挂载: ws://0.0.0.0:{port}{suffix}')
-        elif ws_forward_entries:
+        elif any(e['port'] <= 0 for e in ws_forward_entries):
             self.log.warning('无法获取框架 aiohttp app, 正向 WS 未挂载')
+
+        await self.ws_server.start_standalone()
 
         await self.ws_server.start_reverse()
         if ws_reverse_entries:
