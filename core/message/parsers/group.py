@@ -19,7 +19,6 @@ class GroupMessageParser(MessageParser):
             is_you = mention.get('is_you')
             if is_you is True:
                 event.is_at_self = True
-                event.bot_member_role = mention.get('member_role', '')
                 if is_full:
                     mid = mention.get('id')
                     if mid and event.appid:

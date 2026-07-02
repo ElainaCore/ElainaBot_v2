@@ -95,11 +95,7 @@ async def _send_text_with_image(sender, content, image_bytes, *, group_id=None, 
 
 
 async def _send_ark(sender, template_id, kv_json_str, *, group_id=None, user_id=None, msg_id='', message_reference_id=''):
-    """发送 ARK 消息
-
-    template_id: ARK 模板 ID (23, 24, 37 等)
-    kv_json_str: kv 数据的 JSON 字符串 (数组)
-    """
+    """发送 ARK 消息 (template_id=模板 ID, kv_json_str=kv 数据 JSON 数组)"""
     try:
         kv_data = json.loads(kv_json_str)
     except json.JSONDecodeError as e:

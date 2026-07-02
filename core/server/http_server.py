@@ -67,14 +67,7 @@ class HttpServer:
         self._site = self._sites[0]
 
     async def stop(self, timeout: float = 5):
-        """关闭 HTTP 服务器
-
-        根因修复说明:
-        - aiohttp 3.13 的 cleanup() 内部已包含完整 shutdown 序列
-          (site.stop → on_shutdown 信号 → server.shutdown(timeout) → 释放资源)
-        - 原先卡死是因为: _shutdown_timeout 默认 60s + 面板 WS/SSE 长连接未主动断开
-        - 修复: ①提前关闭面板长连接 ②将 timeout 注入 runner._shutdown_timeout
-        """
+        """关闭 HTTP 服务器: 先断开面板长连接, 再限时 cleanup"""
         try:
             from web.ws import get_broadcast
 

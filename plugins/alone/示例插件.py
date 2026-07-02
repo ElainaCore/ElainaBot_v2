@@ -222,6 +222,34 @@ async def query_my_sharer(event, match):
         if sid else "📌 你不是通过邀请链接添加的")
 
 
+# ==================== 群成员查询示例 ====================
+
+@handler(r'^成员信息\s+(\S+)$', name='成员信息', desc='查询指定群成员详情', owner_only=True, group_only=True)
+async def query_group_member(event, match):
+    member = await event.sender.get_group_member(event.group_id, match.group(1))
+    if not member:
+        return await event.reply("❌ 查询失败或成员不存在")
+    await event.reply(
+        f"👤 群昵称: {member.get('username', '')}\n"
+        f"🎖️ 身份: {member.get('member_role', '')}\n"
+        f"🤖 是否机器人: {member.get('bot', False)}\n"
+        f"📅 入群时间: {member.get('joined_at', '')}")
+
+
+@handler(r'^机器人信息$', name='机器人群内信息', desc='查询机器人自身在本群的成员信息', owner_only=True, group_only=True)
+async def query_bot_member(event, match):
+    member = await event.sender.get_bot_member(event.group_id)
+    if not member:
+        return await event.reply("❌ 查询失败")
+    role = member.get('member_role', '')
+    is_admin = role in ('admin', 'owner')
+    await event.reply(
+        f"🤖 群昵称: {member.get('username', '')}\n"
+        f"🎖️ 身份: {role}\n"
+        f"👮 是否管理员: {'是' if is_admin else '否'}\n"
+        f"📅 入群时间: {member.get('joined_at', '')}")
+
+
 # ==================== 召回功能 ====================
 
 @handler(r'^指定召回\s+(\S+)$', name='指定召回', desc='向指定用户发送召回消息', owner_only=True)

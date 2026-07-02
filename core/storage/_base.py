@@ -7,6 +7,7 @@ import re
 import shutil
 import sqlite3
 import threading
+import time
 from collections import defaultdict
 from datetime import datetime, timedelta
 
@@ -84,6 +85,7 @@ class _BaseLogService:
         self._stop = asyncio.Event()
         self._tasks = []
         self._log_tag = ''  # 子类设置
+        self._last_checkpoint = 0.0
 
     def _resolve_db_path(self, log_type, date=None):
         if log_type in DAILY_TYPES:
@@ -253,6 +255,15 @@ class _BaseLogService:
             except Exception as e:
                 log.warning(f'[{self._log_tag}] 刷写失败 [{t}]: {e}')
 
+    def _checkpoint_wal_sync(self):
+        """定期把 WAL 合并回主库并截断, 避免 WAL 膨胀拖慢查询"""
+        for db_path, conn in list(self._conns.items()):
+            lock = self._conn_locks.get(db_path)
+            if lock is None:
+                continue
+            with lock, contextlib.suppress(Exception):
+                conn.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+
     async def _periodic_flush(self):
         while not self._stop.is_set():
             try:
@@ -262,6 +273,9 @@ class _BaseLogService:
             except asyncio.CancelledError:
                 break
             await self._flush_all()
+            if self._wal and time.monotonic() - self._last_checkpoint >= 300:
+                self._last_checkpoint = time.monotonic()
+                await asyncio.get_running_loop().run_in_executor(None, self._checkpoint_wal_sync)
 
     async def _cleanup_expired(self):
         if self._retention_days <= 0:

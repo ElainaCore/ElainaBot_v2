@@ -140,9 +140,7 @@ class FrameworkUpdater:
     # ==================== 检查更新 ====================
 
     async def _fetch_api(self, path=''):
-        """尝试通过多个 API 代理访问 GitHub API
-        path 举例: '/commits?per_page=20'
-        """
+        """通过多个 API 代理访问 GitHub API"""
         headers = {
             'User-Agent': 'Mozilla/5.0 ElainaBot/1.0',
             'Accept': 'application/vnd.github+json',

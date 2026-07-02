@@ -75,11 +75,7 @@ class WSBroadcast:
         self._sse_queues.clear()
 
     def shutdown(self):
-        """服务器关闭时主动断开所有面板连接，避免阻塞 aiohttp runner.shutdown()
-
-        WebSocket: 发送 Close Frame (code=1001 Going Away)
-        SSE: 清空队列集合（handler 在下一次 queue 操作时自然退出）
-        """
+        """服务器关闭时主动断开所有面板连接, 避免阻塞 runner.shutdown()"""
         for ws in list(self._clients):
             with contextlib.suppress(Exception, RuntimeError):
                 asyncio.get_running_loop().create_task(
@@ -168,11 +164,7 @@ async def _handle_client_msg(ws: web.WebSocketResponse, data: dict):
 
 
 async def handle_sse(request: web.Request) -> web.StreamResponse:
-    """SSE 端点: /api/sse/panel?token=xxx
-
-    当 WebSocket 因 Nginx 未配置 upgrade 等原因不可用时,
-    前端自动降级到 SSE, 走普通 HTTP 无需特殊代理配置。
-    """
+    """SSE 端点: /api/sse/panel?token=xxx (WebSocket 不可用时的降级通道)"""
     token = request.query.get('token', '')
     if not token or token not in auth.valid_sessions:
         return web.Response(status=401, text='Unauthorized')

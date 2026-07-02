@@ -5,11 +5,11 @@ import asyncio
 import contextlib
 import json
 import os
-import re
 import sqlite3
 from datetime import datetime, timedelta
 
 from core.base.logger import FRAMEWORK, get_logger
+from core.storage._daily_base import DailyScanService
 from core.storage._schema import DAU_TABLE_SQL
 
 log = get_logger(FRAMEWORK, 'DAU统计')
@@ -19,22 +19,15 @@ _SCHEDULE_HOUR = 0
 _SCHEDULE_MINUTE = 10
 
 
-class DAUService:
+class DAUService(DailyScanService):
     """DAU 统计服务 — 异步调度 + SQLite 直读"""
 
-    __slots__ = ('_log_dir', '_running', '_task', '_schedule_hour', '_schedule_minute')
+    __slots__ = ()
 
-    def __init__(
-        self,
-        log_base_dir,
-        schedule_hour=_SCHEDULE_HOUR,
-        schedule_minute=_SCHEDULE_MINUTE,
-    ):
-        self._log_dir = os.path.abspath(log_base_dir)
-        self._schedule_hour = schedule_hour
-        self._schedule_minute = schedule_minute
-        self._running = False
-        self._task = None
+    _logger = log
+
+    def __init__(self, log_base_dir, schedule_hour=_SCHEDULE_HOUR, schedule_minute=_SCHEDULE_MINUTE):
+        super().__init__(log_base_dir, schedule_hour, schedule_minute)
 
     async def start(self):
         if self._running:
@@ -64,39 +57,8 @@ class DAUService:
                 with contextlib.suppress(Exception):
                     await self.regenerate(appid, date_str)
 
-    async def stop(self):
-        self._running = False
-        if self._task:
-            self._task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await self._task
-            self._task = None
-
-    async def _scheduler_loop(self):
-        while self._running:
-            try:
-                next_run = self._next_run_time()
-                wait = (next_run - datetime.now()).total_seconds()
-                if wait > 0:
-                    await asyncio.sleep(wait)
-                if not self._running:
-                    break
-                await self.regenerate_yesterday()
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                log.warning(f'调度异常: {e}')
-                await asyncio.sleep(60)
-
-    def _next_run_time(self):
-        now = datetime.now()
-        today_run = now.replace(
-            hour=self._schedule_hour,
-            minute=self._schedule_minute,
-            second=0,
-            microsecond=0,
-        )
-        return today_run if today_run > now else today_run + timedelta(days=1)
+    async def _run_scheduled(self):
+        await self.regenerate_yesterday()
 
     async def regenerate_yesterday(self):
         """重算所有机器人昨日 DAU"""
@@ -132,22 +94,6 @@ class DAUService:
         """读取最近 N 天 DAU"""
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._recent_sync, appid, days)
-
-    # 日期目录格式 (SharedLogService 的 framework/error 日志), 不是 bot appid
-    _DATE_DIR_PATTERN = re.compile(r'^\d{4}-\d{2}-\d{2}$')
-
-    def list_appids(self):
-        """列出所有有日志记录的 appid (排除 SharedLogService 的日期目录)"""
-        if not os.path.isdir(self._log_dir):
-            return []
-        return [
-            name
-            for name in os.listdir(self._log_dir)
-            if os.path.isdir(os.path.join(self._log_dir, name)) and not self._DATE_DIR_PATTERN.match(name)
-        ]
-
-    def _message_db_path(self, appid, date_str):
-        return os.path.join(self._log_dir, appid, date_str, 'message.db')
 
     def _lifecycle_db_path(self, appid, date_str):
         return os.path.join(self._log_dir, appid, date_str, 'lifecycle.db')

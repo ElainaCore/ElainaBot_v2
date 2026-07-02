@@ -82,8 +82,8 @@ def apply_message_scene(event, d):
     event.scene_source = scene.get('source', '') if isinstance(scene, dict) else ''
 
 
-def parse_message_generic(event, d):
-    """通用消息解析 — 提取公共字段"""
+def _parse_common_fields(event, d):
+    """提取公共字段 (id/author/content/group/image)"""
     event.message_id = d.get('id', '')
     event.raw_content = d.get('content', '')
     event.content = MessageUtils.sanitize_content(event.raw_content)
@@ -112,6 +112,10 @@ def parse_message_generic(event, d):
     elif event.image_url:
         event.content = f'<{event.image_url}>'
 
+
+def parse_message_generic(event, d):
+    """通用消息解析 — 提取公共字段并填充 scene"""
+    _parse_common_fields(event, d)
     apply_message_scene(event, d)
 
 
@@ -125,53 +129,11 @@ class MessageParser:
     _MSG_IDX_PATTERN = MessageUtils._MSG_IDX_PATTERN
     _AT_PATTERN = MessageUtils._AT_PATTERN
 
-    @staticmethod
-    def sanitize_content(content):
-        return MessageUtils.sanitize_content(content)
-
-    @staticmethod
-    def extract_image_from_attachments(attachments):
-        return MessageUtils.extract_image_from_attachments(attachments)
+    sanitize_content = staticmethod(sanitize_content)
+    extract_image_from_attachments = staticmethod(extract_image_from_attachments)
+    parse_generic = staticmethod(_parse_common_fields)
+    apply_message_scene = staticmethod(apply_message_scene)
 
     def parse(self, event, d):
-        """通用消息解析 — 提取公共字段 (id/author/content/group/scene/image)。子类可继续处理 mentions / 交互回调等。"""
-        self.parse_generic(event, d)
-        self.apply_message_scene(event, d)
-
-    def parse_generic(self, event, d):
-        """提取公共字段 (id/author/content/group/image)"""
-        event.message_id = d.get('id', '')
-        event.raw_content = d.get('content', '')
-        event.content = MessageUtils.sanitize_content(event.raw_content)
-        event.timestamp = d.get('timestamp', '')
-        event.message_type = d.get('message_type')
-        event.msg_elements = d.get('msg_elements', [])
-        event.attachments = d.get('attachments', [])
-        event.image_url = MessageUtils.extract_image_from_attachments(event.attachments)
-
-        author = d.get('author', {})
-        event.user_id = author.get('member_openid') or author.get('id', '')
-        event.raw_user_id = event.user_id
-        event.username = author.get('username', '')
-        event.member_openid = author.get('member_openid', '')
-        event.member_role = author.get('member_role', '')
-        event.union_openid = author.get('union_openid', '')
-        event.is_bot = author.get('bot', False)
-
-        event.group_id = d.get('group_openid') or d.get('group_id', '')
-        event.group_openid = d.get('group_openid', '')
-        event.guild_id = d.get('guild_id', '')
-        event.channel_id = d.get('channel_id', '')
-
-        if event.image_url and event.content:
-            event.content = f'{event.content}<{event.image_url}>'
-        elif event.image_url:
-            event.content = f'<{event.image_url}>'
-
-    @staticmethod
-    def apply_message_scene(event, d):
-        """填充 message_scene / message_reference_id / scene_source"""
-        scene = d.get('message_scene', {})
-        event.message_scene = scene if isinstance(scene, dict) else {}
-        event.message_reference_id = MessageUtils.extract_msg_idx(scene)
-        event.scene_source = scene.get('source', '') if isinstance(scene, dict) else ''
+        """通用消息解析 — 子类可继续处理 mentions / 交互回调等"""
+        parse_message_generic(event, d)

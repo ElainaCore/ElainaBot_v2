@@ -82,6 +82,9 @@ class _HttpMixin:
                 return False, {'message': str(e), 'code': -1}
         return False, {'message': 'max retries', 'code': -1}
 
+    async def get_json(self, endpoint, **kwargs):
+        return await self._request('GET', endpoint, **kwargs)
+
     async def post_json(self, endpoint, payload):
         return await self._request('POST', endpoint, json=payload)
 

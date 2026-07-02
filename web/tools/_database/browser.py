@@ -272,13 +272,7 @@ async def handle_execute_sql(request: web.Request):
 
 
 async def handle_delete_rows(request: web.Request):
-    """删除表中的单条或多条数据
-
-    参数:
-        path:   数据库路径
-        table:  表名
-        rowids: rowid 列表 (整数数组)
-    """
+    """删除表中的单条或多条数据 (path=库路径, table=表名, rowids=rowid 列表)"""
     body = await request.json()
     db_path = body.get('path', '')
     table = body.get('table', '')

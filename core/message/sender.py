@@ -10,6 +10,7 @@ import random
 
 from core.base.config import cfg
 from core.base.logger import FRAMEWORK, report_error_raw
+from core.message import bot_openid
 from core.message._http import (
     _API_BASE,
     _IGNORE_ERROR_CODES,
@@ -40,8 +41,7 @@ def _msg_seq():
     return random.randint(10000, 999999)
 
 
-# 发送失败处理上下文: None=不在处理链路内; 否则为 {'failed': bool},
-# 记录链路内(插件补救/模板回发)是否又发送失败 —— 用于「补救也失败时仍回发模板」并切断递归。
+# 发送失败处理上下文: None=不在链路内, 否则 {'failed': bool} 记录链路内是否再失败 (切断递归)
 _failure_ctx = contextvars.ContextVar('_failure_ctx', default=None)
 
 
@@ -389,6 +389,24 @@ class MessageSender(_HttpMixin, _MediaSendMixin):
             return data.get('data', {}).get('url')
         return None
 
+    async def get_group_member(self, group_id, member_id):
+        """查询单个群成员详情, 返回 dict, 失败返回 None"""
+        if not group_id or not member_id:
+            return None
+        success, data = await self.get_json(f'/v2/groups/{group_id}/members/{member_id}')
+        if success and isinstance(data, dict):
+            return data
+        return None
+
+    async def get_bot_member(self, group_id):
+        """查询机器人自身在该群的成员信息, 返回 dict, 失败返回 None"""
+        if not group_id:
+            return None
+        member_id = bot_openid.first_id(self._appid)
+        if not member_id:
+            return None
+        return await self.get_group_member(group_id, member_id)
+
     async def get_image_size(self, image_input):
         client = await self._ensure_client()
         return await _get_image_size(client, image_input)
@@ -572,11 +590,7 @@ class MessageSender(_HttpMixin, _MediaSendMixin):
         return True, data
 
     async def _handle_send_failure(self, endpoint, data, event=None):
-        """发送失败处理: 回传插件(send_failed 钩子)补救; 插件未处理、或补救也失败时回发 api_error 模板。
-
-        send_failed 管道钩子返回 None 视为已处理。重入保护: 链路内(补救/模板)再失败只
-        标记 failed、不递归; 据此在补救也失败时仍回发模板。模板被动用当前 msg_id, 主动直接推送。
-        """
+        """发送失败处理: 先回传 send_failed 钩子补救, 未处理或补救也失败时回发 api_error 模板"""
         ctx = _failure_ctx.get()
         if ctx is not None:
             ctx['failed'] = True

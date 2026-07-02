@@ -207,7 +207,6 @@ class Event:
         'sharer_id',
         'scene_param',
         'mentions',
-        'bot_member_role',
         'is_at_self',
         'is_at_other_bot',
         'is_at_other_user',
@@ -216,6 +215,7 @@ class Event:
         '_reply_log_cb',
         '_reply_plugin_name',
         'callback_code',
+        'error',
         '_ack_future',
         '_ack_timer',
         '_ack_timeout',
@@ -260,7 +260,6 @@ class Event:
         self.sharer_id = None
         self.scene_param = None
         self.mentions = []
-        self.bot_member_role = ''
         self.is_at_self = False
         self.is_at_other_bot = False
         self.is_at_other_user = False
@@ -270,6 +269,8 @@ class Event:
         self._reply_plugin_name = ''
         # 交互回调 (op12) 状态码: 插件可通过 set_callback_code() 自定义
         self.callback_code = None
+        # 最近一次媒体上传失败的响应 (供插件排查错误)
+        self.error = None
         self._ack_future = None
         self._ack_timer = None
         self._ack_timeout = _DEFAULT_ACK_TIMEOUT
@@ -403,16 +404,10 @@ class Event:
     def needs_event_id(self):
         return self.event_type in _EVENT_ID_TYPES
 
-    # ==================== 交互回调 (op12 ACK) ====================
-    # 插件可在处理 INTERACTION_CREATE 时调用 event.set_callback_code(n) 自定义
-    # 返回给客户端的状态码 (随 op12 ACK 一起发送, 不额外发 REST 请求)。
-    # 未设置则框架在分发结束 / 超时后用默认 code 兜底。
+    # ==================== 交互回调 (op12 ACK) — 插件可用 set_callback_code 自定义状态码 ====================
 
     def start_ack_countdown(self):
-        """交互事件开始处理: 创建 ACK future 并启动默认超时定时器。
-
-        由传输层 (webhook / websocket) 在分发插件前调用。
-        """
+        """创建 ACK future 并启动超时定时器 (由传输层在分发前调用)"""
         loop = asyncio.get_running_loop()
         if self._ack_future is None:
             self._ack_future = loop.create_future()
@@ -459,9 +454,7 @@ class Event:
             return _DEFAULT_CALLBACK_CODE
         return await self._ack_future
 
-    # ==================== 发送代理 ====================
-    # event.reply(...) → sender.reply(event, ...)
-    # event.send_to_group(...) → sender.send_to_group(...)
+    # ==================== 发送代理 (event.reply → sender.reply) ====================
 
     @property
     def sender(self):

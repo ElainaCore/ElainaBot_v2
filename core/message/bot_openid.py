@@ -1,8 +1,4 @@
-"""Bot OpenID 缓存 — 记录各 appid 机器人的艾特 id, 持久化到 JSON。
-
-全量环境下机器人真实 id (mentions[].id) 与 content 里 <@id> 的虚拟 id 可能不一致。
-首次「仅艾特机器人」时把两个来源的 id 都记下并标记 done; 之后直接按缓存移除, 不再判断。
-"""
+"""Bot OpenID 缓存 — 记录各 appid 机器人的艾特 id, 持久化到 JSON"""
 
 import json
 import os
@@ -63,6 +59,14 @@ def add(appid, openid):
     if openid not in e['ids']:
         e['ids'].add(openid)
         _save()
+
+
+def first_id(appid):
+    """取该 appid 的第一个 openid (按字典序), 用于请求群成员接口"""
+    e = _data.get(appid)
+    if not e or not e['ids']:
+        return ''
+    return sorted(e['ids'])[0]
 
 
 def is_done(appid):

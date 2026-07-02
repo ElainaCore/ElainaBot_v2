@@ -131,10 +131,6 @@ _SCHEMAS = {
             group_id TEXT PRIMARY KEY,
             first_seen TEXT DEFAULT ''
         );
-        CREATE TABLE IF NOT EXISTS group_bot_admin (
-            group_id TEXT PRIMARY KEY,
-            updated_at TEXT DEFAULT ''
-        );
     """,
 }
 
@@ -167,6 +163,7 @@ _INDEXES = {
         'CREATE INDEX IF NOT EXISTS idx_msg_group_agg ON log(group_id, id, timestamp)',
         'CREATE INDEX IF NOT EXISTS idx_msg_user_agg ON log(user_id, id, timestamp)',
         'CREATE INDEX IF NOT EXISTS idx_msg_message_id ON log(message_id)',
+        'CREATE INDEX IF NOT EXISTS idx_msg_timestamp ON log(timestamp)',
         'CREATE INDEX IF NOT EXISTS idx_msg_reference_id ON log(reference_id)',
         # 覆盖索引
         'CREATE INDEX IF NOT EXISTS idx_msg_group_cover ON log(group_id, timestamp, id, content)',
@@ -204,6 +201,9 @@ def _migrate_data_tables(conn):
             log.warning(f'迁移列 {table}.{col} 失败: {e}')
     with contextlib.suppress(Exception):
         conn.execute('ALTER TABLE full_access_groups DROP COLUMN last_seen')
+        conn.commit()
+    with contextlib.suppress(Exception):
+        conn.execute('DROP TABLE IF EXISTS group_bot_admin')
         conn.commit()
 
 

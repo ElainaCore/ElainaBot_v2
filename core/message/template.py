@@ -46,15 +46,7 @@ class TemplateEngine:
 
     @staticmethod
     def _resolve_template(template_name, appid=None):
-        """按 appid 解析模板: 列表形式按 appid 匹配, 无 appid 作为兜底
-
-        templates.yaml 支持格式:
-            welcome: "通用"                      # 所有机器人共用
-            welcome:                             # 列表: 按 appid 匹配
-              - appid: "102134274"
-                content: "专属"
-              - content: "兜底"                  # 无 appid 条目为通用
-        """
+        """按 appid 解析模板: 列表形式按 appid 匹配, 无 appid 条目作为兜底"""
         raw = cfg.get('templates', template_name)
         if raw is None:
             return None

@@ -130,8 +130,7 @@ class _DispatchMixin:
         if not suppress_reply and getattr(event, 'is_bot', False) and _get(appid, 'message.suppress_bot_system_reply', False):
             suppress_reply = True
 
-        # 仅@其他机器人 / 仅@其他用户 的全量消息: 标记为待跳过,
-        # 但不立即 return, 让 ignore_at_check=True 的 handler 仍可匹配
+        # 仅@其他机器人/用户的全量消息标记待跳过, ignore_at_check=True 的 handler 仍可匹配
         skip_at_other = (
             is_group_msg
             and not is_at_self

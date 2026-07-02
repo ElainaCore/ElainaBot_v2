@@ -406,8 +406,7 @@ async def handle_execute_delete_ip(request: web.Request):
     return _ok(message='IP 删除成功', data={'ip': ip, 'appid': appid})
 
 
-async def handle_batch_add_whitelist(request: web.Request):
-    return await _batch_whitelist_op(await request.json(), 'add')
+handle_batch_add_whitelist = handle_update_whitelist
 
 
 # ==================== 事件订阅 ====================
@@ -546,28 +545,7 @@ async def handle_check_webhook(request: web.Request):
     return _ok(valid=valid, message=res.get('msg') or ('地址校验通过' if valid else '地址校验未通过'))
 
 
-async def handle_get_webhook_auth_qr(request: web.Request):
-    body = await request.json()
-    api, ud, err = _require_api_and_login(body)
-    if err:
-        return err
-    appid = body.get('appid') or ud.get('appId')
-    if not appid:
-        return _err('缺少 AppID')
-    qr_result = await api.create_white_login_qr(
-        appid=appid,
-        uin=ud.get('uin'),
-        uid=ud.get('developerId'),
-        ticket=ud.get('ticket'),
-        qr_type=50,
-    )
-    if qr_result.get('code', 0) != 0:
-        return _err('创建授权二维码失败')
-    qrcode, qr_url = qr_result.get('qrcode', ''), qr_result.get('url', '')
-    if not qrcode or not qr_url:
-        return _err('获取授权二维码失败')
-    qr_img = f'https://api.2dcode.biz/v1/create-qr-code?data={quote(qr_url)}'
-    return _ok(qrcode=qrcode, url=qr_img, message='获取授权二维码成功')
+handle_get_webhook_auth_qr = handle_get_event_auth_qr
 
 
 async def handle_set_webhook(request: web.Request):

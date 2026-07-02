@@ -253,8 +253,7 @@ async def _install_alone_extra(github_url, rel_path, branch, safe, mirror):
 
 
 def _resolve_subdir(flist, root_prefix, subdir_path):
-    """解析仓库内子目录的提取前缀 (含末尾 /); subdir_path 可为目录或目录下的文件路径。
-    找不到返回 None。"""
+    """解析仓库内子目录的提取前缀, 找不到返回 None"""
     p = (subdir_path or '').strip('/').replace('\\', '/')
     if not p:
         return root_prefix
@@ -272,9 +271,7 @@ def _resolve_subdir(flist, root_prefix, subdir_path):
 
 
 def _extract_zip_subset(content, plugin_name, subdir_path=''):
-    """从仓库 zip 解压到 plugins/<name>/。
-    - subdir_path: 仅解压该子目录 (剥离子目录前缀); 为空则整仓库
-    自动去除 GitHub archive 根目录 (repo-branch/)。"""
+    """从仓库 zip 解压到 plugins/<name>/, subdir_path 非空时仅解压该子目录"""
     plugins_dir = _plugins_dir()
     safe = _safe_name(plugin_name) or 'unknown'
     dest_dir = os.path.join(plugins_dir, safe)
@@ -337,11 +334,7 @@ def _clean_module_dir(dest_dir):
 
 
 async def _install_module(github_url, module_name, branch='main', mirror=None):
-    """安装/更新模块
-    两种模式自动判断:
-      1. 官方模块: 仓库含 modules/<name>/ → 只提取该子目录
-      2. 第三方模块: 整个仓库就是模块 → 全部装到 modules/<name>/
-    """
+    """安装/更新模块: 官方仓库只提取 modules/<name>/ 子目录, 第三方整仓库安装"""
     safe = _safe_name(module_name) or 'unknown'
     url = _github_to_archive(github_url, branch)
     log.info(f'模块安装: {safe} ← {url}')

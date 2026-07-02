@@ -38,39 +38,39 @@ def _fmt_diff(label, val, y_val, emoji):
     return f'{emoji} {label}: {val}'
 
 
-async def _query_today_stats(bot):
-    """实时查询今日消息统计 (直接读 message.db)"""
+def _query_today_stats_sync(bot):
+    """实时查询今日消息统计 — 拆分为可走索引的单列查询, 避免整表 COUNT(DISTINCT CASE)"""
     today = datetime.now().strftime('%Y-%m-%d')
-    rows = bot.log_service.query(
-        'message',
-        """
-        SELECT COUNT(*) AS total,
-               COUNT(DISTINCT CASE WHEN user_id != '' THEN user_id END) AS users,
-               COUNT(DISTINCT CASE WHEN group_id != '' AND group_id != 'c2c'
-                                   THEN group_id END) AS groups_,
-               COUNT(CASE WHEN group_id = 'c2c' OR group_id = '' THEN 1 END) AS private
-        FROM log
-    """,
-        date=today,
-    )
-    if not rows or rows[0]['total'] == 0:
+    q = bot.log_service.query
+
+    total_rows = q('message', 'SELECT COUNT(*) AS c FROM log', date=today)
+    total = total_rows[0]['c'] if total_rows else 0
+    if not total:
         return None
 
-    stats = rows[0]
-    # 高峰时段
-    peak = bot.log_service.query(
+    users = q('message', "SELECT COUNT(DISTINCT user_id) AS c FROM log WHERE user_id != ''", date=today)
+    groups = q(
         'message',
-        """
-        SELECT substr(timestamp, 12, 2) AS hr, COUNT(*) AS c
-        FROM log GROUP BY hr ORDER BY c DESC LIMIT 1
-    """,
+        "SELECT COUNT(DISTINCT group_id) AS c FROM log WHERE group_id != '' AND group_id != 'c2c'",
+        date=today,
+    )
+    private = q('message', "SELECT COUNT(*) AS c FROM log WHERE group_id = 'c2c' OR group_id = ''", date=today)
+    stats = {
+        'total': total,
+        'users': users[0]['c'] if users else 0,
+        'groups_': groups[0]['c'] if groups else 0,
+        'private': private[0]['c'] if private else 0,
+    }
+
+    peak = q(
+        'message',
+        'SELECT substr(timestamp, 12, 2) AS hr, COUNT(*) AS c FROM log GROUP BY hr ORDER BY c DESC LIMIT 1',
         date=today,
     )
     stats['peak_hour'] = int(peak[0]['hr']) if peak and peak[0].get('hr') else 0
     stats['peak_hour_count'] = peak[0]['c'] if peak else 0
 
-    # Top 群
-    stats['top_groups'] = bot.log_service.query(
+    stats['top_groups'] = q(
         'message',
         """
         SELECT group_id, COUNT(*) AS c FROM log
@@ -79,39 +79,12 @@ async def _query_today_stats(bot):
     """,
         date=today,
     )
-
-    # Top 用户
-    stats['top_users'] = bot.log_service.query(
+    stats['top_users'] = q(
         'message',
-        """
-        SELECT user_id, COUNT(*) AS c FROM log
-        WHERE user_id != '' GROUP BY user_id ORDER BY c DESC LIMIT 3
-    """,
+        "SELECT user_id, COUNT(*) AS c FROM log WHERE user_id != '' GROUP BY user_id ORDER BY c DESC LIMIT 3",
         date=today,
     )
-
     return stats
-
-
-async def _query_yesterday_same_period(bot):
-    """查询昨日同时段统计 (截至当前时刻)"""
-    yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
-    now = datetime.now()
-    time_limit = f'{now.hour:02d}:{now.minute:02d}:00'
-    rows = bot.log_service.query(
-        'message',
-        """
-        SELECT COUNT(*) AS total,
-               COUNT(DISTINCT CASE WHEN user_id != '' THEN user_id END) AS users,
-               COUNT(DISTINCT CASE WHEN group_id != '' AND group_id != 'c2c'
-                                   THEN group_id END) AS groups_,
-               COUNT(CASE WHEN group_id = 'c2c' OR group_id = '' THEN 1 END) AS private
-        FROM log WHERE TIME(timestamp) <= ?
-    """,
-        (time_limit,),
-        date=yesterday,
-    )
-    return rows[0] if rows and rows[0]['total'] > 0 else None
 
 
 def _build_dau_message(event, stats, date, elapsed_ms, y_stats=None, is_today=False):
@@ -268,8 +241,8 @@ async def _handle_today_dau(event, bot):
     loop = asyncio.get_running_loop()
 
     stats, y_stats = await asyncio.gather(
-        _query_today_stats(bot),
-        loop.run_in_executor(None, lambda: _query_yesterday_same_period_sync(bot)),
+        loop.run_in_executor(None, _query_today_stats_sync, bot),
+        loop.run_in_executor(None, _query_yesterday_same_period_sync, bot),
     )
     if not stats:
         return await event.reply(f'<@{event.user_id}>\n❌ 今日暂无消息数据')
@@ -280,24 +253,41 @@ async def _handle_today_dau(event, bot):
 
 
 def _query_yesterday_same_period_sync(bot):
-    """同步版本 (在线程池中执行)"""
-    yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+    """查询昨日同时段统计 — timestamp 直接比较可走索引, 避免 TIME() 逐行函数扫描"""
     now = datetime.now()
-    time_limit = f'{now.hour:02d}:{now.minute:02d}:00'
-    rows = bot.log_service.query(
+    yesterday = (now - timedelta(days=1)).strftime('%Y-%m-%d')
+    bound = f'{yesterday} {now.hour:02d}:{now.minute:02d}:00'
+    q = bot.log_service.query
+
+    total_rows = q('message', 'SELECT COUNT(*) AS c FROM log WHERE timestamp <= ?', (bound,), date=yesterday)
+    total = total_rows[0]['c'] if total_rows else 0
+    if not total:
+        return None
+
+    users = q(
         'message',
-        """
-        SELECT COUNT(*) AS total,
-               COUNT(DISTINCT CASE WHEN user_id != '' THEN user_id END) AS users,
-               COUNT(DISTINCT CASE WHEN group_id != '' AND group_id != 'c2c'
-                                   THEN group_id END) AS groups_,
-               COUNT(CASE WHEN group_id = 'c2c' OR group_id = '' THEN 1 END) AS private
-        FROM log WHERE TIME(timestamp) <= ?
-    """,
-        (time_limit,),
+        "SELECT COUNT(DISTINCT user_id) AS c FROM log WHERE user_id != '' AND timestamp <= ?",
+        (bound,),
         date=yesterday,
     )
-    return rows[0] if rows and rows[0]['total'] > 0 else None
+    groups = q(
+        'message',
+        "SELECT COUNT(DISTINCT group_id) AS c FROM log WHERE group_id != '' AND group_id != 'c2c' AND timestamp <= ?",
+        (bound,),
+        date=yesterday,
+    )
+    private = q(
+        'message',
+        "SELECT COUNT(*) AS c FROM log WHERE (group_id = 'c2c' OR group_id = '') AND timestamp <= ?",
+        (bound,),
+        date=yesterday,
+    )
+    return {
+        'total': total,
+        'users': users[0]['c'] if users else 0,
+        'groups_': groups[0]['c'] if groups else 0,
+        'private': private[0]['c'] if private else 0,
+    }
 
 
 async def _handle_history_dau(event, bot, date_str):
