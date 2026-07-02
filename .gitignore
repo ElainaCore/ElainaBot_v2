@@ -50,3 +50,4 @@ config/local.*
 # --- 配置文件: 示例文件受版本控制, 实际配置本地化 ---
 config/*.yaml
 !config/*.example.yaml
+/plugins

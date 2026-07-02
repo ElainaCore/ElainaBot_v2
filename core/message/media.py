@@ -7,6 +7,7 @@ import contextlib
 import hashlib
 import os
 import tempfile
+from ..prompt_exception import *
 
 from core.base.logger import FRAMEWORK, get_logger
 
@@ -19,7 +20,7 @@ CHUNK_THRESHOLD = 5 * 1024 * 1024  # 5MB
 # ==================== 上传 ====================
 
 
-async def upload_media_bytes(sender, file_bytes, file_type, endpoint, *, file_name=None):
+async def upload_media_bytes(sender, file_bytes, file_type, endpoint, *, file_name=None, max_retry: int = 3):
     """上传媒体 bytes, 返回 file_info (>5MB 自动分片)"""
     if not file_bytes:
         return None
@@ -27,18 +28,19 @@ async def upload_media_bytes(sender, file_bytes, file_type, endpoint, *, file_na
         return None
     # 大文件走分片 (带重试)
     if isinstance(file_bytes, bytes) and len(file_bytes) > CHUNK_THRESHOLD:
-        last_err = None
-        for retry in range(3):
+        for retry in range(max_retry):
             try:
                 result = await _chunked_upload_from_bytes(sender, file_bytes, file_type, endpoint, file_name=file_name)
                 if result:
                     return result
             except Exception as e:
-                last_err = e
+                retry_msg = '' if retry == 0 else f'(retry{retry}/{max_retry})'
+                sender.error = PromptTpl.UploadMediaFail.d({'retry_msg': retry_msg, 'e': e})
                 log.warning(f'[{sender._appid}] 分片上传第{retry + 1}次失败: {e}')
-                if retry < 2:
+                if retry < max_retry - 1:
                     await asyncio.sleep(2 * (retry + 1))
-        log.warning(f'[{sender._appid}] 分片上传3次均失败, 最后错误: {last_err}')
+        err = getattr(sender, 'error') if hasattr(sender, 'error') else '未知错误'
+        log.warning(f'[{sender._appid}] 分片上传{max_retry}次均失败, 最后错误: {err}')
         return None
 
     req_data = {
@@ -145,6 +147,7 @@ async def chunked_upload(sender, file_path, file_type, endpoint, *, file_name=No
         **hashes,
     }
     prep = None
+    # 上传前进行检查，有概率失败，故进行重试（不消耗带宽）
     for prep_retry in range(3):
         success, prep = await sender.post_json(f'{scope}/upload_prepare', prep_data)
         if success:
@@ -166,6 +169,7 @@ async def chunked_upload(sender, file_path, file_type, endpoint, *, file_name=No
         chunk_size = min(block_size, file_size - offset)
         chunk = await asyncio.get_running_loop().run_in_executor(None, _read_chunk, file_path, offset, chunk_size)
 
+        # 上传前进行检查，有概率失败，故进行重试（不消耗带宽）
         for retry in range(3):
             try:
                 resp = await sender._client.put(
@@ -196,6 +200,7 @@ async def chunked_upload(sender, file_path, file_type, endpoint, *, file_name=No
     success, result = await sender.post_json(f'{scope}/files', {'upload_id': upload_id})
     if success:
         return result.get('file_info')
+    sender.error = result
     return None
 
 
