@@ -1,6 +1,6 @@
 """OneBot 11 WebSocket — 同时支持正向 WS 和反向 WS
 
-正向 WS: 挂载到框架已有端口, 外部框架连接 ws://host:port/onebot
+正向 WS: 挂载到框架已有端口, 外部框架连接 ws://host:port{path} (可配置多条, 各自 token)
 反向 WS: 主动连接外部框架的 WS 地址, 如 ws://yunzai:2536/OneBot/v11/ws
 遵循 OneBot 11 标准: https://github.com/botuniverse/onebot-11
 """
@@ -17,6 +17,10 @@ import aiohttp
 from aiohttp import web
 
 _B64_RE = re.compile(r'(base64://|"base64://|data:image[^,]*,)[A-Za-z0-9+/=]{64,}')
+
+# aiohttp 路由无法在注册后移除, 用模块级路由表实现热更新:
+# 路由 handler 在请求时查表取当前活跃的 server 实例, 配置重载后旧实例被替换即生效
+_ROUTE_TABLE: dict[str, OneBotWSServer | None] = {}
 
 
 def _mask_b64(s: str) -> str:
@@ -50,9 +54,8 @@ class OneBotWSServer:
     """OneBot 11 WS 处理器 (正向 + 反向)"""
 
     __slots__ = (
-        '_token',
         '_hb_interval',
-        '_ws_path',
+        '_forward_entries',
         '_reverse_entries',
         '_on_action',
         '_default_qq',
@@ -63,40 +66,39 @@ class OneBotWSServer:
         '_hb_task',
         '_reverse_tasks',
         '_reverse_session',
-        '_reconnect_interval',
         '_msg_tasks',
+        '_reverse_status',
     )
 
     def __init__(
         self,
         *,
-        access_token,
         heartbeat_interval,
         on_action,
         default_qq=0,
         qq_map=None,
         log,
-        ws_path='/onebot',
+        forward_entries=None,
         reverse_entries=None,
-        reconnect_interval=5,
         debug=False,
     ):
-        self._token = access_token or ''
         self._hb_interval = heartbeat_interval
         self._on_action = on_action
         self._default_qq = default_qq
         self.qq_map = qq_map or {}  # {appid_str: robot_qq_int}
         self._log = log
         self._debug = debug
-        self._ws_path = ws_path
-        self._reverse_entries = reverse_entries or []  # [{'url': str, 'appid': str}]
-        self._reconnect_interval = reconnect_interval
+        # [{'name': str, 'path': str, 'token': str}]
+        self._forward_entries = forward_entries or []
+        # [{'name': str, 'url': str, 'appid': str, 'token': str, 'reconnect_interval': int}]
+        self._reverse_entries = reverse_entries or []
 
         self._clients: set[_WSWrapper] = set()
         self._hb_task = None
         self._reverse_tasks: list[asyncio.Task] = []
         self._reverse_session: aiohttp.ClientSession | None = None
         self._msg_tasks: set[asyncio.Task] = set()
+        self._reverse_status: dict[str, dict] = {}  # name -> {connected: bool, error: str}
 
     def resolve_qq(self, appid: str = '') -> int:
         """按 appid 获取 self_qq, 兜底用 default_qq"""
@@ -120,13 +122,39 @@ class OneBotWSServer:
 
     # ==================== 正向 WS (服务端) ====================
 
-    def attach(self, app: web.Application):
-        """将正向 WS 路由挂载到已有的 aiohttp Application"""
-        try:
-            app.router.add_get(self._ws_path, self._forward_ws_handler)
-            self._log.info(f'正向 WS 路由已挂载: {self._ws_path}')
-        except (RuntimeError, ValueError):
-            self._log.warning(f'正向 WS 路由注册跳过 (路由器已冻结, 需重启框架生效): {self._ws_path}')
+    def attach(self, app: web.Application) -> list[str]:
+        """将正向 WS 路由挂载到已有的 aiohttp Application, 返回成功挂载的路径列表
+
+        通过模块级路由表实现热更新: 已注册过的路径直接更新表项即可生效;
+        新路径在路由器冻结后无法注册, 需重启框架。
+        """
+        mounted = []
+        for entry in self._forward_entries:
+            path = entry['path']
+            if path in _ROUTE_TABLE:
+                _ROUTE_TABLE[path] = self
+                mounted.append(path)
+                continue
+            try:
+                app.router.add_get(path, _make_ws_route_handler(path))
+                _ROUTE_TABLE[path] = self
+                mounted.append(path)
+                self._log.info(f'正向 WS 路由已挂载: {path}')
+            except (RuntimeError, ValueError):
+                self._log.warning(f'正向 WS 路由注册跳过 (路由器已冻结, 需重启框架生效): {path}')
+        return mounted
+
+    def detach(self):
+        """从路由表摘除本实例 (配置重载/模块停止时调用)"""
+        for path, srv in list(_ROUTE_TABLE.items()):
+            if srv is self:
+                _ROUTE_TABLE[path] = None
+
+    def _forward_entry_for(self, path: str) -> dict | None:
+        for entry in self._forward_entries:
+            if entry['path'] == path:
+                return entry
+        return None
 
     # ==================== 反向 WS (客户端) ====================
 
@@ -151,16 +179,20 @@ class OneBotWSServer:
             url = self._normalize_ws_url(entry['url'])
             appid = entry.get('appid', '')
             if url:
-                task = asyncio.create_task(self._reverse_ws_loop(url, appid))
+                task = asyncio.create_task(self._reverse_ws_loop(url, entry))
                 self._reverse_tasks.append(task)
                 tag = f'{url} (appid={appid})' if appid else url
                 self._log.info(f'反向 WS 连接任务已创建: {tag}')
 
-    async def _reverse_ws_loop(self, url: str, appid: str = ''):
+    async def _reverse_ws_loop(self, url: str, entry: dict):
         """反向 WS 持续连接循环 (断线重连)"""
+        appid = entry.get('appid', '')
+        name = entry.get('name', url)
+        token = entry.get('token', '')
+        reconnect_interval = int(entry.get('reconnect_interval', 5) or 5)
         headers = {}
-        if self._token:
-            headers['Authorization'] = f'Bearer {self._token}'
+        if token:
+            headers['Authorization'] = f'Bearer {token}'
 
         while True:
             self_qq = self.resolve_qq(appid)
@@ -171,6 +203,7 @@ class OneBotWSServer:
                 async with self._reverse_session.ws_connect(url, headers=headers, ssl=False) as ws:
                     wrapper = _WSWrapper(ws, remote=url, is_client=True, appid=appid, self_qq=self_qq)
                     self._clients.add(wrapper)
+                    self._reverse_status[name] = {'connected': True, 'error': ''}
                     msg = f'反向 WS 已连接: {url} (self_qq={self_qq}, appid={appid}, 当前 {len(self._clients)} 个)'
                     self._log.info(msg)
                     await wrapper.send_str(self._lifecycle_json(self_qq))
@@ -185,13 +218,16 @@ class OneBotWSServer:
                             break
 
                     self._clients.discard(wrapper)
+                    self._reverse_status[name] = {'connected': False, 'error': '连接断开'}
                     self._log.warning(f'反向 WS 断开: {url}, appid={appid}, 当前 {len(self._clients)} 个)')
             except asyncio.CancelledError:
+                self._reverse_status[name] = {'connected': False, 'error': '已停止'}
                 return
             except Exception as e:
+                self._reverse_status[name] = {'connected': False, 'error': str(e)}
                 self._log.warning(f'反向 WS 连接失败 [{url}], appid={appid}: {e}')
 
-            await asyncio.sleep(self._reconnect_interval)
+            await asyncio.sleep(reconnect_interval)
 
     # ==================== 生命周期 ====================
 
@@ -201,6 +237,7 @@ class OneBotWSServer:
             self._hb_task = asyncio.create_task(self._heartbeat_loop())
 
     async def stop(self):
+        self.detach()
         tasks = ([self._hb_task] if self._hb_task else []) + self._reverse_tasks
         for t in tasks:
             t.cancel()
@@ -238,23 +275,41 @@ class OneBotWSServer:
                 dead.add(ws)
         self._clients.difference_update(dead)
 
+    def status(self) -> dict:
+        """返回各连接的运行状态 (供面板展示)"""
+        forward_clients = [c for c in self._clients if not c._is_client]
+        result = {'forward': {}, 'reverse': {}}
+        for entry in self._forward_entries:
+            mounted = _ROUTE_TABLE.get(entry['path']) is self
+            result['forward'][entry['name']] = {
+                'mounted': mounted,
+                'clients': len(forward_clients),
+                'error': '' if mounted else '路径未挂载 (需重启框架生效)',
+            }
+        for entry in self._reverse_entries:
+            st = self._reverse_status.get(entry['name'], {'connected': False, 'error': ''})
+            result['reverse'][entry['name']] = st
+        return result
+
     # ==================== 正向 WS 处理 ====================
 
-    async def _forward_ws_handler(self, request: web.Request):
-        # 鉴权
-        if self._token:
+    async def handle_forward_ws(self, request: web.Request, entry: dict):
+        # 鉴权 (按连接各自的 token)
+        token = entry.get('token', '')
+        if token:
             auth = request.headers.get('Authorization', '')
             query_token = request.query.get('access_token', '')
-            valid = {f'Bearer {self._token}', f'Token {self._token}'}
-            if auth not in valid and query_token != self._token:
+            valid = {f'Bearer {token}', f'Token {token}'}
+            if auth not in valid and query_token != token:
                 self._log.warning(f'正向 WS 鉴权失败: {request.remote}')
                 return web.Response(status=401, text='Unauthorized')
 
         ws = web.WebSocketResponse()
         await ws.prepare(request)
 
-        self_qq = self._default_qq
-        wrapper = _WSWrapper(ws, remote=str(request.remote), self_qq=self_qq)
+        appid = entry.get('appid', '')
+        self_qq = self.resolve_qq(appid)
+        wrapper = _WSWrapper(ws, remote=str(request.remote), appid=appid, self_qq=self_qq)
         self._clients.add(wrapper)
         self._log.info(f'正向 WS 客户端已连接: {request.remote} (当前 {len(self._clients)} 个)')
         await wrapper.send_str(self._lifecycle_json(self_qq))
@@ -346,3 +401,18 @@ class OneBotWSServer:
                     dead.append(ws)
             for ws in dead:
                 self._clients.discard(ws)
+
+
+def _make_ws_route_handler(path: str):
+    """生成查表分发的路由 handler (支持配置热更新)"""
+
+    async def handler(request: web.Request):
+        server = _ROUTE_TABLE.get(path)
+        if server is None:
+            return web.Response(status=404, text='Not Found')
+        entry = server._forward_entry_for(path)
+        if entry is None or not entry.get('enable', True):
+            return web.Response(status=404, text='Not Found')
+        return await server.handle_forward_ws(request, entry)
+
+    return handler
