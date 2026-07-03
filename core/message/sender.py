@@ -7,6 +7,7 @@ import contextvars
 import json
 import os
 import random
+import re
 
 from core.base.config import cfg
 from core.base.logger import FRAMEWORK, report_error_raw
@@ -39,6 +40,17 @@ from core.module.hook import get_hook_manager as _get_hooks
 
 def _msg_seq():
     return random.randint(10000, 999999)
+
+
+_ESCAPE_MAP = {'n': '\n', 't': '\t', 'r': '\r', '\\': '\\', '0': '\0', 'a': '\a', 'b': '\b', 'f': '\f', 'v': '\v'}
+
+
+def _unescape(text):
+    """还原字符串中的字面转义序列 (\\n \\t 等), 未识别的序列原样保留"""
+    return re.sub(
+        r'\\(.)',
+        lambda m: _ESCAPE_MAP.get(m.group(1), m.group(0)),
+        text)
 
 
 # 发送失败处理上下文: None=不在链路内, 否则 {'failed': bool} 记录链路内是否再失败 (切断递归)
@@ -519,6 +531,8 @@ class MessageSender(_HttpMixin, _MediaSendMixin):
             payload['msg_type'] = MSG_TYPE_MARKDOWN
             md_content = str(content) if content is not None else ''
             suffix = '' if skip_suffix else cfg.get_bot_setting(self._appid, 'message.markdown_suffix', '')
+            if suffix and '\\' in suffix:
+                suffix = _unescape(suffix)
             payload['markdown'] = {'content': md_content + suffix if suffix else md_content}
         else:
             payload['msg_type'] = MSG_TYPE_TEXT
