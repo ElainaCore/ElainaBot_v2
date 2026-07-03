@@ -132,6 +132,10 @@ _SCHEMAS = {
             group_id TEXT PRIMARY KEY,
             first_seen TEXT DEFAULT ''
         );
+        CREATE TABLE IF NOT EXISTS group_bot_admin (
+            group_id TEXT PRIMARY KEY,
+            updated_at TEXT DEFAULT ''
+        );
     """,
 }
 
@@ -213,7 +217,7 @@ def _migrate_data_tables(conn):
         conn.execute('ALTER TABLE full_access_groups DROP COLUMN last_seen')
         conn.commit()
     with contextlib.suppress(Exception):
-        conn.execute('DROP TABLE IF EXISTS group_bot_admin')
+        conn.execute(f'PRAGMA user_version = {_DATA_SCHEMA_VERSION}')
         conn.commit()
     with contextlib.suppress(Exception):
         conn.execute(f'PRAGMA user_version = {_DATA_SCHEMA_VERSION}')
