@@ -179,6 +179,10 @@ def get_routes() -> list:
         web.post('/api/database/query', _(database_browser.handle_query_table)),
         web.post('/api/database/sql', _(database_browser.handle_execute_sql)),
         web.post('/api/database/delete', _(database_browser.handle_delete_rows)),
+        web.post('/api/database/search', _(database_browser.handle_search_database)),
+        web.post('/api/database/browse', _(database_browser.handle_browse_files)),
+        web.post('/api/database/mount', _(database_browser.handle_mount_database)),
+        web.post('/api/database/unmount', _(database_browser.handle_unmount_database)),
         # ── WebSocket / SSE ──
         web.get('/ws/panel', panel_ws.handle_ws),
         web.get('/api/sse/panel', panel_ws.handle_sse),
