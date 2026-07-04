@@ -62,6 +62,7 @@ async def handle_get_robot_info(request: web.Request):
     base = {
         'appid': appid,
         'qq': robot_qq,
+        'union_openid': getattr(bot, 'union_openid', '') if bot else '',
         'link': share_url,
         'connection_type': conn_type,
         'connection_status': conn_status,
