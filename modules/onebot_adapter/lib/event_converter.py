@@ -19,7 +19,7 @@ def _build_segments(event) -> list[dict]:
     """
     segments = []
 
-    # 1. 从 attachments 提取媒体 (图片/语音/视频)
+    # 从 attachments 提取媒体 (图片/语音/视频)
     attachments = getattr(event, 'attachments', None) or []
     for att in attachments:
         if not isinstance(att, dict):
@@ -35,16 +35,22 @@ def _build_segments(event) -> list[dict]:
         elif ct.startswith('video/'):
             segments.append({'type': 'video', 'data': {'file': url, 'url': url}})
 
-    # 2. 文本内容 (去掉被合并进 content 的 <url> 图片标记, 避免重复)
+    # 文本内容 (去掉被合并进 content 的 <url> 图片标记, 避免重复)
     text = getattr(event, 'content', '') or ''
     if text:
         text = _URL_IN_ANGLE.sub('', text).strip()
     if text:
         segments.insert(0, {'type': 'text', 'data': {'text': text}})
 
-    # 3. 兜底: 完全无内容时补空文本
+    # 兜底: 完全无内容时补空文本
     if not segments:
-        segments.append({'type': 'text', 'data': {'text': ''}})
+        segments.insert(0, {'type': 'text', 'data': {'text': ' '}})
+
+    # 引用消息 (reply) 必须放在消息段最前面, 方便 OneBot 客户端识别回复关系
+    if quota_msg := getattr(event, 'msg_elements', ''):
+        data = {'content': quota_msg}
+        segments.append({'type': 'reply', 'data': data})
+
     if mentions := getattr(event, 'mentions', None):
         for user in mentions:
             scope = user.get('scope') or 'single'
@@ -69,6 +75,8 @@ def _segments_to_raw(segments: list[dict]) -> str:
             parts.append(f'[CQ:record,file={d.get("file", "")}]')
         elif t == 'video':
             parts.append(f'[CQ:video,file={d.get("file", "")}]')
+        elif t == 'reply':
+            parts.append('[CQ:reply]')
         else:
             kv = ','.join(f'{k}={v}' for k, v in d.items())
             parts.append(f'[CQ:{t},{kv}]' if kv else f'[CQ:{t}]')
