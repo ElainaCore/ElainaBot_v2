@@ -1,7 +1,13 @@
 """OneBot 11 适配器模块 — 入口
 
-将 Elaina_V2 的消息/事件以 OneBot 11 标准协议通过 WebSocket 推送到
-外部机器人框架 (如 Yunzai-Bot), 并处理其回复动作 (send_msg 等)。
+将 Elaina_V2 的消息/事件以 OneBot 11 标准协议推送到外部机器人框架
+(如 Yunzai-Bot), 并处理其回复动作 (send_msg 等)。
+
+支持四种网络连接 (可在 Web 面板「OneBot 网络」页可视化管理):
+  ws_server    — 正向 WS: 框架作为服务端, 外部框架连入
+  ws_reverse   — 反向 WS: 框架主动连接外部框架的 WS 地址
+  http_server  — 正向 HTTP: 框架提供 OneBot HTTP API
+  http_webhook — 反向 HTTP: 事件 POST 上报到外部 URL
 
 设计模式:
   - Facade:      OneBotAdapter (adapter.py)
@@ -25,6 +31,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from modules.onebot_adapter import web_panel
 from modules.onebot_adapter.adapter import OneBotAdapter
 
 if TYPE_CHECKING:
@@ -33,7 +40,7 @@ if TYPE_CHECKING:
 __module_meta__ = {
     'name': 'OneBot 适配器',
     'description': 'OneBot 11 协议适配器, 将消息/事件推送到外部机器人框架',
-    'version': '1.5.0',
+    'version': '2.0.0',
     'author': 'Elaina',
 }
 
@@ -45,11 +52,13 @@ async def setup(ctx: ModuleContext) -> None:
     global _adapter
     _adapter = OneBotAdapter(ctx)
     await _adapter.start()
+    web_panel.register(_adapter)
 
 
 async def teardown() -> None:
     """模块禁用/框架停止入口"""
     global _adapter
+    web_panel.unregister()
     if _adapter:
         await _adapter.stop()
         _adapter = None

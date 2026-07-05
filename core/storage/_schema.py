@@ -125,7 +125,8 @@ _SCHEMAS = {
         );
         CREATE TABLE IF NOT EXISTS groups_users (
             group_id TEXT PRIMARY KEY,
-            users TEXT DEFAULT '[]'
+            users TEXT DEFAULT '[]',
+            in_group INTEGER DEFAULT 1
         );
         CREATE TABLE IF NOT EXISTS full_access_groups (
             group_id TEXT PRIMARY KEY,
@@ -167,6 +168,7 @@ _INDEXES = {
         'CREATE INDEX IF NOT EXISTS idx_msg_group_agg ON log(group_id, id, timestamp)',
         'CREATE INDEX IF NOT EXISTS idx_msg_user_agg ON log(user_id, id, timestamp)',
         'CREATE INDEX IF NOT EXISTS idx_msg_message_id ON log(message_id)',
+        'CREATE INDEX IF NOT EXISTS idx_msg_timestamp ON log(timestamp)',
         'CREATE INDEX IF NOT EXISTS idx_msg_reference_id ON log(reference_id)',
         # 覆盖索引
         'CREATE INDEX IF NOT EXISTS idx_msg_group_cover ON log(group_id, timestamp, id, content)',
@@ -187,11 +189,20 @@ _INDEXES = {
 
 _DATA_MIGRATIONS = [
     ('users', 'state', 'INTEGER DEFAULT 0'),
+    ('groups_users', 'in_group', 'INTEGER DEFAULT 1'),
 ]
+
+# data 库 schema 版本 (PRAGMA user_version); 新增迁移时 +1
+_DATA_SCHEMA_VERSION = 2
 
 
 def _migrate_data_tables(conn):
-    """为 data 库的旧表补齐缺失列"""
+    """为 data 库的旧表补齐缺失列 (按 user_version 版本号跳过已迁移库)"""
+    try:
+        if conn.execute('PRAGMA user_version').fetchone()[0] >= _DATA_SCHEMA_VERSION:
+            return
+    except Exception:
+        pass
     for table, col, col_def in _DATA_MIGRATIONS:
         try:
             existing = {row[1] for row in conn.execute(f'PRAGMA table_info({table})').fetchall()}
@@ -204,6 +215,12 @@ def _migrate_data_tables(conn):
             log.warning(f'迁移列 {table}.{col} 失败: {e}')
     with contextlib.suppress(Exception):
         conn.execute('ALTER TABLE full_access_groups DROP COLUMN last_seen')
+        conn.commit()
+    with contextlib.suppress(Exception):
+        conn.execute(f'PRAGMA user_version = {_DATA_SCHEMA_VERSION}')
+        conn.commit()
+    with contextlib.suppress(Exception):
+        conn.execute(f'PRAGMA user_version = {_DATA_SCHEMA_VERSION}')
         conn.commit()
 
 

@@ -5,15 +5,7 @@ from core.base.config import cfg
 
 
 def build_keyboard(button_rows, appid=None, *, font_size=None, style=None):
-    """按钮行列表 → QQ InlineKeyboard 结构
-
-    小按钮: 通过键盘级样式 content.style.font_size 控制按钮大小 (对应官方
-    botgo CustomKeyboard.Style.FontSize), 取值 small / middle / large,
-    small 即「小按钮」。两种用法:
-      - 关键字: build_keyboard(rows, appid, font_size='small')
-        或 reply(buttons=rows, button_font_size='small')
-      - dict 包装: build_keyboard({'rows': rows, 'font_size': 'small'})
-    """
+    """按钮行列表 → QQ InlineKeyboard 结构, font_size 控制按钮大小 (small/middle/large)"""
     button_enter_to_send = cfg.get_bot_setting(appid, 'message.button_enter_to_send', False) if appid else False
 
     # 顶层 dict 包装: 携带键盘级样式, 同时兼容 rows/buttons/btns 取行

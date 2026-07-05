@@ -536,12 +536,19 @@ ok, result = await event.sender.force_wakeup(user_id, "强制召回")
 # 生成分享链接
 url = await event.sender.get_share_link(callback_data='my_data')
 
-# 获取图片尺寸 (URL 或 bytes)
-width, height = await event.sender.get_image_size("https://...")
+# 获取图片尺寸 (URL/bytes/本地路径, 返回 {'width', 'height', 'px'} 或 None)
+size = await event.sender.get_image_size("https://...")
 
 # 手动上传媒体文件 (返回 file_info)
 file_info = await event.sender.upload_media(event, file_bytes, file_type=1)
 # file_type: 1=图片, 2=视频, 3=语音, 4=文件
+
+# 查询单个群成员详情 (返回 dict 或 None, 含 member_openid/username/member_role 等)
+member = await event.sender.get_group_member(group_id, user_id)
+
+# 查询机器人自身在某群的成员信息 (返回 dict 或 None)
+bot_member = await event.sender.get_bot_member(group_id)
+is_admin = bot_member and bot_member.get('member_role') in ('admin', 'owner')
 ```
 
 ---

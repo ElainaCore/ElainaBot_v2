@@ -25,6 +25,7 @@ class BotInstance:
         'log_service',
         'bot_id',
         'avatar_url',
+        'union_openid',
         'robot_qq',
         'owner_ids',
     )
@@ -56,6 +57,7 @@ class BotInstance:
         self.ws_client = None
         self.bot_id = ''
         self.avatar_url = ''
+        self.union_openid = ''
 
     async def start(self, on_event):
         """启动机器人: Token + 日志 + WS(可选)"""
@@ -97,6 +99,7 @@ class BotInstance:
                 name = data.get('username', '')
                 self.bot_id = data.get('id', '')
                 self.avatar_url = data.get('avatar', '')
+                self.union_openid = data.get('union_openid', '')
                 if name:
                     self.name = name
                     get_logger(FRAMEWORK, name).info(f'机器人昵称: {name}')

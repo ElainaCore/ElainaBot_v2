@@ -30,11 +30,7 @@ async def handle_command(event, match):
 
 
 async def handle_toggle_plugin(request: web.Request):
-    """启用/禁用插件文件 — 统一 key 格式: dir/file_stem
-
-    请求: {"name": "alone", "file": "示例插件", "action": "disable"}
-    入口文件禁用 = 整个大型插件禁用
-    """
+    """启用/禁用插件文件 (key 格式 dir/file_stem, 入口文件禁用即整个插件禁用)"""
     body = await request.json()
     name = body.get('name', '')
     file = body.get('file', '')

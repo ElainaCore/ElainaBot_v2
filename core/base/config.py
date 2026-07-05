@@ -93,13 +93,7 @@ class ConfigManager:
     # ------ 读取 ------
 
     def get(self, name, key=None, default=None):
-        """获取配置值
-
-        Args:
-            name:    配置文件名(不含 .yaml), 如 'settings', 'bot', 'extension/redis'
-            key:     点号分隔路径, 如 'server.port', None 返回整个 dict
-            default: 默认值
-        """
+        """获取配置值: name=配置文件名, key=点号路径 (None 返回整个 dict)"""
         self._maybe_reload(name)
         with self._rw_lock:
             data = self._cache.get(name, {})
@@ -134,8 +128,7 @@ class ConfigManager:
         if val is not None:
             self._bot_setting_cache[cache_key] = val
             return val
-        # 负缓存: 命中内置默认值的键也缓存, 避免每条消息重复 key.split('.') + 字典遍历
-        # (默认值与传入 default 无关, 仅对 _BOT_DEFAULTS 中存在的键缓存)
+        # 负缓存: 仅对 _BOT_DEFAULTS 中存在的键缓存默认值
         dft = _BOT_DEFAULTS.get(key, _MISSING)
         if dft is not _MISSING:
             self._bot_setting_cache[cache_key] = dft
@@ -145,11 +138,7 @@ class ConfigManager:
     # ------ 热加载 ------
 
     def _resolve_path(self, name):
-        """解析配置文件名 -> 绝对路径 (带缓存)
-
-        查找顺序: name.yaml > name.yml > name.example.yaml(自动复制) > name.yaml(占位)
-        当实际配置文件不存在时, 自动从 .example.yaml 复制生成, 避免示例文件被本地修改污染版本控制.
-        """
+        """解析配置文件名为绝对路径 (带缓存): .yaml > .yml > .example.yaml 自动复制 > 占位"""
         cached = self._path_cache.get(name)
         if cached:
             return cached

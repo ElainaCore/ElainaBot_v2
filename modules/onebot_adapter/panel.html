@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OneBot 网络配置</title>
+<style>
+  :root {
+    --bg: #f5f6fa; --bg2: #ffffff; --bg3: #f0f1f5;
+    --text: #1f2229; --text2: #7a8091;
+    --border: #e4e6ec; --radius: 12px;
+    --accent: #5865f2; --accent-soft: rgba(88,101,242,.12);
+    --success: #18a058; --success-soft: rgba(24,160,88,.12);
+    --warning: #f0a020; --warning-soft: rgba(240,160,32,.14);
+    --error: #d03050; --error-soft: rgba(208,48,80,.12);
+    --shadow-sm: 0 1px 3px rgba(0,0,0,.05);
+    --shadow-hover: 0 4px 14px rgba(0,0,0,.09);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #101014; --bg2: #18181c; --bg3: #222228;
+      --text: #e5e7ef; --text2: #8b90a0;
+      --border: #2a2a32;
+      --shadow-sm: 0 1px 3px rgba(0,0,0,.3);
+      --shadow-hover: 0 4px 14px rgba(0,0,0,.45);
+    }
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+         background: var(--bg); color: var(--text); padding: 20px 18px 32px; font-size: 13px; }
+  .net-page { max-width: 1080px; margin: 0 auto; }
+
+  /* page head */
+  .page-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
+  .page-head-main { display: flex; align-items: center; gap: 12px; }
+  .page-icon { width: 42px; height: 42px; border-radius: 12px; background: var(--accent-soft); color: var(--accent);
+               display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+  .page-title { font-size: 18px; font-weight: 600; }
+  .page-sub { margin-top: 3px; font-size: 12.5px; color: var(--text2); line-height: 1.5; max-width: 680px; }
+  .page-actions { display: flex; gap: 8px; flex-shrink: 0; }
+
+  button { border: none; border-radius: 8px; padding: 7px 14px; font-size: 12.5px; cursor: pointer;
+           display: inline-flex; align-items: center; gap: 5px; transition: .15s;
+           background: var(--bg3); color: var(--text); }
+  button:hover { filter: brightness(.96); }
+  button.primary { background: var(--accent); color: #fff; }
+  button.primary:hover { filter: brightness(1.08); }
+  button.icon-btn { padding: 4px 6px; background: transparent; color: var(--text2); border-radius: 6px; }
+  button.icon-btn:hover { background: var(--bg3); color: var(--text); }
+  button.icon-btn.error:hover { background: var(--error-soft); color: var(--error); }
+
+  /* card grid */
+  .net-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+  .net-card { border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; background: var(--bg2);
+              box-shadow: var(--shadow-sm); transition: transform .15s, box-shadow .15s; }
+  .net-card:hover { transform: translateY(-2px); box-shadow: var(--shadow-hover); }
+  .net-card.disabled { opacity: .62; }
+  .net-card-top { display: flex; align-items: center; gap: 8px; }
+  .net-card-icon { color: var(--accent); flex-shrink: 0; display: flex; }
+  .net-card-name { font-weight: 600; font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .net-type-tag { background: var(--accent-soft); color: var(--accent); font-size: 11px; padding: 2px 9px;
+                  border-radius: 20px; white-space: nowrap; }
+  .spacer { flex: 1; }
+  .net-card-endpoint { display: flex; align-items: center; gap: 6px; margin-top: 9px; padding: 6px 9px; border-radius: 8px;
+                       background: var(--bg3); font-size: 12px; font-family: ui-monospace, monospace; cursor: pointer; color: var(--text2); }
+  .net-card-endpoint:hover { color: var(--text); }
+  .net-ep-text { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .net-ep-copy { opacity: .5; display: flex; }
+  .net-card-bottom { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+  .tag { font-size: 11px; padding: 2px 10px; border-radius: 20px; white-space: nowrap; }
+  .tag.success { background: var(--success-soft); color: var(--success); }
+  .tag.warning { background: var(--warning-soft); color: var(--warning); }
+  .tag.default { background: var(--bg3); color: var(--text2); }
+  .net-meta-item { display: flex; align-items: center; gap: 3px; font-size: 11px; color: var(--text2); }
+  .net-empty { font-size: 12.5px; color: var(--text2); padding: 32px; text-align: center;
+               border: 1px dashed var(--border); border-radius: 10px; }
+
+  /* switch */
+  .switch { position: relative; width: 36px; height: 19px; flex: none; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .slider { position: absolute; inset: 0; background: var(--bg3); border: 1px solid var(--border);
+            border-radius: 20px; cursor: pointer; transition: .2s; }
+  .slider:before { content: ''; position: absolute; width: 13px; height: 13px; left: 2px; top: 2px;
+                   background: #fff; border-radius: 50%; box-shadow: 0 1px 2px rgba(0,0,0,.25); transition: .2s; }
+  .switch input:checked + .slider { background: var(--accent); border-color: var(--accent); }
+  .switch input:checked + .slider:before { transform: translateX(17px); }
+
+  /* global settings */
+  .global { border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg2); box-shadow: var(--shadow-sm);
+            padding: 12px 16px; margin-top: 16px; display: flex; gap: 24px; align-items: center; flex-wrap: wrap; }
+  .global label { color: var(--text2); font-size: 12.5px; display: flex; align-items: center; gap: 8px; }
+  .global input[type=number] { width: 72px; }
+
+  input[type=text], input[type=password], input[type=number], select {
+    background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; color: var(--text);
+    padding: 7px 10px; font-size: 12.5px; outline: none; width: 100%; transition: border-color .15s; }
+  input:focus, select:focus { border-color: var(--accent); }
+
+  /* modal */
+  .mask { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: none; align-items: flex-start;
+          justify-content: center; padding: 6vh 16px; z-index: 10; }
+  .mask.show { display: flex; }
+  .modal { background: var(--bg2); border: 1px solid var(--border); border-radius: 14px; padding: 20px 22px;
+           width: 480px; max-width: 100%; max-height: 86vh; overflow-y: auto; box-shadow: var(--shadow-hover); }
+  .modal h2 { font-size: 15px; font-weight: 600; margin-bottom: 14px; }
+  .field { margin-bottom: 12px; }
+  .field label { display: block; font-size: 12px; color: var(--text2); margin-bottom: 5px; }
+  .form-desc { margin: -4px 0 12px; font-size: 11.5px; color: var(--text2); line-height: 1.5; }
+  .modal-btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+
+  .toast { position: fixed; top: 18px; left: 50%; transform: translateX(-50%); background: var(--bg2); color: var(--text);
+           border: 1px solid var(--border); box-shadow: var(--shadow-hover); padding: 9px 20px; border-radius: 8px;
+           font-size: 12.5px; display: none; z-index: 20; }
+  .toast.show { display: block; }
+  .toast.ok { border-left: 3px solid var(--success); }
+  .toast.err { border-left: 3px solid var(--error); }
+</style>
+</head>
+<body>
+<div class="net-page">
+  <div class="page-head">
+    <div class="page-head-main">
+      <div class="page-icon">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+      </div>
+      <div>
+        <div class="page-title">网络配置</div>
+        <div class="page-sub">配置框架与外部机器人框架的 OneBot 11 连接方式，保存后即时生效（新增监听路径需重启框架）</div>
+      </div>
+    </div>
+    <div class="page-actions">
+      <button onclick="fetchData()">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36L21 8"/><path d="M21 3v5h-5"/></svg>刷新
+      </button>
+      <button class="primary" onclick="openAdd()">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>新建
+      </button>
+    </div>
+  </div>
+
+  <div id="list" class="net-grid"></div>
+  <div id="empty" class="net-empty" style="display:none">暂无连接，点击右上角「新建」添加一个连接</div>
+
+  <div class="global">
+    <label>心跳间隔 (秒) <input type="number" id="g-heartbeat" min="0" value="30" onchange="saveGlobal()"></label>
+    <label>调试模式
+      <span class="switch"><input type="checkbox" id="g-debug" onchange="saveGlobal()"><span class="slider" onclick="this.previousElementSibling.click()"></span></span>
+    </label>
+  </div>
+</div>
+
+<div class="mask" id="mask">
+  <div class="modal">
+    <h2 id="modal-title">新建连接</h2>
+    <div class="field">
+      <label>连接类型</label>
+      <select id="f-type" onchange="onTypeChange()"></select>
+    </div>
+    <p class="form-desc" id="type-desc"></p>
+    <div class="field"><label>名称（唯一）</label><input type="text" id="f-name" placeholder="连接名称"></div>
+    <div id="type-fields"></div>
+    <div class="field"><label>Access Token（可选）</label><input type="password" id="f-token" placeholder="鉴权 token，留空则不校验"></div>
+    <div class="field"><label>绑定 AppID（可选）</label><input type="text" id="f-appid" placeholder="多机器人时绑定指定 appid，留空则收发全部"></div>
+    <div class="modal-btns">
+      <button onclick="closeModal()">取消</button>
+      <button class="primary" onclick="confirmEdit()">保存</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const TOKEN = new URLSearchParams(location.search).get('token') || localStorage.getItem('elaina_token') || '';
+const API = '/api/ext/onebot/network';
+
+const ICONS = {
+  server: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><path d="M6 6h.01M6 18h.01"/></svg>',
+  link: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>',
+  globe: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>',
+  upload: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14.9A7 7 0 1 1 15.7 8h1.8a4.5 4.5 0 0 1 2.5 8.2"/><path d="M12 12v9M8 17l4 4 4-4"/></svg>',
+  key: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>',
+  copy: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>',
+  settings: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>',
+  trash: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg>',
+};
+
+const TYPES = {
+  ws_server:    { label: '正向 WS',   sub: 'WebSocket 服务器', desc: '框架监听路径，OneBot 端作为客户端连入', icon: 'server', mode: 'server' },
+  ws_reverse:   { label: '反向 WS',   sub: 'WebSocket 客户端', desc: '框架主动连接外部框架的 WebSocket 服务器，自动重连', icon: 'link', mode: 'client' },
+  http_server:  { label: 'HTTP 调用', sub: 'HTTP 服务器',      desc: '框架提供 OneBot HTTP API，外部框架通过 HTTP 调用', icon: 'globe', mode: 'server' },
+  http_webhook: { label: 'HTTP 上报', sub: 'HTTP 客户端',      desc: '框架将事件 POST 上报到外部框架的 URL', icon: 'upload', mode: 'client' },
+};
+
+let conns = [];
+let status = {};
+let heartbeat = 30, debug = false;
+let editIndex = -1;
+
+function esc(s) { return String(s ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
+
+function toast(msg, ok = true) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'toast show ' + (ok ? 'ok' : 'err');
+  clearTimeout(t._timer);
+  t._timer = setTimeout(() => t.className = 'toast', 2400);
+}
+
+async function req(method, body) {
+  const r = await fetch(API + '?token=' + encodeURIComponent(TOKEN), {
+    method,
+    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + TOKEN },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  return r.json();
+}
+
+function endpointOf(c) {
+  if (TYPES[c.type].mode === 'client') return c.url || '(未填写 URL)';
+  const scheme = c.type === 'ws_server' ? 'ws' : 'http';
+  if (c.type === 'ws_server' && c.port > 0) return `ws://127.0.0.1:${c.port}`;
+  if (c.type === 'ws_server' && c.path === '/') return `ws://127.0.0.1:${status.port || ''}`;
+  return `${scheme}://127.0.0.1:${status.port || ''}${c.path || '/'}`;
+}
+
+function statusOf(c) {
+  if (!c.enable) return { type: 'default', text: '已禁用' };
+  const st = (status[c.type] || {})[c.name];
+  if (!st) return { type: 'warning', text: '未运行' };
+  if (c.type === 'ws_server') return st.mounted ? { type: 'success', text: st.clients ? `已连接 · ${st.clients} 客户端` : '等待连接' } : { type: 'warning', text: st.error || '未挂载' };
+  if (c.type === 'http_server') return st.mounted ? { type: 'success', text: '已挂载' } : { type: 'warning', text: st.error || '未挂载' };
+  if (c.type === 'ws_reverse') return st.connected ? { type: 'success', text: '已连接' } : { type: 'warning', text: st.error || '未连接' };
+  if (st.ok === true) return { type: 'success', text: '上报正常' };
+  if (st.ok === false) return { type: 'warning', text: st.error || '上报失败' };
+  return { type: 'default', text: '等待事件' };
+}
+
+function render() {
+  const list = document.getElementById('list');
+  document.getElementById('empty').style.display = conns.length ? 'none' : 'block';
+  document.getElementById('g-heartbeat').value = heartbeat;
+  document.getElementById('g-debug').checked = debug;
+  list.innerHTML = conns.map((c, i) => {
+    const t = TYPES[c.type] || TYPES.ws_server;
+    const st = statusOf(c);
+    const ep = endpointOf(c);
+    return `<div class="net-card${c.enable ? '' : ' disabled'}">
+      <div class="net-card-top">
+        <span class="net-card-icon">${ICONS[t.icon]}</span>
+        <span class="net-card-name">${esc(c.name)}</span>
+        <span class="net-type-tag">${t.label}</span>
+        <span class="spacer"></span>
+        <span class="switch"><input type="checkbox" ${c.enable ? 'checked' : ''} onchange="toggleEnable(${i}, this.checked)"><span class="slider" onclick="this.previousElementSibling.click()"></span></span>
+      </div>
+      <div class="net-card-endpoint" onclick="copyText('${esc(ep).replace(/'/g, '\\&#39;')}')" title="点击复制: ${esc(ep)}">
+        ${ICONS.link.replace(/16/g, '13')}
+        <span class="net-ep-text">${esc(ep)}</span>
+        <span class="net-ep-copy">${ICONS.copy}</span>
+      </div>
+      <div class="net-card-bottom">
+        <span class="tag ${st.type}">${esc(st.text)}</span>
+        <span class="spacer"></span>
+        ${c.access_token ? `<span class="net-meta-item">${ICONS.key} Token</span>` : ''}
+        ${c.appid ? `<span class="net-meta-item">appid ${esc(c.appid)}</span>` : ''}
+        ${c.type === 'ws_reverse' ? `<span class="net-meta-item">重连 ${c.reconnect_interval || 5}s</span>` : ''}
+        <button class="icon-btn" onclick="openEdit(${i})" title="编辑">${ICONS.settings}</button>
+        <button class="icon-btn error" onclick="removeConn(${i})" title="删除">${ICONS.trash}</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function fetchData() {
+  try {
+    const d = await req('GET');
+    if (!d.success) { toast(d.error || '获取网络配置失败', false); return; }
+    conns = d.connections || [];
+    status = d.status || {};
+    heartbeat = d.heartbeat_interval ?? 30;
+    debug = !!d.debug;
+    render();
+  } catch (e) { toast('获取网络配置失败', false); }
+}
+
+async function persist(successText) {
+  try {
+    const d = await req('POST', { connections: conns, heartbeat_interval: heartbeat, debug });
+    if (!d.success) { toast(d.error || '保存失败', false); return false; }
+    status = d.status || {};
+    render();
+    if (successText) toast(successText);
+    setTimeout(fetchData, 1200);
+    return true;
+  } catch (e) { toast('保存失败: ' + e, false); return false; }
+}
+
+async function toggleEnable(i, val) {
+  conns[i].enable = val;
+  await persist(val ? `已启用「${conns[i].name}」` : `已禁用「${conns[i].name}」`);
+}
+
+function saveGlobal() {
+  heartbeat = parseInt(document.getElementById('g-heartbeat').value) || 30;
+  debug = document.getElementById('g-debug').checked;
+  persist('已保存');
+}
+
+function copyText(text) {
+  (navigator.clipboard?.writeText(text) || Promise.reject()).then(() => toast('已复制')).catch(() => {});
+}
+
+// ── 编辑 / 新建弹窗 ──
+
+function uniqueName(base) {
+  let name = base, i = 2;
+  const names = conns.map((c, idx) => idx === editIndex ? null : c.name);
+  while (names.includes(name)) name = `${base} ${i++}`;
+  return name;
+}
+
+function typeFieldsHtml(type, c = {}) {
+  if (TYPES[type].mode === 'server') {
+    const def = type === 'ws_server' ? '/onebot' : '/onebot/http';
+    const hint = type === 'ws_server' ? '；填 "/" 或留空则不校验路径，可直接连接 ws://127.0.0.1:' + (status.port || '端口') : '';
+    let html = `<div class="field"><label>监听路径</label><input type="text" id="f-path" value="${esc(c.path || (type === 'ws_server' ? '' : def))}" placeholder="${def}"></div>
+      <p class="form-desc">挂载到框架主端口 (${status.port || '?'})，全新路径需重启框架生效${hint}。</p>`;
+    if (type === 'ws_server') {
+      html += `<div class="field"><label>独立端口（可选）</label><input type="number" id="f-port" min="0" max="65535" value="${c.port || ''}" placeholder="如 5200，留空则挂载到主端口"></div>
+      <p class="form-desc">填写后在该端口独立监听且不校验路径，可直接连接 ws://127.0.0.1:端口。</p>`;
+    }
+    return html;
+  }
+  if (type === 'ws_reverse') {
+    return `<div class="field"><label>WebSocket 地址</label><input type="text" id="f-url" value="${esc(c.url || '')}" placeholder="ws://127.0.0.1:2536/OneBot/v11/ws"></div>
+      <div class="field"><label>重连间隔 (秒)</label><input type="number" id="f-reconnect" min="1" value="${c.reconnect_interval || 5}"></div>`;
+  }
+  return `<div class="field"><label>上报地址 (URL)</label><input type="text" id="f-url" value="${esc(c.url || '')}" placeholder="http://127.0.0.1:8080/onebot"></div>
+    <div class="field"><label>Secret（上报签名，可选）</label><input type="password" id="f-secret" value="${esc(c.secret || '')}" placeholder="HMAC-SHA1 签名密钥"></div>
+    <div class="field"><label>超时 (秒)</label><input type="number" id="f-timeout" min="1" value="${c.timeout || 10}"></div>`;
+}
+
+function renderTypeFields() {
+  const type = document.getElementById('f-type').value;
+  document.getElementById('type-desc').textContent = TYPES[type].desc;
+  const c = editIndex >= 0 && conns[editIndex] && conns[editIndex].type === type ? conns[editIndex] : {};
+  document.getElementById('type-fields').innerHTML = typeFieldsHtml(type, c);
+}
+
+function onTypeChange() {
+  renderTypeFields();
+  if (editIndex < 0) document.getElementById('f-name').value = uniqueName(TYPES[document.getElementById('f-type').value].label);
+}
+
+function fillTypeSelect(disabled) {
+  const sel = document.getElementById('f-type');
+  sel.innerHTML = Object.entries(TYPES).map(([v, t]) => `<option value="${v}">${t.label} · ${t.sub}</option>`).join('');
+  sel.disabled = disabled;
+}
+
+function openAdd() {
+  editIndex = -1;
+  document.getElementById('modal-title').textContent = '新建连接';
+  fillTypeSelect(false);
+  document.getElementById('f-type').value = 'ws_server';
+  document.getElementById('f-name').value = uniqueName(TYPES.ws_server.label);
+  document.getElementById('f-token').value = '';
+  document.getElementById('f-appid').value = '';
+  renderTypeFields();
+  document.getElementById('mask').classList.add('show');
+}
+
+function openEdit(i) {
+  editIndex = i;
+  const c = conns[i];
+  document.getElementById('modal-title').textContent = '编辑连接';
+  fillTypeSelect(true);
+  document.getElementById('f-type').value = c.type;
+  document.getElementById('f-name').value = c.name || '';
+  document.getElementById('f-token').value = c.access_token || '';
+  document.getElementById('f-appid').value = c.appid || '';
+  renderTypeFields();
+  document.getElementById('mask').classList.add('show');
+}
+
+function closeModal() { document.getElementById('mask').classList.remove('show'); }
+
+async function confirmEdit() {
+  const type = document.getElementById('f-type').value;
+  const name = document.getElementById('f-name').value.trim();
+  if (!name) { toast('请填写名称', false); return; }
+  const c = {
+    type, name,
+    enable: editIndex >= 0 ? conns[editIndex].enable : true,
+    access_token: document.getElementById('f-token').value.trim(),
+    appid: document.getElementById('f-appid').value.trim(),
+  };
+  if (TYPES[type].mode === 'server') {
+    let p = document.getElementById('f-path').value.trim() || (type === 'ws_server' ? '/' : '/onebot/http');
+    if (!p.startsWith('/')) p = '/' + p;
+    c.path = p;
+    if (type === 'ws_server') c.port = parseInt(document.getElementById('f-port').value) || 0;
+  } else {
+    c.url = document.getElementById('f-url').value.trim();
+    if (!c.url) { toast('请填写连接 URL', false); return; }
+    if (type === 'ws_reverse') c.reconnect_interval = parseInt(document.getElementById('f-reconnect').value) || 5;
+    else {
+      c.secret = document.getElementById('f-secret').value.trim();
+      c.timeout = parseInt(document.getElementById('f-timeout').value) || 10;
+    }
+  }
+  if (editIndex >= 0) conns.splice(editIndex, 1, c); else conns.push(c);
+  closeModal();
+  await persist('已保存');
+}
+
+async function removeConn(i) {
+  if (!confirm(`确定删除连接「${conns[i].name}」？`)) return;
+  conns.splice(i, 1);
+  await persist('已删除');
+}
+
+document.getElementById('mask').addEventListener('click', e => { if (e.target.id === 'mask') closeModal(); });
+fetchData();
+</script>
+</body>
+</html>

@@ -1,12 +1,4 @@
-"""pip 依赖安装辅助 — 插件/模块共用
-
-设计目标 (对齐 nonebot 的"框架自装依赖", 且不挑环境):
-  · 用 `sys.executable -m pip` 安装 → 天然装进"当前跑 bot 的这个 Python", 虚拟环境里也对;
-  · site-packages 不可写时 (无 root / venv 属主为 root), 自动 `--target` 装到可写的
-    .pydeps 目录并注入 sys.path, 无需 root, venv 内外均适用;
-  · 多镜像兜底 (配置源失败自动换官方源重试);
-  · pip 跑在独立单线程池里, 与事件循环 / DNS / Web 隔离, 装依赖不阻塞收发消息。
-"""
+"""pip 依赖安装辅助 — 插件/模块共用, 自动适配环境并多镜像兜底"""
 
 import asyncio
 import contextlib
@@ -24,9 +16,7 @@ from core.base.logger import FRAMEWORK, get_logger
 
 log = get_logger(FRAMEWORK, '依赖安装')
 
-# 当运行 bot 的 Python 环境 site-packages 不可写时 (无 root / venv 属主为 root, pip 报
-# Errno 13 Permission denied), 依赖改装到这个可写目录并注入 sys.path: 免 root、
-# venv 内外都能让插件 import 到 (venv 里 --user 会被 pip 拒绝, 故用 --target)。
+# site-packages 不可写时, 依赖 --target 装到此可写目录并注入 sys.path
 _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _DEPS_DIR = os.path.join(_ROOT_DIR, '.pydeps')
 
@@ -40,8 +30,7 @@ def _ensure_deps_dir_on_path():
 if os.path.isdir(_DEPS_DIR):
     _ensure_deps_dir_on_path()
 
-# 独立单线程池: pip 是重 IO/CPU 的阻塞操作, 放这里跑绝不占用 asyncio 默认执行器
-# (默认执行器还兼着 DNS 解析、Web/统计查询等, 被 pip 占满会连带卡住整个面板)。
+# 独立单线程池: pip 阻塞操作不占用 asyncio 默认执行器
 _EXECUTOR = None
 _EXECUTOR_LOCK = threading.Lock()
 
@@ -153,11 +142,7 @@ def all_requirements_met(req_path):
 
 
 def _mirror_attempts():
-    """返回按优先级排列的镜像参数列表; '' 表示官方源 (不带 -i)。
-
-    支持 settings.pip.mirrors (列表) 做多镜像兜底; 否则用 settings.pip.mirror
-    (单个), 并追加官方源兜底。
-    """
+    """返回按优先级排列的镜像参数列表, '' 表示官方源"""
     mirrors = cfg.get('settings', 'pip.mirrors', None)
     if isinstance(mirrors, (list, tuple)) and mirrors:
         seq = [str(m).strip() for m in mirrors if str(m).strip()]

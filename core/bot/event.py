@@ -307,6 +307,9 @@ class EventHandlerMixin:
         self._push_web_log('lifecycle', web_entry)
 
     async def _handle_group_add(self, bot, event):
+        if event.group_id:
+            bot.log_service.db_queue(
+                'UPDATE groups_users SET in_group=1 WHERE group_id=?', (event.group_id,))
         self._log_lifecycle(
             bot,
             'group_add',
@@ -322,6 +325,9 @@ class EventHandlerMixin:
         )
 
     async def _handle_group_del(self, bot, event):
+        if event.group_id:
+            bot.log_service.db_queue(
+                'UPDATE groups_users SET in_group=0 WHERE group_id=?', (event.group_id,))
         self._log_lifecycle(
             bot,
             'group_del',

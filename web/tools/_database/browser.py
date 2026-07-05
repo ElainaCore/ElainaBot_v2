@@ -1,5 +1,6 @@
-"""数据库浏览器 — 查询/浏览/删除"""
+"""数据库浏览器 — 查询/浏览/删除/搜索/挂载"""
 
+import json
 import logging
 import os
 import re
@@ -20,6 +21,29 @@ def set_context(bot_manager, base_dir: str):
     global _bot_manager, _base_dir
     _bot_manager = bot_manager
     _base_dir = base_dir
+
+
+def _mounted_file():
+    """挂载数据库配置文件路径"""
+    return os.path.join(_base_dir, 'data', 'mounted_databases.json')
+
+
+def _load_mounted():
+    """读取已挂载的数据库路径列表"""
+    try:
+        with open(_mounted_file(), encoding='utf-8') as f:
+            paths = json.load(f)
+        return [p for p in paths if isinstance(p, str)]
+    except (OSError, ValueError):
+        return []
+
+
+def _save_mounted(paths):
+    """保存挂载的数据库路径列表"""
+    fpath = _mounted_file()
+    os.makedirs(os.path.dirname(fpath), exist_ok=True)
+    with open(fpath, 'w', encoding='utf-8') as f:
+        json.dump(paths, f, ensure_ascii=False, indent=2)
 
 
 def _log_base_dir():
@@ -62,6 +86,28 @@ def _find_databases():
     return result
 
 
+def _mounted_databases():
+    """已挂载的数据库列表, 返回 [{appid, bot_name, name, path, size, date, mounted}]"""
+    result = []
+    base_abs = os.path.abspath(_base_dir)
+    for p in _load_mounted():
+        abs_path = os.path.abspath(p)
+        rel = os.path.relpath(abs_path, base_abs).replace('\\', '/')
+        result.append(
+            {
+                'appid': '_mounted',
+                'bot_name': '挂载数据库',
+                'name': rel,
+                'path': abs_path.replace('\\', '/'),
+                'size': os.path.getsize(abs_path) if os.path.isfile(abs_path) else 0,
+                'date': '',
+                'mounted': True,
+                'missing': not os.path.isfile(abs_path),
+            }
+        )
+    return result
+
+
 def _collect_db_files(result, directory, base, date):
     """扫描目录下的 .db 文件并追加到 result"""
     for f in sorted(os.listdir(directory)):
@@ -79,16 +125,19 @@ def _collect_db_files(result, directory, base, date):
 
 
 def _validate_db_path(db_path):
-    """校验路径在 log 目录下且为 .db 文件"""
-    log_base = os.path.abspath(_log_base_dir())
+    """校验路径为 log 目录下或已挂载的 .db 文件"""
     abs_path = os.path.abspath(db_path)
-    if not abs_path.startswith(log_base):
-        return False, ''
     if not abs_path.endswith('.db'):
         return False, ''
     if not os.path.isfile(abs_path):
         return False, ''
-    return True, abs_path
+    log_base = os.path.abspath(_log_base_dir())
+    if abs_path.startswith(log_base):
+        return True, abs_path
+    mounted = {os.path.abspath(p) for p in _load_mounted()}
+    if abs_path in mounted:
+        return True, abs_path
+    return False, ''
 
 
 def _open_readonly(db_path):
@@ -112,8 +161,8 @@ def _open_readwrite(db_path):
 
 
 async def handle_list_databases(request: web.Request):
-    """列出所有数据库文件"""
-    databases = _find_databases()
+    """列出所有数据库文件 (含已挂载)"""
+    databases = _find_databases() + _mounted_databases()
     return web.json_response({'success': True, 'databases': databases})
 
 
@@ -271,14 +320,127 @@ async def handle_execute_sql(request: web.Request):
         return web.json_response({'success': False, 'message': str(e)}, status=400)
 
 
-async def handle_delete_rows(request: web.Request):
-    """删除表中的单条或多条数据
+async def handle_search_database(request: web.Request):
+    """全库模糊搜索: 在所有表的所有列中查找包含关键词的记录"""
+    body = await request.json()
+    db_path = body.get('path', '')
+    keyword = str(body.get('keyword', '') or '').strip()
+    limit = min(200, max(1, int(body.get('limit', 50))))
 
-    参数:
-        path:   数据库路径
-        table:  表名
-        rowids: rowid 列表 (整数数组)
-    """
+    if not db_path or not keyword:
+        return web.json_response({'success': False, 'message': '缺少参数 (path/keyword)'}, status=400)
+
+    valid, abs_path = _validate_db_path(db_path)
+    if not valid:
+        return web.json_response({'success': False, 'message': '无效路径'}, status=403)
+
+    escaped = keyword.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+    pattern = f'%{escaped}%'
+
+    try:
+        conn = _open_readonly(abs_path)
+        results = []
+        table_rows = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").fetchall()
+        for trow in table_rows:
+            tname = trow['name']
+            columns = [{'name': col['name'], 'type': col['type']} for col in conn.execute(f'PRAGMA table_info("{tname}")')]
+            if not columns:
+                continue
+            conds = ' OR '.join('CAST("{}" AS TEXT) LIKE ? ESCAPE \'\\\''.format(c['name']) for c in columns)
+            params = [pattern] * len(columns)
+            try:
+                total = conn.execute(f'SELECT COUNT(*) as c FROM "{tname}" WHERE {conds}', params).fetchone()['c']
+                if not total:
+                    continue
+                rows = conn.execute(
+                    f'SELECT rowid AS _rowid, * FROM "{tname}" WHERE {conds} ORDER BY rowid DESC LIMIT ?',
+                    params + [limit],
+                ).fetchall()
+            except sqlite3.Error:
+                continue
+            results.append(
+                {
+                    'table': tname,
+                    'columns': columns,
+                    'data': [dict(r) for r in rows],
+                    'total': total,
+                }
+            )
+        conn.close()
+        return web.json_response({'success': True, 'results': results, 'keyword': keyword})
+    except Exception as e:
+        log.warning(f'全库搜索失败: {e}')
+        return web.json_response({'success': False, 'message': str(e)}, status=500)
+
+
+async def handle_browse_files(request: web.Request):
+    """浏览框架目录下的文件夹与 .db 文件 (用于挂载选择)"""
+    body = await request.json()
+    rel_dir = str(body.get('dir', '') or '').strip().strip('/')
+
+    base_abs = os.path.abspath(_base_dir)
+    target = os.path.abspath(os.path.join(base_abs, rel_dir)) if rel_dir else base_abs
+    if not (target == base_abs or target.startswith(base_abs + os.sep)):
+        return web.json_response({'success': False, 'message': '无效路径'}, status=403)
+    if not os.path.isdir(target):
+        return web.json_response({'success': False, 'message': '目录不存在'}, status=404)
+
+    dirs, files = [], []
+    try:
+        for f in sorted(os.listdir(target)):
+            if f.startswith('.') or f in ('__pycache__', 'node_modules'):
+                continue
+            fpath = os.path.join(target, f)
+            if os.path.isdir(fpath):
+                dirs.append({'name': f, 'type': 'dir'})
+            elif f.endswith('.db') and os.path.isfile(fpath):
+                files.append({'name': f, 'type': 'db', 'size': os.path.getsize(fpath), 'path': fpath.replace('\\', '/')})
+    except OSError as e:
+        return web.json_response({'success': False, 'message': str(e)}, status=500)
+
+    rel = os.path.relpath(target, base_abs).replace('\\', '/')
+    return web.json_response({'success': True, 'dir': '' if rel == '.' else rel, 'items': dirs + files})
+
+
+async def handle_mount_database(request: web.Request):
+    """挂载一个框架目录下的 .db 文件 (永久保留)"""
+    body = await request.json()
+    db_path = str(body.get('path', '') or '').strip()
+    if not db_path:
+        return web.json_response({'success': False, 'message': '缺少 path'}, status=400)
+
+    abs_path = os.path.abspath(db_path)
+    base_abs = os.path.abspath(_base_dir)
+    if not abs_path.startswith(base_abs + os.sep):
+        return web.json_response({'success': False, 'message': '只能挂载框架目录下的数据库'}, status=403)
+    if not abs_path.endswith('.db') or not os.path.isfile(abs_path):
+        return web.json_response({'success': False, 'message': '不是有效的 .db 文件'}, status=400)
+
+    mounted = _load_mounted()
+    norm = abs_path.replace('\\', '/')
+    if norm not in mounted:
+        mounted.append(norm)
+        _save_mounted(mounted)
+    return web.json_response({'success': True, 'path': norm})
+
+
+async def handle_unmount_database(request: web.Request):
+    """取消挂载 (不删除文件)"""
+    body = await request.json()
+    db_path = str(body.get('path', '') or '').strip()
+    if not db_path:
+        return web.json_response({'success': False, 'message': '缺少 path'}, status=400)
+
+    abs_path = os.path.abspath(db_path).replace('\\', '/')
+    mounted = _load_mounted()
+    remaining = [p for p in mounted if os.path.abspath(p).replace('\\', '/') != abs_path]
+    if len(remaining) != len(mounted):
+        _save_mounted(remaining)
+    return web.json_response({'success': True})
+
+
+async def handle_delete_rows(request: web.Request):
+    """删除表中的单条或多条数据 (path=库路径, table=表名, rowids=rowid 列表)"""
     body = await request.json()
     db_path = body.get('path', '')
     table = body.get('table', '')

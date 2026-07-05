@@ -1,24 +1,17 @@
 #!/usr/bin/env python
-"""统计服务 — 每日定时扫描 SQLite 消息日志, 累加聚合用户/群统计到 statistics.db
-
-与 DAU 的区别:
-- DAU 按日期独立存储 (每天一行); 统计表为累加叠加 (每个用户/每个群只占一行).
-- 仅统计 direction='receive' (过滤 send).
-- 用 processed 表记录已聚合日期, 保证幂等 (重复运行不会重复累加).
-- 受 settings.yaml 的 statistics.enabled 开关控制, 关闭则不聚合.
-"""
+"""统计服务 — 每日定时扫描消息日志, 幂等累加用户/群统计到 statistics.db"""
 
 import asyncio
 import contextlib
 import gc
 import json
 import os
-import re
 import sqlite3
 from datetime import datetime, timedelta
 
 from core.base.config import cfg
 from core.base.logger import FRAMEWORK, get_logger
+from core.storage._daily_base import DailyScanService
 
 log = get_logger(FRAMEWORK, '统计')
 
@@ -61,11 +54,7 @@ _PROCESSED_TABLE_SQL = """
 
 
 def _extract_command(content):
-    """从消息内容提取指令名: 取首个空白分隔 token, 去掉单个前导 '/'.
-
-    指令带/不带 '/' 前缀视为同一指令 (与框架匹配逻辑一致).
-    返回 '' 表示无可识别指令.
-    """
+    """从消息内容提取指令名: 首个空白分隔 token, 去掉前导 '/'"""
     if not content:
         return ''
     token = content.strip().split(None, 1)[0] if content.strip() else ''
@@ -74,22 +63,15 @@ def _extract_command(content):
     return token
 
 
-class StatisticsService:
+class StatisticsService(DailyScanService):
     """累加统计服务 — 异步调度 + SQLite 直读, 聚合到每个 appid 的 statistics.db"""
 
-    __slots__ = ('_log_dir', '_running', '_task', '_schedule_hour', '_schedule_minute')
+    __slots__ = ()
 
-    def __init__(
-        self,
-        log_base_dir,
-        schedule_hour=_SCHEDULE_HOUR,
-        schedule_minute=_SCHEDULE_MINUTE,
-    ):
-        self._log_dir = os.path.abspath(log_base_dir)
-        self._schedule_hour = schedule_hour
-        self._schedule_minute = schedule_minute
-        self._running = False
-        self._task = None
+    _logger = log
+
+    def __init__(self, log_base_dir, schedule_hour=_SCHEDULE_HOUR, schedule_minute=_SCHEDULE_MINUTE):
+        super().__init__(log_base_dir, schedule_hour, schedule_minute)
 
     # ===== 开关 =====
 
@@ -107,18 +89,8 @@ class StatisticsService:
         asyncio.create_task(self._startup_catchup())
         log.info(f'已启动 [每日 {self._schedule_hour:02d}:{self._schedule_minute:02d}]')
 
-    async def stop(self):
-        self._running = False
-        if self._task:
-            self._task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await self._task
-            self._task = None
-
     async def _startup_catchup(self):
-        """启动补算: 若已过今日配置的统计时间, 而今日应执行的统计(聚合昨日)尚无记录,
-        则立即补跑; 未到今日统计时间则不动, 交给调度器在到点时执行.
-        """
+        """启动补算: 已过今日统计时间且尚无记录则立即补跑"""
         await asyncio.sleep(8)  # 等待其他服务就绪
         if not self._enabled():
             return
@@ -146,34 +118,11 @@ class StatisticsService:
             with contextlib.suppress(Exception):
                 await self.aggregate(appid, yesterday)
 
-    async def _scheduler_loop(self):
-        while self._running:
-            try:
-                next_run = self._next_run_time()
-                wait = (next_run - datetime.now()).total_seconds()
-                if wait > 0:
-                    await asyncio.sleep(wait)
-                if not self._running:
-                    break
-                if self._enabled():
-                    await self.aggregate_yesterday()
-                else:
-                    log.info('统计开关已关闭, 跳过本次聚合')
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                log.warning(f'调度异常: {e}')
-                await asyncio.sleep(60)
-
-    def _next_run_time(self):
-        now = datetime.now()
-        today_run = now.replace(
-            hour=self._schedule_hour,
-            minute=self._schedule_minute,
-            second=0,
-            microsecond=0,
-        )
-        return today_run if today_run > now else today_run + timedelta(days=1)
+    async def _run_scheduled(self):
+        if self._enabled():
+            await self.aggregate_yesterday()
+        else:
+            log.info('统计开关已关闭, 跳过本次聚合')
 
     # ===== 聚合 =====
 
@@ -202,21 +151,6 @@ class StatisticsService:
         return await loop.run_in_executor(None, self._aggregate_sync, appid, date_str)
 
     # ===== 路径 / appid =====
-
-    _DATE_DIR_PATTERN = re.compile(r'^\d{4}-\d{2}-\d{2}$')
-
-    def list_appids(self):
-        """列出所有有日志记录的 appid (排除 SharedLogService 的日期目录)"""
-        if not os.path.isdir(self._log_dir):
-            return []
-        return [
-            name
-            for name in os.listdir(self._log_dir)
-            if os.path.isdir(os.path.join(self._log_dir, name)) and not self._DATE_DIR_PATTERN.match(name)
-        ]
-
-    def _message_db_path(self, appid, date_str):
-        return os.path.join(self._log_dir, appid, date_str, 'message.db')
 
     def _stats_db_path(self, appid):
         return os.path.join(self._log_dir, appid, 'statistics.db')
@@ -261,13 +195,7 @@ class StatisticsService:
         return True
 
     def _scan_day(self, db_path, date_str):
-        """单遍扫描当日 receive 消息, 计算当日增量.
-
-        返回 (user_delta, group_delta):
-          user_delta:  {uid: {'total','private','groups':{gid:n},
-                              'cmds':{cmd:n}, 'daily':{date:n}}}
-          group_delta: {gid: {'total','users':{uid:n}, 'cmds':{cmd:n}, 'daily':{date:n}}}
-        """
+        """单遍扫描当日 receive 消息, 返回 (user_delta, group_delta) 增量"""
         conn = self._open_ro(db_path)
         if not conn:
             return None, None

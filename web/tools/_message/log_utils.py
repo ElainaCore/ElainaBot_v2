@@ -79,9 +79,7 @@ def _log_sent_message(bot, chat_type, chat_id, display, bot_appid, bot_name, bot
 
 
 def _log_send_error(bot, msg_type, chat_type, chat_id, send_payload, api_resp, bot_appid, msg_id=''):
-    """发送失败 → 写报错数据库
-    content=接收原始消息(来源信息), traceback=API报错响应, context=发送载荷(完整)
-    """
+    """发送失败写报错数据库 (content=原始消息, traceback=API 响应, context=载荷)"""
     report_error_raw(
         FRAMEWORK,
         'Web消息发送',
