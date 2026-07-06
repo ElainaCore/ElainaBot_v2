@@ -238,6 +238,8 @@ class EventHandlerMixin:
 
         if et == GROUP_MESSAGE_CREATE and event.group_id:
             self._record_full_access_group(bot, event.group_id)
+            if event.is_at_self and event.bot_member_role in ('admin', 'owner'):
+                self._record_bot_admin(bot, event.group_id)
 
         # 全量群 @全体成员 跳过
         if et == GROUP_MESSAGE_CREATE and event.is_at_all:
@@ -273,6 +275,14 @@ class EventHandlerMixin:
             (group_id, ts),
         )
 
+    def _record_bot_admin(self, bot, group_id):
+        """记录机器人在该群为管理员"""
+        ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        bot.log_service.db_queue(
+            'INSERT OR REPLACE INTO group_bot_admin (group_id, updated_at) VALUES (?, ?)',
+            (group_id, ts),
+        )
+
     def get_full_access_groups(self):
         """从 data.db 拉取所有全量群记录"""
         bot = next(iter(self._bots.values()), None)
@@ -297,6 +307,9 @@ class EventHandlerMixin:
         self._push_web_log('lifecycle', web_entry)
 
     async def _handle_group_add(self, bot, event):
+        if event.group_id:
+            bot.log_service.db_queue(
+                'UPDATE groups_users SET in_group=1 WHERE group_id=?', (event.group_id,))
         self._log_lifecycle(
             bot,
             'group_add',
@@ -312,6 +325,9 @@ class EventHandlerMixin:
         )
 
     async def _handle_group_del(self, bot, event):
+        if event.group_id:
+            bot.log_service.db_queue(
+                'UPDATE groups_users SET in_group=0 WHERE group_id=?', (event.group_id,))
         self._log_lifecycle(
             bot,
             'group_del',
