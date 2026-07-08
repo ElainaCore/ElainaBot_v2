@@ -146,14 +146,20 @@ _MIME = {
 
 
 def _make_spa_handler(dist_dir: str):
+    dist_root = os.path.realpath(dist_dir)
+
     async def handler(request: web.Request):
         path = request.match_info.get('path', '')
         if not path or path == '/':
             path = 'index.html'
 
-        file_path = os.path.join(dist_dir, path.replace('/', os.sep))
+        file_path = os.path.join(dist_root, path.replace('/', os.sep))
+        real_path = os.path.realpath(file_path)
+        if real_path != dist_root and not real_path.startswith(dist_root + os.sep):
+            return _spa_index_or_404(dist_root)
 
-        if os.path.isfile(file_path):
+        if os.path.isfile(real_path):
+            file_path = real_path
             ext = os.path.splitext(file_path)[1].lower()
             headers = {}
             ct = _MIME.get(ext)
@@ -165,13 +171,17 @@ def _make_spa_handler(dist_dir: str):
                 headers['Cache-Control'] = 'public, max-age=31536000, immutable'
             return web.FileResponse(file_path, headers=headers)
 
-        index = os.path.join(dist_dir, 'index.html')
-        if os.path.isfile(index):
-            return web.FileResponse(index, headers={'Content-Type': 'text/html', 'Cache-Control': 'no-cache'})
-
-        return web.Response(text='Not Found', status=404)
+        return _spa_index_or_404(dist_root)
 
     return handler
+
+
+def _spa_index_or_404(dist_root: str):
+    """SPA 回退: 返回 index.html, 不存在则 404"""
+    index = os.path.join(dist_root, 'index.html')
+    if os.path.isfile(index):
+        return web.FileResponse(index, headers={'Content-Type': 'text/html', 'Cache-Control': 'no-cache'})
+    return web.Response(text='Not Found', status=404)
 
 
 async def _redirect_to_web(request: web.Request):
