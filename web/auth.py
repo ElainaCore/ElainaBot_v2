@@ -145,17 +145,32 @@ def _save_ip_data():
     _write_json(_ip_file, ip_access_data)
 
 
-def get_real_ip(request: web.Request) -> str:
-    forwarded = request.headers.get('X-Forwarded-For')
-    if forwarded:
-        return forwarded.split(',')[0].strip()
-    real_ip = request.headers.get('X-Real-IP')
-    if real_ip:
-        return real_ip.strip()
+def _peer_ip(request: web.Request) -> str:
     if request.transport is None:
         return '127.0.0.1'
     peername = request.transport.get_extra_info('peername')
     return peername[0] if peername else '127.0.0.1'
+
+
+def _trust_forwarded() -> bool:
+    try:
+        from core.base.config import cfg
+
+        return bool(cfg.get('settings', 'web.trust_forwarded_headers', False))
+    except Exception:
+        return False
+
+
+def get_real_ip(request: web.Request) -> str:
+    """获取客户端真实 IP; 转发头可伪造, 默认只信任连接对端, 反代后需开启 web.trust_forwarded_headers"""
+    if _trust_forwarded():
+        forwarded = request.headers.get('X-Forwarded-For')
+        if forwarded and forwarded.split(',')[0].strip():
+            return forwarded.split(',')[0].strip()
+        real_ip = request.headers.get('X-Real-IP')
+        if real_ip:
+            return real_ip.strip()
+    return _peer_ip(request)
 
 
 def record_ip_access(ip, access_type='success'):
