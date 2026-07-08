@@ -7,6 +7,7 @@ import zipfile
 
 from aiohttp import web
 
+from core.base.zipsafe import is_within
 from web.tools._market.fetch import (
     _download_file,
 )
@@ -41,6 +42,18 @@ def _canonical_type(item_type):
 
 
 # ==================== 版本/已安装 ====================
+
+
+async def _download_repo_zip(github_url, branch, mirror):
+    """下载仓库 archive zip, 失败时在 main/master 分支间回退重试"""
+    url = _github_to_archive(github_url, branch)
+    content = await _download_file(url, mirror=mirror)
+    if content is None and branch in ('main', 'master'):
+        alt_url = _github_to_archive(github_url, 'master' if branch == 'main' else 'main')
+        if alt_url != url:
+            log.info(f'分支 {branch} 下载失败, 尝试备选分支: {alt_url}')
+            content = await _download_file(alt_url, mirror=mirror)
+    return content
 
 
 def _alone_dir():
@@ -298,6 +311,9 @@ def _extract_zip_subset(content, plugin_name, subdir_path=''):
                 if not rel:
                     continue
                 dest = os.path.join(dest_dir, rel)
+                if not is_within(dest_dir, dest):
+                    log.warning(f'跳过越界成员 (疑似路径穿越): {fp!r}')
+                    continue
                 os.makedirs(os.path.dirname(dest) or dest_dir, exist_ok=True)
                 with zf.open(fp) as src, open(dest, 'wb') as dst:
                     dst.write(src.read())
@@ -336,10 +352,9 @@ def _clean_module_dir(dest_dir):
 async def _install_module(github_url, module_name, branch='main', mirror=None):
     """安装/更新模块: 官方仓库只提取 modules/<name>/ 子目录, 第三方整仓库安装"""
     safe = _safe_name(module_name) or 'unknown'
-    url = _github_to_archive(github_url, branch)
-    log.info(f'模块安装: {safe} ← {url}')
+    log.info(f'模块安装: {safe} ← {_github_to_archive(github_url, branch)}')
 
-    content = await _download_file(url, mirror=mirror)
+    content = await _download_repo_zip(github_url, branch, mirror)
     if content is None:
         return {'success': False, 'message': '下载失败, 请检查网络或镜像'}
     if content[:4] != b'PK\x03\x04':
@@ -382,12 +397,13 @@ async def _install_module(github_url, module_name, branch='main', mirror=None):
                 rel = fp[len(mod_prefix) :]
                 if not rel:
                     continue
-                # 保留用户已有的 data/ 配置
-                if rel.startswith('data/'):
-                    dest = os.path.join(dest_dir, rel)
-                    if os.path.exists(dest):
-                        continue
                 dest = os.path.join(dest_dir, rel)
+                if not is_within(dest_dir, dest):
+                    log.warning(f'跳过越界成员 (疑似路径穿越): {fp!r}')
+                    continue
+                # 保留用户已有的 data/ 配置
+                if rel.startswith('data/') and os.path.exists(dest):
+                    continue
                 os.makedirs(os.path.dirname(dest), exist_ok=True)
                 with zf.open(fp) as src, open(dest, 'wb') as dst:
                     dst.write(src.read())
@@ -422,10 +438,9 @@ async def _auto_enable_plugin(reload_name):
 
 async def _install_complete(github_url, plugin_name, subdir_path='', branch='main', mirror=None):
     """完整插件: 拉取仓库 zip, 解压整仓库或指定子目录到 plugins/<name>/ (支持一仓库多插件)"""
-    url = _github_to_archive(github_url, branch)
     label = f' [子目录 {subdir_path}]' if subdir_path else ''
-    log.info(f'完整插件安装: {_safe_name(plugin_name)} ← {url}{label}')
-    content = await _download_file(url, mirror=mirror)
+    log.info(f'完整插件安装: {_safe_name(plugin_name)} ← {_github_to_archive(github_url, branch)}{label}')
+    content = await _download_repo_zip(github_url, branch, mirror)
     if content is None:
         return {'success': False, 'message': '下载失败, 请检查网络或镜像'}
     if content[:4] != b'PK\x03\x04':

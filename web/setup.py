@@ -56,9 +56,19 @@ class _WebPanelLogHandler(logging.Handler):
             pass
 
 
+@web.middleware
+async def _api_no_cache_middleware(request: web.Request, handler):
+    """API 响应禁止浏览器/代理缓存, 保证数据实时"""
+    resp = await handler(request)
+    if request.path.startswith('/api/') and not request.path.startswith('/api/media/'):
+        resp.headers.setdefault('Cache-Control', 'no-store')
+    return resp
+
+
 def setup_web(app: web.Application, bot_manager, base_dir: str):
     """将 Web 面板挂载到 aiohttp 应用"""
     _disable_sendfile_on_windows()
+    app.middlewares.append(_api_no_cache_middleware)
     _auth.init(base_dir)
     _panel_api.set_context(bot_manager, base_dir)
 
@@ -136,25 +146,42 @@ _MIME = {
 
 
 def _make_spa_handler(dist_dir: str):
+    dist_root = os.path.realpath(dist_dir)
+
     async def handler(request: web.Request):
         path = request.match_info.get('path', '')
         if not path or path == '/':
             path = 'index.html'
 
-        file_path = os.path.join(dist_dir, path.replace('/', os.sep))
+        file_path = os.path.join(dist_root, path.replace('/', os.sep))
+        real_path = os.path.realpath(file_path)
+        if real_path != dist_root and not real_path.startswith(dist_root + os.sep):
+            return _spa_index_or_404(dist_root)
 
-        if os.path.isfile(file_path):
+        if os.path.isfile(real_path):
+            file_path = real_path
             ext = os.path.splitext(file_path)[1].lower()
+            headers = {}
             ct = _MIME.get(ext)
-            return web.FileResponse(file_path, headers={'Content-Type': ct} if ct else {})
+            if ct:
+                headers['Content-Type'] = ct
+            if ext == '.html':
+                headers['Cache-Control'] = 'no-cache'
+            elif '/assets/' in path or path.startswith('assets/'):
+                headers['Cache-Control'] = 'public, max-age=31536000, immutable'
+            return web.FileResponse(file_path, headers=headers)
 
-        index = os.path.join(dist_dir, 'index.html')
-        if os.path.isfile(index):
-            return web.FileResponse(index, headers={'Content-Type': 'text/html'})
-
-        return web.Response(text='Not Found', status=404)
+        return _spa_index_or_404(dist_root)
 
     return handler
+
+
+def _spa_index_or_404(dist_root: str):
+    """SPA 回退: 返回 index.html, 不存在则 404"""
+    index = os.path.join(dist_root, 'index.html')
+    if os.path.isfile(index):
+        return web.FileResponse(index, headers={'Content-Type': 'text/html', 'Cache-Control': 'no-cache'})
+    return web.Response(text='Not Found', status=404)
 
 
 async def _redirect_to_web(request: web.Request):

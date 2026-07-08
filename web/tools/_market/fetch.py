@@ -52,8 +52,40 @@ async def _fetch_plugin_json(force=False):
     return data
 
 
+def _is_zip_url(url):
+    """URL 是否指向 zip 文件 (仓库 archive / codeload / .zip)"""
+    base = url.split('?')[0].lower()
+    return base.endswith('.zip') or '/archive/' in base or 'codeload.github.com' in base
+
+
+def _is_valid_body(url, body):
+    """校验下载内容: zip URL 必须是 zip 签名, 其它拒绝 HTML 页面 (镜像常以 200 返回错误页)"""
+    if not body:
+        return False
+    if _is_zip_url(url):
+        return body[:4] == b'PK\x03\x04'
+    return not body[:512].lstrip().lower().startswith((b'<!doctype', b'<html'))
+
+
+async def _fetch_once(session, url, timeout):
+    """单次 GET, 200 返回 body, 否则 None"""
+    try:
+        async with session.get(
+            url,
+            timeout=_aiohttp.ClientTimeout(total=timeout),
+            ssl=False,
+            allow_redirects=True,
+            headers={'User-Agent': 'ElainaBot/1.0'},
+        ) as resp:
+            if resp.status == 200:
+                return await resp.read()
+    except Exception:
+        pass
+    return None
+
+
 async def _download_file(url, timeout=60, mirror=None):
-    """按镜像排名下载, 全失败重新测速后再试; mirror 非空时优先使用指定镜像"""
+    """按镜像排名下载并校验内容, 全失败重新测速后再试; mirror 非空时优先使用指定镜像"""
     is_gh = 'github.com' in url or 'githubusercontent.com' in url
     if mirror and is_gh:
         from web.tools._updater.shared import _build_mirror_url
@@ -63,39 +95,19 @@ async def _download_file(url, timeout=60, mirror=None):
         urls = _ranked_mirror_urls(url) if is_gh else [url]
     async with _aiohttp.ClientSession() as session:
         for u in urls:
-            try:
-                async with session.get(
-                    u,
-                    timeout=_aiohttp.ClientTimeout(total=timeout),
-                    ssl=False,
-                    allow_redirects=True,
-                    headers={'User-Agent': 'ElainaBot/1.0'},
-                ) as resp:
-                    if resp.status == 200:
-                        return await resp.read()
-            except Exception:
-                continue
+            body = await _fetch_once(session, u, timeout)
+            if body is not None and _is_valid_body(url, body):
+                return body
     # 全失败 → 重新测速后再试
     if is_gh:
         from web.tools._updater.mirror import get_fast_mirrors
 
         await get_fast_mirrors(force=True)
-        for u in _ranked_mirror_urls(url):
-            try:
-                async with (
-                    _aiohttp.ClientSession() as session,
-                    session.get(
-                        u,
-                        timeout=_aiohttp.ClientTimeout(total=timeout),
-                        ssl=False,
-                        allow_redirects=True,
-                        headers={'User-Agent': 'ElainaBot/1.0'},
-                    ) as resp,
-                ):
-                    if resp.status == 200:
-                        return await resp.read()
-            except Exception:
-                continue
+        async with _aiohttp.ClientSession() as session:
+            for u in _ranked_mirror_urls(url):
+                body = await _fetch_once(session, u, timeout)
+                if body is not None and _is_valid_body(url, body):
+                    return body
     return None
 
 

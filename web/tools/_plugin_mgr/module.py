@@ -12,6 +12,7 @@ from typing import cast
 
 from aiohttp import BodyPartReader, web
 
+from core.base.zipsafe import safe_extractall
 from web.tools._plugin_mgr.shared import (
     bot_manager,
     get_mm,
@@ -188,13 +189,13 @@ async def handle_module_upload(request: web.Request):
 
             if len(top_dirs) == 1:
                 extract_tmp = tempfile.mkdtemp()
-                zf.extractall(extract_tmp)
+                safe_extractall(zf, extract_tmp)
                 src = os.path.join(extract_tmp, list(top_dirs)[0])
                 shutil.move(src, target_dir)
                 shutil.rmtree(extract_tmp, ignore_errors=True)
             else:
                 os.makedirs(target_dir, exist_ok=True)
-                zf.extractall(target_dir)
+                safe_extractall(zf, target_dir)
 
         if not os.path.isfile(os.path.join(target_dir, 'main.py')):
             py_files = [f for f in os.listdir(target_dir) if f.endswith('.py')]
