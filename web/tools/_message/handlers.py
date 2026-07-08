@@ -33,7 +33,7 @@ from web.tools._message.shared import (
 )
 
 _chat_list_cache: dict[tuple[str, str, int], tuple[float, list[dict[str, Any]]]] = {}
-_CHAT_LIST_TTL = 60
+_CHAT_LIST_TTL = 10
 _chat_list_lock = None  # asyncio.Lock, 延迟初始化
 
 
@@ -92,13 +92,12 @@ async def handle_get_chats(request: web.Request):
     appid_filter = body.get('appid', '')
     page = max(int(body.get('page', 1)), 1)
     page_size = min(int(body.get('page_size', 50)), 100)
-    days = max(1, min(3, int(body.get('days', 1))))
 
     global _chat_list_lock
     if _chat_list_lock is None:
         _chat_list_lock = asyncio.Lock()
 
-    cache_key = (chat_type, appid_filter, days)
+    cache_key = (chat_type, appid_filter)
     now = time.time()
     cached = _chat_list_cache.get(cache_key)
     if cached and now - cached[0] < _CHAT_LIST_TTL:
@@ -131,7 +130,7 @@ async def handle_get_chats(request: web.Request):
                         'is_full_access': gid in fa_ids,
                     } for gid in source_ids]
                 else:
-                    chats = await loop.run_in_executor(None, _aggregate_chats_sync, chat_type, appid_filter, days)
+                    chats = await loop.run_in_executor(None, _aggregate_chats_sync, chat_type, appid_filter)
                     if chat_type == 'user':
                         ids = [c['chat_id'] for c in chats]
                         nicks = await loop.run_in_executor(None, _batch_get_nicknames, ids)

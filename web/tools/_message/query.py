@@ -112,11 +112,11 @@ def _query_lifecycle_events_sync(chat_type, chat_id, appid_filter, dates, limit=
     return results[-limit:]
 
 
-def _aggregate_chats_sync(chat_type, appid_filter, days=1):
-    """SQL 聚合聊天列表"""
+def _aggregate_chats_sync(chat_type, appid_filter):
+    """SQL 聚合聊天列表 (仅今日)"""
     if not _shared._bot_manager:
         return []
-    dates = _recent_dates(days)
+    dates = _recent_dates(1)
     if chat_type == 'group':
         agg_sql = (
             'SELECT group_id AS chat_id, MAX(id) AS last_id, MAX(timestamp) AS last_time, '

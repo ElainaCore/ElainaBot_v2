@@ -145,12 +145,19 @@ def _make_spa_handler(dist_dir: str):
 
         if os.path.isfile(file_path):
             ext = os.path.splitext(file_path)[1].lower()
+            headers = {}
             ct = _MIME.get(ext)
-            return web.FileResponse(file_path, headers={'Content-Type': ct} if ct else {})
+            if ct:
+                headers['Content-Type'] = ct
+            if ext == '.html':
+                headers['Cache-Control'] = 'no-cache'
+            elif '/assets/' in path or path.startswith('assets/'):
+                headers['Cache-Control'] = 'public, max-age=31536000, immutable'
+            return web.FileResponse(file_path, headers=headers)
 
         index = os.path.join(dist_dir, 'index.html')
         if os.path.isfile(index):
-            return web.FileResponse(index, headers={'Content-Type': 'text/html'})
+            return web.FileResponse(index, headers={'Content-Type': 'text/html', 'Cache-Control': 'no-cache'})
 
         return web.Response(text='Not Found', status=404)
 
