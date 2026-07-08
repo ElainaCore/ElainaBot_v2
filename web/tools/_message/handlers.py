@@ -193,7 +193,7 @@ async def handle_get_chat_history(request: web.Request):
             appid_filter,
             before_date,
             300,
-            14,
+            30,
         )
     else:
         rows = await loop.run_in_executor(None, _query_chat_messages_sync, chat_type, chat_id, appid_filter, 1, 300)
