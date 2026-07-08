@@ -56,9 +56,19 @@ class _WebPanelLogHandler(logging.Handler):
             pass
 
 
+@web.middleware
+async def _api_no_cache_middleware(request: web.Request, handler):
+    """API 响应禁止浏览器/代理缓存, 保证数据实时"""
+    resp = await handler(request)
+    if request.path.startswith('/api/') and not request.path.startswith('/api/media/'):
+        resp.headers.setdefault('Cache-Control', 'no-store')
+    return resp
+
+
 def setup_web(app: web.Application, bot_manager, base_dir: str):
     """将 Web 面板挂载到 aiohttp 应用"""
     _disable_sendfile_on_windows()
+    app.middlewares.append(_api_no_cache_middleware)
     _auth.init(base_dir)
     _panel_api.set_context(bot_manager, base_dir)
 
