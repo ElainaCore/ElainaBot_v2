@@ -59,8 +59,6 @@ def sample_config_dir():
                     'maintenance': {'enabled': False},
                     'dedup': {'enabled': False},
                     'blacklist': {
-                        'user_enabled': False,
-                        'group_enabled': False,
                         'user_list': [],
                         'group_list': [],
                     },
@@ -264,8 +262,6 @@ def api_config_dir():
                     'maintenance': {'enabled': False},
                     'dedup': {'enabled': False},
                     'blacklist': {
-                        'user_enabled': False,
-                        'group_enabled': False,
                         'user_list': [],
                         'group_list': [],
                     },

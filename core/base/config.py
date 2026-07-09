@@ -47,8 +47,6 @@ _BOT_DEFAULTS = {
     'welcome.new_user_welcome': False,
     'welcome.friend_add_message': False,
     'maintenance.enabled': False,
-    'blacklist.user_enabled': False,
-    'blacklist.group_enabled': False,
     'blacklist.user_list': [],
     'blacklist.group_list': [],
     'non_at_message.enabled': False,
@@ -134,6 +132,20 @@ class ConfigManager:
             self._bot_setting_cache[cache_key] = dft
             return dft
         return default
+
+    def set_bot_setting(self, appid, key, value):
+        """设置某个机器人的配置值并写回 bot.yaml, 返回是否成功"""
+        self._maybe_reload('bot', force_sync=True)
+        with self._rw_lock:
+            bots = self.get('bot', 'bots') or []
+            target = next((b for b in bots if str(b.get('appid', '')) == str(appid)), None)
+            if target is None:
+                return False
+            self._deep_set(target, key, value)
+            self._bot_cfg_map.clear()
+            self._bot_setting_cache.clear()
+        self.set_value('bot', 'bots', bots)
+        return True
 
     # ------ 热加载 ------
 

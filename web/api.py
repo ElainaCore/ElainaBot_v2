@@ -337,18 +337,8 @@ async def handle_toggle_bot(request: web.Request):
     if not appid or enabled is None:
         return web.json_response({'success': False, 'error': '缺少 appid 或 enabled 参数'}, status=400)
 
-    bot_configs = cfg.get('bot', 'bots') or []
-    found = False
-    for bc in bot_configs:
-        if str(bc.get('appid', '')) == appid:
-            bc['enabled'] = bool(enabled)
-            found = True
-            break
-
-    if not found:
+    if not cfg.set_bot_setting(appid, 'enabled', bool(enabled)):
         return web.json_response({'success': False, 'error': '未找到该机器人'}, status=404)
-
-    cfg.set_value('bot', 'bots', bot_configs)
 
     # 同步等待机器人启停完成, 保证前端 fetchBots 能拿到最新状态
     from core.application import get_app

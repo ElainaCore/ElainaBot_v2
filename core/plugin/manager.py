@@ -9,13 +9,14 @@ from core.base.logger import FRAMEWORK, get_logger
 from core.plugin._blacklist import _BlacklistMixin
 from core.plugin._dispatch import _DispatchMixin
 from core.plugin._loader import _LoaderMixin
+from core.plugin._plugin_bots import _PluginBotsMixin
 from core.plugin._watcher import _WatcherMixin
 
 log = get_logger(FRAMEWORK, '插件管理')
 
 
-class PluginManager(_LoaderMixin, _WatcherMixin, _DispatchMixin, _BlacklistMixin):
-    """插件管理器 — 通过 Mixin 组合加载/分发/监视/黑名单能力"""
+class PluginManager(_LoaderMixin, _WatcherMixin, _DispatchMixin, _BlacklistMixin, _PluginBotsMixin):
+    """插件管理器 — 通过 Mixin 组合加载/分发/监视/黑名单/机器人绑定能力"""
 
     def __init__(self, plugins_dir='plugins', bot_appid=''):
         self._dir = os.path.abspath(plugins_dir)

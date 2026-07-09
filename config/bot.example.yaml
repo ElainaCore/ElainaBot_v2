@@ -51,10 +51,8 @@ bots:
     # 事件去重 (过滤重复 message_id / event_id, 缓存5分钟)
     dedup:
       enabled: false
-    # 黑名单
+    # 黑名单 (列表非空即生效)
     blacklist:
-      user_enabled: false              # 用户黑名单开关
-      group_enabled: false             # 群黑名单开关
       user_list: []                    # 用户黑名单列表 (OpenID)
       group_list: []                   # 群黑名单列表 (群 OpenID)
 
