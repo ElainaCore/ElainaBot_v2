@@ -9,7 +9,22 @@ from core.plugin.decorators import handler
 # ==================== ping ====================
 
 
-@handler(r'^ping$', name='Ping', desc='测试QQ消息接口延迟')
+def _parse_ts(ts):
+    from datetime import datetime
+
+    if ts is None:
+        return None
+    try:
+        return float(ts)
+    except (TypeError, ValueError):
+        pass
+    try:
+        return datetime.fromisoformat(str(ts)).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+@handler(r'^ping$', name='Ping', desc='测试QQ消息接口延迟', owner_only=True)
 async def ping(event, match):
     import time
 
@@ -28,7 +43,8 @@ async def ping(event, match):
     except Exception:
         api_ms = -1
     api_text = f'{api_ms}ms' if api_ms >= 0 else '超时'
-    msg_ms = round((time.time() - event.timestamp) * 1000) if event.timestamp else '未知'
+    ts = _parse_ts(event.timestamp)
+    msg_ms = round((time.time() - ts) * 1000) if ts else '未知'
     await event.reply(f'pong 🏓\nAPI延迟: {api_text}\n消息延迟: {msg_ms}ms' if msg_ms != '未知' else f'pong 🏓\nAPI延迟: {api_text}')
 
 
@@ -64,6 +80,7 @@ async def about_info(event, match):
     bot_name = 'Elaina'
     robot_qq = ''
     appid = event.appid or ''
+    conn_mode = 'WebHook'
     try:
         bot_cfg = cfg.get_bot_config(event.appid)
         if bot_cfg:
@@ -79,6 +96,11 @@ async def about_info(event, match):
 
         app = get_app()
         if app:
+            bot = app.get_bot(event.appid)
+            if bot:
+                if bot.name:
+                    bot_name = bot.name
+                conn_mode = 'WebSocket' if bot.ws_client else 'WebHook'
             pm = getattr(app, 'plugin_manager', None)
             if pm:
                 plugins = pm.get_plugin_list() if hasattr(pm, 'get_plugin_list') else []
@@ -93,7 +115,7 @@ async def about_info(event, match):
     msg_parts = [
         f'<@{event.user_id}> 关于{bot_name}',
         '───────────────',
-        '🔌 连接方式: WebHook',
+        f'🔌 连接方式: {conn_mode}',
     ]
     if robot_qq:
         msg_parts.append(f'🤖 机器人QQ: {robot_qq}')
