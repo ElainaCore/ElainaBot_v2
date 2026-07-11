@@ -64,6 +64,11 @@ class SegmentParser:
         pm.msg_type = 'text'
 
     @classmethod
+    def _parse_raw_text(cls, seg_data: dict, pm: ParsedMessage) -> None:
+        pm.text_content += seg_data.get('text', '')
+        pm.msg_type = 'raw_text'
+
+    @classmethod
     def _parse_at(cls, seg_data: dict, pm: ParsedMessage) -> None:
         pm.text_content += f'@{seg_data.get("qq", "")}'
 
@@ -160,6 +165,7 @@ class SegmentParser:
 
     _SEGMENT_HANDLERS = {
         'text': _parse_text.__func__,
+        'raw_text': _parse_raw_text.__func__,
         'at': _parse_at.__func__,
         'image': _parse_image.__func__,
         'record': _parse_record.__func__,

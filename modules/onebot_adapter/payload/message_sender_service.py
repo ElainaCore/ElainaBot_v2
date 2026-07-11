@@ -67,7 +67,8 @@ class MessageSenderService:
         cls, sender: MessageSender, group_id: int | str | None, user_id: int | str | None, target: int | str, parsed: ParsedMessage, msg_id: int | str | None
     ) -> tuple[bool, Any, dict[str, Any]]:
         content = parsed.text_content or '[空的文本消息]'
-        return await cls.send_msg_common(sender, group_id, user_id, target, parsed, msg_id, content)
+        msg_type = MessageType.MSG_TYPE_MARKDOWN if parsed.msg_type == 'text' else MessageType.MSG_TYPE_TEXT
+        return await cls.send_msg_common(sender, group_id, user_id, target, parsed, msg_id, content, msg_type=msg_type)
 
     # ==================== Markdown 发送 ====================
 

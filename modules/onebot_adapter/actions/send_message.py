@@ -62,7 +62,7 @@ class SendMessageAction(BaseAction):
         parsed = SegmentParser.parse(message)
 
         # 空消息保护
-        if parsed.msg_type == 'text' and not parsed.text_content and not parsed.has_media:
+        if parsed.msg_type in {'text', 'raw_text'} and not parsed.text_content and not parsed.has_media:
             parsed.text_content = '[发送了一条空消息]'
 
         # ---- 3. 获取 sender ----
