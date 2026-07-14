@@ -232,6 +232,24 @@ class QQBotAPI:
             }
         return {'status': 'error', 'message': 'QrCode not found'}
 
+    # ── 扫码快捷绑定机器人 ──
+
+    async def create_bind_task(self, key=''):
+        return await self._request(
+            'POST',
+            'https://q.qq.com/lite/create_bind_task',
+            data={'key': key},
+            extra_headers=_QQ_HEADERS,
+        )
+
+    async def poll_bind_result(self, task_id=''):
+        return await self._request(
+            'POST',
+            'https://q.qq.com/lite/poll_bind_result',
+            data={'task_id': task_id},
+            extra_headers=_QQ_HEADERS,
+        )
+
     # ── 白名单 ──
 
     async def get_white_list(self, appid='', uin='', uid='', ticket=''):

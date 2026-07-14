@@ -84,6 +84,8 @@ def get_routes() -> list:
         # ── 配置 ──
         web.get('/api/config', _(config_handler.handle_get_config)),
         web.post('/api/config/save', _(config_handler.handle_save_config)),
+        web.post('/api/config/qr-bind/start', _(config_handler.handle_qr_bind_start)),
+        web.post('/api/config/qr-bind/poll', _(config_handler.handle_qr_bind_poll)),
         # ── 消息 ──
         web.post('/api/message/chats', _(message_handler.handle_get_chats)),
         web.post('/api/message/history', _(message_handler.handle_get_chat_history)),

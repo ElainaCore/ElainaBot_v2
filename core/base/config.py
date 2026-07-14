@@ -38,7 +38,7 @@ _BOT_DEFAULTS = {
     'message.suppress_bot_system_reply': False,
     'non_at_message.ignore_at_other_bot': True,
     'non_at_message.ignore_at_other_user': True,
-    'non_at_message.ignore_bot_sender': False,
+    'non_at_message.ignore_bot_sender': True,
     'non_at_message.quiet_at_self': False,
     'non_at_message.strip_bot_name_at': False,
     'identity.use_union_id_for_group': False,
@@ -49,7 +49,7 @@ _BOT_DEFAULTS = {
     'maintenance.enabled': False,
     'blacklist.user_list': [],
     'blacklist.group_list': [],
-    'non_at_message.enabled': False,
+    'non_at_message.enabled': True,
     'non_at_message.group_whitelist': [],
 }
 

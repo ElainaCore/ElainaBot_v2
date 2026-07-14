@@ -168,7 +168,8 @@ def _make_spa_handler(dist_dir: str):
             if ext == '.html':
                 headers['Cache-Control'] = 'no-cache'
             elif '/assets/' in path or path.startswith('assets/'):
-                headers['Cache-Control'] = 'public, max-age=31536000, immutable'
+                # 产物文件名不带 hash, 更新后强缓存会导致新旧分块混用报错; 用协商缓存 (304)
+                headers['Cache-Control'] = 'no-cache'
             return web.FileResponse(file_path, headers=headers)
 
         return _spa_index_or_404(dist_root)
