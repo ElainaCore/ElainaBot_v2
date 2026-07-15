@@ -2,6 +2,7 @@
 
 import logging
 import os
+import re
 import sys
 
 from aiohttp import web
@@ -116,12 +117,10 @@ def setup_web(app: web.Application, bot_manager, base_dir: str):
     os.makedirs(media_dir, exist_ok=True)
     app.router.add_static('/api/media/', media_dir)
 
-    # dist 在 web-vue/dist/ (vite 输出) 或 web/dist/ (复制)
+    # 优先使用仓库内随版本发布的 web/dist, 避免旧 web-vue/dist 覆盖新构建
     _web_dir = os.path.dirname(__file__)
     _project_dir = os.path.dirname(_web_dir)
-    dist_dir = os.path.join(_project_dir, 'web-vue', 'dist')
-    if not os.path.isdir(dist_dir):
-        dist_dir = os.path.join(_web_dir, 'dist')
+    dist_dir = _select_dist_dir(_project_dir, _web_dir)
 
     # /web → 重定向到 /web/
     app.router.add_get('/web', _redirect_to_web)
@@ -143,6 +142,43 @@ _MIME = {
     '.png': 'image/png',
     '.ico': 'image/x-icon',
 }
+
+_ASSET_REF_PATTERN = re.compile(r'(?:/web/)?assets/[A-Za-z0-9_.-]+\.(?:css|js)')
+
+
+def _missing_dist_assets(dist_dir: str) -> list[str]:
+    index_path = os.path.join(dist_dir, 'index.html')
+    if not os.path.isfile(index_path):
+        return ['index.html']
+
+    refs = set()
+    for path in (index_path, os.path.join(dist_dir, 'assets', 'index.js')):
+        if not os.path.isfile(path):
+            continue
+        try:
+            with open(path, encoding='utf-8') as file:
+                refs.update(_ASSET_REF_PATTERN.findall(file.read()))
+        except OSError:
+            continue
+
+    return sorted(ref for ref in refs if not os.path.isfile(os.path.join(dist_dir, ref.removeprefix('/web/'))))
+
+
+def _select_dist_dir(project_dir: str, web_dir: str) -> str:
+    candidates = [
+        os.path.join(web_dir, 'dist'),
+        os.path.join(project_dir, 'web-vue', 'dist'),
+    ]
+    existing = []
+    for candidate in candidates:
+        if not os.path.isdir(candidate):
+            continue
+        existing.append(candidate)
+        missing = _missing_dist_assets(candidate)
+        if not missing:
+            return candidate
+        log.error('Web 面板构建不完整 (%s): 缺少 %s', candidate, ', '.join(missing))
+    return existing[0] if existing else candidates[0]
 
 
 def _make_spa_handler(dist_dir: str):
@@ -171,6 +207,9 @@ def _make_spa_handler(dist_dir: str):
                 # 产物文件名不带 hash, 更新后强缓存会导致新旧分块混用报错; 用协商缓存 (304)
                 headers['Cache-Control'] = 'no-cache'
             return web.FileResponse(file_path, headers=headers)
+
+        if path.startswith('assets/'):
+            return web.Response(text='Not Found', status=404, headers={'Cache-Control': 'no-store'})
 
         return _spa_index_or_404(dist_root)
 
