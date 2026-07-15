@@ -790,6 +790,93 @@ async def handle_v2_status(request: web.Request):
     )
 
 
+async def handle_v2_developers(request: web.Request):
+    body = await request.json() if request.can_read_body else {}
+    user_id = body.get('user_id', 'web_user')
+    ud = _v2_get(user_id)
+    if not ud:
+        return _err('未登录')
+    if not _v2_ready(ud):
+        return _err('新版开放平台未授权，请重新扫码登录')
+    api = _get_bot_api()
+    if not api:
+        return _err('bot_api 模块未加载')
+    result = await api.v2_request(
+        'GET',
+        '/api/v3/login/bopen/developer_list',
+        cookie=_v2_cookie(ud),
+        skey=ud.get('skey', ''),
+    )
+    relogin_message = _v2_relogin_message(result)
+    if relogin_message:
+        _remove_v2(user_id)
+        return _err(relogin_message, relogin=True)
+    response = result.get('res') if isinstance(result, dict) else None
+    if isinstance(response, dict) and response.get('ret') not in (None, 0):
+        return _err(str(response.get('msg') or '获取主体列表失败'))
+    from web.tools._bot.api import parse_login_developers
+
+    return _ok(
+        developers=parse_login_developers(result),
+        current_developer_id=ud.get('developer_id_lite') or ud.get('developerId') or '',
+    )
+
+
+async def handle_v2_switch_developer(request: web.Request):
+    body = await request.json()
+    user_id = body.get('user_id', 'web_user')
+    developer_id = str(body.get('developer_id') or '')
+    if not developer_id:
+        return _err('请选择开发者主体')
+    ud = _v2_get(user_id)
+    if not ud:
+        return _err('未登录')
+    if not _v2_ready(ud):
+        return _err('新版开放平台未授权，请重新扫码登录')
+    api = _get_bot_api()
+    if not api:
+        return _err('bot_api 模块未加载')
+
+    list_result = await api.v2_request(
+        'GET',
+        '/api/v3/login/bopen/developer_list',
+        cookie=_v2_cookie(ud),
+        skey=ud.get('skey', ''),
+    )
+    relogin_message = _v2_relogin_message(list_result)
+    if relogin_message:
+        _remove_v2(user_id)
+        return _err(relogin_message, relogin=True)
+    from web.tools._bot.api import extract_login_creds, parse_login_developers
+
+    developers = parse_login_developers(list_result)
+    if developer_id not in {item['id'] for item in developers}:
+        return _err('请选择有效的开发者主体')
+
+    result, cookies = await api.v2_switch_developer(
+        developer_id,
+        cookie=_v2_cookie(ud),
+        skey=ud.get('skey', ''),
+    )
+    if not isinstance(result, dict):
+        return _err('切换主体失败')
+    ret = result.get('ret')
+    if ret not in (None, 0):
+        return _err(str(result.get('msg') or '切换主体失败'))
+
+    ud.update(extract_login_creds(cookies))
+    ud['developer_id_lite'] = developer_id
+    ud['developerId'] = developer_id
+    _save_v2(user_id)
+    old = _openapi_user_data.get(user_id) or {}
+    old['developerId'] = developer_id
+    if ud.get('qticket'):
+        old['ticket'] = ud['qticket']
+    _openapi_user_data[user_id] = old
+    _save_data()
+    return _ok(developer_id=developer_id, message='主体切换成功')
+
+
 async def handle_v2_proxy(request: web.Request):
     """新版开放平台接口通用代理: 转发前端与 q.qq.com 完全一致的请求"""
     body = await request.json()

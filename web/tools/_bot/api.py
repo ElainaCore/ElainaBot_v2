@@ -606,6 +606,37 @@ class QQBotAPI:
         except Exception as e:
             return {'retcode': 500, 'msg': f'请求失败: {e}'}
 
+    async def v2_switch_developer(self, developer_id, cookie='', skey=''):
+        url = 'https://q.qq.com/api/v3/login/switch_developer'
+        if skey:
+            url += '?' + urlencode({'bkn': qq_bkn(skey)})
+        headers = _BASE_HEADERS.copy()
+        headers.update(_QQ_HEADERS)
+        headers.update({
+            'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+            'Referer': 'https://q.qq.com/qqbot/dashboard/',
+        })
+        if cookie:
+            headers['Cookie'] = cookie
+        try:
+            conn = aiohttp.TCPConnector(family=socket.AF_INET, ssl=False)
+            async with (
+                aiohttp.ClientSession(timeout=_TIMEOUT, connector=conn) as session,
+                session.post(url, data={'target_developer_id': developer_id}, headers=headers) as resp,
+            ):
+                raw = await resp.read()
+                cookies = {key: morsel.value for key, morsel in resp.cookies.items()}
+                for value in resp.headers.getall('Set-Cookie', ()):
+                    parsed = SimpleCookie()
+                    try:
+                        parsed.load(value)
+                    except CookieError:
+                        continue
+                    cookies.update({key: morsel.value for key, morsel in parsed.items()})
+            return json.loads(self._decode(raw)), cookies
+        except Exception as e:
+            return {'ret': 500, 'msg': f'请求失败: {e}'}, {}
+
     @staticmethod
     def _fmt_ts(ts):
         try:

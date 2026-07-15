@@ -177,6 +177,8 @@ def get_routes() -> list:
         web.post('/api/openapi/v2/start-login', _(openapi_handler.handle_v2_start_login)),
         web.post('/api/openapi/v2/check-login', _(openapi_handler.handle_v2_check_login)),
         web.post('/api/openapi/v2/status', _(openapi_handler.handle_v2_status)),
+        web.post('/api/openapi/v2/developers', _(openapi_handler.handle_v2_developers)),
+        web.post('/api/openapi/v2/switch-developer', _(openapi_handler.handle_v2_switch_developer)),
         web.post('/api/openapi/v2/proxy', _(openapi_handler.handle_v2_proxy)),
         web.post('/api/openapi/v2/upload-avatar', _(openapi_handler.handle_v2_upload_avatar)),
         # ── 自定义页面 ──
