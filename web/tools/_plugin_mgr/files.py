@@ -10,13 +10,13 @@ from typing import cast
 
 from aiohttp import BodyPartReader, web
 
-from core.base.zipsafe import safe_extractall
 from web.tools._plugin_mgr.shared import (
     get_pm,
     log,
     plugins_dir,
     validate_path,
 )
+from web.tools._zipsafe import safe_extractall
 
 _PLUGIN_TEMPLATE = """from core.plugin.decorators import handler
 

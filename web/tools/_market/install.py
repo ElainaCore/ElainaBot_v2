@@ -7,7 +7,6 @@ import zipfile
 
 from aiohttp import web
 
-from core.base.zipsafe import is_within
 from web.tools._market.fetch import (
     _download_file,
 )
@@ -22,6 +21,7 @@ from web.tools._market.shared import (
     log,
 )
 from web.tools._python_source import read_dict_assignment
+from web.tools._zipsafe import is_within
 
 # 共享单文件插件目录 (位于 plugins/ 下), 仅当 single 插件显式声明 alone=True 时使用
 _ALONE_DIR = 'alone'

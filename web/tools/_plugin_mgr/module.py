@@ -11,7 +11,6 @@ from typing import cast
 
 from aiohttp import BodyPartReader, web
 
-from core.base.zipsafe import safe_extractall
 from web.tools._plugin_mgr.shared import (
     bot_manager,
     get_mm,
@@ -19,6 +18,7 @@ from web.tools._plugin_mgr.shared import (
     modules_dir,
 )
 from web.tools._python_source import read_dict_assignment
+from web.tools._zipsafe import safe_extractall
 
 # ==================== 元数据读取 ====================
 
