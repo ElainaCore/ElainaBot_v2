@@ -1,7 +1,6 @@
 """开放平台查询: 扫码登录 / bot通知 / bot列表 / bot数据 / 切换appid"""
 
 import asyncio
-import base64
 import contextlib
 import json
 import os
@@ -19,8 +18,6 @@ _PLUGIN_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _BASE_DIR = os.path.dirname(os.path.dirname(_PLUGIN_DIR))
 # 旧开放平台凭证: web/open/openapi.json (与 web 面板 handler 一致)
 _OLD_OPEN_DIR = os.path.join(_BASE_DIR, 'web', 'open')
-# 新开放平台凭证: web/new_open/<user_id>.json (与旧平台隔离)
-_NEW_OPEN_DIR = os.path.join(_BASE_DIR, 'web', 'new_open')
 os.makedirs(_OLD_OPEN_DIR, exist_ok=True)
 
 _DATA_FILE = os.path.join(_OLD_OPEN_DIR, 'openapi.json')
@@ -61,46 +58,6 @@ def _save_data():
             json.dump(_user_data, f, indent=2, ensure_ascii=False)
     except Exception:
         pass
-
-
-def _save_new_open(user_id, data):
-    """新开放平台凭证隔离存储 web/new_open/<user_id>.json"""
-    try:
-        os.makedirs(_NEW_OPEN_DIR, exist_ok=True)
-        with open(os.path.join(_NEW_OPEN_DIR, f'{user_id}.json'), 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-    except Exception:
-        pass
-
-
-async def _save_login_creds(user_id, creds):
-    """把一次扫码凭证隔离写入新/旧两个存储"""
-    quid = creds.get('developer_id_lite') or creds.get('developerId') or ''
-    uin = creds.get('uin') or ''
-    v2 = {'type': 'ok'}
-    for k in ('b_token', 'qticket_lite', 'qticket', 'developer_id_lite', 'uin'):
-        if creds.get(k):
-            v2[k] = creds[k]
-    if quid:
-        v2['developerId'] = quid
-    _save_new_open(user_id, v2)
-    old = _get_ud(user_id) or {}
-    old.update(
-        {
-            'type': 'ok',
-            'uin': uin,
-            'developerId': quid,
-            'ticket': creds.get('qticket') or old.get('ticket', ''),
-        }
-    )
-    if not old.get('appId'):
-        api = _get_api()
-        with contextlib.suppress(Exception):
-            r = await api.get_bot_list(uin=uin, quid=quid, ticket=old.get('ticket'))
-            apps = r.get('data', {}).get('apps', [])
-            if apps:
-                old['appId'] = apps[0].get('app_id', '')
-    _save_ud(user_id, old)
 
 
 def _get_ud(user_id):
@@ -183,82 +140,68 @@ async def login(event, match):
 
     _login_tasks[user_id] = (now, None)
 
-    # 创建新版扫码登录会话并生成二维码
-    from web.tools._bot.api import QQScanLogin
-
-    login_sess = QQScanLogin()
-    res = await login_sess.start()
-    if res.get('status') == 'failed' or not res.get('qr_image'):
+    data = await api.create_login_qr()
+    url = data.get('url')
+    qr = data.get('qr')
+    if not url or not qr:
         await event.reply('获取登录二维码失败，请稍后重试')
         _login_tasks.pop(user_id, None)
         return
 
-    try:
-        png = base64.b64decode(res['qr_image'].split(',', 1)[1])
-    except Exception:
-        await event.reply('生成二维码失败，请稍后重试')
-        _login_tasks.pop(user_id, None)
-        return
+    content = f'<@{user_id}>\n[QQ开发平台管理端登录]\n登录具有时效性，请尽快登录\n\n>当你选择登录，代表你已经同意将数据托管给伊蕾娜Bot。'
 
-    content = (
-        f'<@{user_id}>\n[QQ开放平台扫码登录]\n请使用手机QQ扫描二维码并确认登录\n'
-        f'登录具有时效性，请尽快扫码\n\n>当你选择登录，代表你已经同意将数据托管给伊蕾娜Bot。'
-    )
-    try:
-        await event.reply_image(png, content=content)
-    except Exception as e:
-        log.warning(f'发送登录二维码失败: {e}')
-        await event.reply('发送二维码失败，请稍后重试')
-        _login_tasks.pop(user_id, None)
-        return
+    if _use_md(event):
+        login_btn = {'text': '点击登录', 'data': url, 'type': 0, 'style': 4}
+        if event.is_group:
+            login_btn['list'] = [user_id]
+        await event.reply(content, buttons=[[login_btn]])
+    else:
+        display_url = url
+        if '://' in url:
+            protocol, rest = url.split('://', 1)
+            domain, separator, path = rest.partition('/')
+            if '.' in domain:
+                segments = domain.split('.')
+                segments[-1] = segments[-1].upper()
+                domain = '.'.join(segments)
+            display_url = f'{protocol}://{domain}{separator}{path}'
+        await event.reply(f'{content}\n\n登录链接: {display_url}')
 
     # 后台轮询登录状态 (handler 返回后框架会清空 event._sender, 需在此提前捕获)
     sender = event._sender
     use_md = _use_md(event)
-    asyncio.create_task(_poll_login(event, sender, user_id, login_sess, use_md))
+    asyncio.create_task(_poll_login(event, sender, user_id, qr, use_md))
 
 
-async def _poll_login(event, sender, user_id, login_sess, use_md):
-    deadline = time.time() + 180
-    notified_scan = False
+async def _poll_login(event, sender, user_id, qr, use_md):
+    api = _get_api()
+    deadline = time.time() + 60
     while time.time() < deadline:
         await asyncio.sleep(3)
         try:
-            res = await login_sess.poll()
+            res = await api.get_qr_login_info(qrcode=qr)
+            if res.get('code') == 0:
+                login_data = res.get('data', {}).get('data', {})
+                login_data['type'] = 'ok'
+                _save_ud(user_id, login_data)
+
+                app_type = login_data.get('appType')
+                app_type_str = '小程序' if app_type == '0' else '机器人' if app_type == '2' else '未知'
+                content = (
+                    f'[{login_data.get("uin")}]登录成功\n\n'
+                    f'>登录类型：{app_type_str}\nAppId：{login_data.get("appId")}\n切换+appid可以切换机器人'
+                )
+                buttons = _nav_buttons() if use_md else None
+                try:
+                    await sender.reply(event, content, buttons=buttons)
+                except Exception as e:
+                    log.warning(f'登录成功回复失败: {e}')
+
+                _last_login_time[user_id] = time.time()
+                _login_tasks.pop(user_id, None)
+                return
         except Exception as e:
             log.debug(f'轮询登录态异常: {e}')
-            continue
-        status = res.get('status')
-        if status == 'scanned' and not notified_scan:
-            notified_scan = True
-            with contextlib.suppress(Exception):
-                await sender.reply(event, '已扫码，请在手机上确认登录')
-            continue
-        if status == 'logged_in':
-            creds = res.get('creds') or {}
-            await _save_login_creds(user_id, creds)
-            ud = _get_ud(user_id) or {}
-            content = (
-                f'[{creds.get("uin", "")}]登录成功\n\n'
-                f'>DeveloperId：{creds.get("developer_id_lite", "")}\n'
-                f'默认AppId：{ud.get("appId", "")}\n切换+appid可以切换机器人'
-            )
-            buttons = _nav_buttons() if use_md else None
-            with contextlib.suppress(Exception):
-                await sender.reply(event, content, buttons=buttons)
-            _last_login_time[user_id] = time.time()
-            _login_tasks.pop(user_id, None)
-            return
-        if status == 'rejected':
-            with contextlib.suppress(Exception):
-                await sender.reply(event, f'<@{user_id}>你已拒绝本次登录')
-            _login_tasks.pop(user_id, None)
-            return
-        if status == 'failed':
-            with contextlib.suppress(Exception):
-                await sender.reply(event, f'<@{user_id}>登录失败：{res.get("error") or "未知错误"}')
-            _login_tasks.pop(user_id, None)
-            return
 
     # 超时
     with contextlib.suppress(Exception):
