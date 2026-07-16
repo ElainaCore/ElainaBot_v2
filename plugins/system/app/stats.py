@@ -7,6 +7,8 @@ from datetime import datetime, timedelta
 
 from core.plugin.decorators import handler
 
+from ._reply import reply
+
 
 def _get_bot(event):
     """获取当前事件对应的 BotInstance"""
@@ -167,7 +169,7 @@ def _build_dau_message(event, stats, date, elapsed_ms, y_stats=None, is_today=Fa
 async def get_stats(event, match):
     bot = _get_bot(event)
     if not bot:
-        return await event.reply('❌ 无法获取机器人实例')
+        return await reply(event, '❌ 无法获取机器人实例')
 
     t0 = time.time()
     ls = bot.log_service
@@ -212,7 +214,7 @@ async def get_stats(event, match):
 
     elapsed = round((time.time() - t0) * 1000)
     info.append(f'🕒 查询耗时: {elapsed}ms')
-    await event.reply('\n'.join(info))
+    await reply(event, '\n'.join(info))
 
 
 # ==================== DAU ====================
@@ -227,7 +229,7 @@ async def get_stats(event, match):
 async def handle_dau(event, match):
     bot = _get_bot(event)
     if not bot:
-        return await event.reply('❌ 无法获取机器人实例')
+        return await reply(event, '❌ 无法获取机器人实例')
 
     date_str = match.group(1)
     if date_str:
@@ -245,11 +247,11 @@ async def _handle_today_dau(event, bot):
         loop.run_in_executor(None, _query_yesterday_same_period_sync, bot),
     )
     if not stats:
-        return await event.reply(f'<@{event.user_id}>\n❌ 今日暂无消息数据')
+        return await reply(event, f'<@{event.user_id}>\n❌ 今日暂无消息数据')
 
     elapsed = round((time.time() - t0) * 1000)
     msg = _build_dau_message(event, stats, datetime.now(), elapsed, y_stats=y_stats, is_today=True)
-    await event.reply(msg)
+    await reply(event, msg)
 
 
 def _query_yesterday_same_period_sync(bot):
@@ -301,18 +303,18 @@ async def _handle_history_dau(event, bot, date_str):
         if target > datetime.now():
             target = datetime(year - 1, month, day)
     except ValueError:
-        return await event.reply('❌ 日期格式错误 (MMDD)')
+        return await reply(event, '❌ 日期格式错误 (MMDD)')
 
     from core.application import get_app
 
     app = get_app()
     dau_svc = app.dau_service if app else None
     if not dau_svc:
-        return await event.reply('❌ DAU 服务未启动')
+        return await reply(event, '❌ DAU 服务未启动')
 
     data = await dau_svc.load(event.appid, target.strftime('%Y-%m-%d'))
     if not data:
-        return await event.reply(f'<@{event.user_id}>\n❌ {date_str[:2]}-{date_str[2:]} 无 DAU 数据')
+        return await reply(event, f'<@{event.user_id}>\n❌ {date_str[:2]}-{date_str[2:]} 无 DAU 数据')
 
     # 将 dau.db 行转为统计格式
     detail = data.get('message_stats_detail', {})
@@ -337,4 +339,4 @@ async def _handle_history_dau(event, bot, date_str):
 
     elapsed = round((time.time() - t0) * 1000)
     msg = _build_dau_message(event, stats, target, elapsed)
-    await event.reply(msg)
+    await reply(event, msg)

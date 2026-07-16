@@ -6,6 +6,8 @@ import platform
 from core.base.config import cfg
 from core.plugin.decorators import handler
 
+from ._reply import reply
+
 # ==================== ping ====================
 
 
@@ -45,7 +47,7 @@ async def ping(event, match):
     api_text = f'{api_ms}ms' if api_ms >= 0 else '超时'
     ts = _parse_ts(event.timestamp)
     msg_ms = round((time.time() - ts) * 1000) if ts else '未知'
-    await event.reply(f'pong 🏓\nAPI延迟: {api_text}\n消息延迟: {msg_ms}ms' if msg_ms != '未知' else f'pong 🏓\nAPI延迟: {api_text}')
+    await reply(event, f'pong 🏓\nAPI延迟: {api_text}\n消息延迟: {msg_ms}ms' if msg_ms != '未知' else f'pong 🏓\nAPI延迟: {api_text}')
 
 
 # ==================== 我的id ====================
@@ -66,7 +68,7 @@ async def getid(event, match):
             info.append(f'频道ID: {event.guild_id}')
         if event.channel_id:
             info.append(f'子频道ID: {event.channel_id}')
-    await event.reply('\n'.join(info))
+    await reply(event, '\n'.join(info))
 
 
 # ==================== 关于 ====================
@@ -131,7 +133,7 @@ async def about_info(event, match):
             f'>Tip: 只有艾特{bot_name}，{bot_name}才能接收到你的消息~！',
         ]
     )
-    await event.reply('\n'.join(msg_parts))
+    await reply(event, '\n'.join(msg_parts))
 
 
 # ==================== 原始数据 ====================
@@ -149,4 +151,4 @@ async def get_raw_data(event, match):
             raw_str = raw
     else:
         raw_str = '(无)'
-    await event.reply(f'原始事件:\n```json\n{raw_str}\n```')
+    await reply(event, f'原始事件:\n```json\n{raw_str}\n```')
