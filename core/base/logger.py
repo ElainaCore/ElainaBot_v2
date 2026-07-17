@@ -9,6 +9,8 @@ import sys
 import traceback
 from datetime import datetime
 
+from core.base import console as _console
+
 # ==================== 常量 ====================
 
 PLUGIN = '插件'
@@ -145,6 +147,7 @@ def setup(framework_name=None, level=logging.INFO, log_file=None):
     if framework_name:
         _FRAMEWORK_NAME = framework_name
 
+    _console.install()
     _enable_colors()
 
     root_logger = logging.getLogger('ElainaBot')

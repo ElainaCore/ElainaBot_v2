@@ -364,6 +364,7 @@ def _tag_lifecycle_extra(r):
 
 def _gather_recent_logs_sync(appid_filter):
     """同步聚合所有日志查询 (在 executor 中执行, 避免阻塞事件循环)"""
+    from core.base import console as _console
     from core.storage.log import SharedLogService
 
     messages = _query_bot_logs('message', appid_filter, _tag_direction)
@@ -382,6 +383,7 @@ def _gather_recent_logs_sync(appid_filter):
         'framework': framework,
         'error': errors,
         'lifecycle': lifecycle,
+        'console': _console.get_lines(),
     }
 
 

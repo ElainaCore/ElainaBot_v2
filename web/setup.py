@@ -57,6 +57,12 @@ class _WebPanelLogHandler(logging.Handler):
             pass
 
 
+def _push_console_line(entry: dict):
+    import web.ws as _ws
+
+    _ws.push_log('console', dict(entry))
+
+
 @web.middleware
 async def _api_no_cache_middleware(request: web.Request, handler):
     """API 响应禁止浏览器/代理缓存, 保证数据实时"""
@@ -104,6 +110,11 @@ def setup_web(app: web.Application, bot_manager, base_dir: str):
             )
 
         on_error(_push_error)
+
+        from core.base import console as _console
+
+        _console.install()
+        _console.on_line(_push_console_line)
 
         _handler = _WebPanelLogHandler(_ws)
         _handler.setLevel(logging.INFO)
