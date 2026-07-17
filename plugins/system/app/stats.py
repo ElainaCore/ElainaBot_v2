@@ -2,9 +2,11 @@
 
 import asyncio
 import json as _json
+import struct
 import time
 from datetime import datetime, timedelta
 
+from core.base.config import cfg
 from core.plugin.decorators import handler
 from core.storage.lifecycle_stats import compute_lifecycle_counts
 
@@ -77,9 +79,18 @@ async def _reply_dau(event, bot, stats, date, elapsed_ms, y_stats=None, is_today
     if image:
         url = await _upload_dau_image(bot, image)
         if url:
+            if cfg.get_bot_setting(event.appid, 'message.use_markdown', True):
+                w, h = _png_size(image)
+                md = f'<@{event.user_id}>![活跃统计 #{w}px #{h}px]({url})'
+                return await reply(event, md)
             return await event.reply_image(url, f'<@{event.user_id}>')
     msg = _build_dau_message(event, stats, date, elapsed_ms, y_stats=y_stats, is_today=is_today)
     await reply(event, msg)
+
+
+def _png_size(data):
+    """从 PNG 头(IHDR)读取宽高"""
+    return struct.unpack('>II', data[16:24])
 
 
 def _mask_id(s, n=3):
