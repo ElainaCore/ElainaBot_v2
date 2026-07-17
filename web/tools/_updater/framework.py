@@ -292,8 +292,15 @@ class FrameworkUpdater:
                     dirs[:] = [d for d in dirs if not any(os.path.relpath(os.path.join(root, d), self.base_dir).startswith(p) for p in skip_prefixes)]
                     for fname in files:
                         fp = os.path.join(root, fname)
-                        if not any(s in fp for s in skip_contains):
+                        if any(s in fp for s in skip_contains):
+                            continue
+                        if not os.path.isfile(fp):  # 悬空符号链接等
+                            log.warning(f'备份跳过无效文件: {fp}')
+                            continue
+                        try:
                             zf.write(fp, os.path.relpath(fp, self.base_dir))
+                        except OSError as e:
+                            log.warning(f'备份跳过 {fp}: {e}')
 
                 # 单独收集日志目录中的 data.db / dau.db
                 log_abs = self.base_dir / 'data' / log_dir_name
