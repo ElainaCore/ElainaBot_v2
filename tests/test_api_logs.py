@@ -17,6 +17,7 @@ class TestLogsRecent:
         assert 'framework' in data
         assert 'error' in data
         assert 'lifecycle' in data
+        assert 'console' in data
 
     async def test_recent_logs_with_appid(self, api_client, auth_headers):
         resp = await api_client.get('/api/logs/recent?appid=123456', headers=auth_headers)
