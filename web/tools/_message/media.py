@@ -24,7 +24,7 @@ def _apply_reference(payload, message_reference_id=''):
         }
 
 
-async def _web_send_media(sender, *, file_info, content='', group_id=None, user_id=None, msg_id='', message_reference_id=''):
+async def _web_send_media(sender, *, file_info, content='', group_id=None, user_id=None, msg_id='', event_id='', message_reference_id=''):
     """file_info 已就绪, 直接发送富媒体消息"""
     _, send_ep = _media_endpoints(group_id, user_id)
     payload = {
@@ -35,12 +35,14 @@ async def _web_send_media(sender, *, file_info, content='', group_id=None, user_
     }
     if msg_id:
         payload['msg_id'] = msg_id
+    if event_id:
+        payload['event_id'] = event_id
     _apply_reference(payload, message_reference_id)
     ok, data = await sender.post_json(send_ep, payload)
     return ok, data, payload
 
 
-async def _send_media_url(sender, url, *, file_type=1, group_id=None, user_id=None, msg_id='', message_reference_id=''):
+async def _send_media_url(sender, url, *, file_type=1, group_id=None, user_id=None, msg_id='', event_id='', message_reference_id=''):
     """通过 URL 上传并发送富媒体"""
     upload_ep, _ = _media_endpoints(group_id, user_id)
     upload_payload = {'srv_send_msg': False, 'file_type': file_type, 'url': url}
@@ -58,12 +60,13 @@ async def _send_media_url(sender, url, *, file_type=1, group_id=None, user_id=No
         group_id=group_id,
         user_id=user_id,
         msg_id=msg_id,
+        event_id=event_id,
         message_reference_id=message_reference_id,
     )
     return ok, data, payload
 
 
-async def _send_text_with_image(sender, content, image_bytes, *, group_id=None, user_id=None, msg_id='', message_reference_id=''):
+async def _send_text_with_image(sender, content, image_bytes, *, group_id=None, user_id=None, msg_id='', event_id='', message_reference_id=''):
     """上传图片 bytes 并发送"""
     if not image_bytes:
         return False, {'message': '图片数据为空'}, {}
@@ -86,6 +89,7 @@ async def _send_text_with_image(sender, content, image_bytes, *, group_id=None, 
         group_id=group_id,
         user_id=user_id,
         msg_id=msg_id,
+        event_id=event_id,
         message_reference_id=message_reference_id,
     )
     return ok, data, payload
@@ -94,7 +98,7 @@ async def _send_text_with_image(sender, content, image_bytes, *, group_id=None, 
 # ==================== 辅助: ARK ====================
 
 
-async def _send_ark(sender, template_id, kv_json_str, *, group_id=None, user_id=None, msg_id='', message_reference_id=''):
+async def _send_ark(sender, template_id, kv_json_str, *, group_id=None, user_id=None, msg_id='', event_id='', message_reference_id=''):
     """发送 ARK 消息 (template_id=模板 ID, kv_json_str=kv 数据 JSON 数组)"""
     try:
         kv_data = json.loads(kv_json_str)
@@ -112,6 +116,8 @@ async def _send_ark(sender, template_id, kv_json_str, *, group_id=None, user_id=
     }
     if msg_id:
         payload['msg_id'] = msg_id
+    if event_id:
+        payload['event_id'] = event_id
     _apply_reference(payload, message_reference_id)
 
     _, send_ep = _media_endpoints(group_id, user_id)
