@@ -1,5 +1,6 @@
 """框架更新 — FrameworkUpdater 更新流程类"""
 
+import asyncio
 import fnmatch
 import json
 import os
@@ -414,7 +415,8 @@ class FrameworkUpdater:
         zip_file = await self.download_update(version)
         if not zip_file:
             return {'success': False, 'message': '下载失败'}
-        result = self.apply_update(zip_file, version, skip_backup=skip_backup)
+        # apply_update 为同步阻塞操作 (备份/解压/复制), 放线程执行避免阻塞事件循环导致进度接口无响应
+        result = await asyncio.to_thread(self.apply_update, zip_file, version, skip_backup)
         if result['success']:
             self._save_version(version)
             result['environment'] = env
