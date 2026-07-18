@@ -139,7 +139,8 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
     if not token or token not in auth.valid_sessions:
         return web.Response(status=401, text='Unauthorized')  # type: ignore[return-value]  # auth failure before WS upgrade
 
-    ws = web.WebSocketResponse(heartbeat=30)
+    # 禁用 permessage-deflate: 部分代理/加速层无法正确转发压缩帧, 会导致浏览器报 Invalid frame header
+    ws = web.WebSocketResponse(heartbeat=30, compress=False)
     await ws.prepare(request)
     _broadcast._loop = asyncio.get_running_loop()
     _broadcast.clients.add(ws)
