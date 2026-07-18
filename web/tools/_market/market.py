@@ -28,7 +28,7 @@ async def handle_market_list(request: web.Request):
     if data is None:
         return web.json_response({'success': False, 'message': '无法连接插件库, 请检查网络'})
 
-    plugins = _extract_plugins(data)
+    plugins = [dict(plugin) for plugin in _extract_plugins(data)]
     if category:
         plugins = [p for p in plugins if p.get('category', '') == category]
     if search:

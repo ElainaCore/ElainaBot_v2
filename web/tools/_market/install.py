@@ -1,13 +1,12 @@
 """插件市场 — 安装/卸载/预览/版本对比"""
 
-import ast
 import io
 import os
+import shutil
 import zipfile
 
 from aiohttp import web
 
-from core.base.zipsafe import is_within
 from web.tools._market.fetch import (
     _download_file,
 )
@@ -21,6 +20,8 @@ from web.tools._market.shared import (
     _safe_name,
     log,
 )
+from web.tools._python_source import read_dict_assignment
+from web.tools._zipsafe import is_within
 
 # 共享单文件插件目录 (位于 plugins/ 下), 仅当 single 插件显式声明 alone=True 时使用
 _ALONE_DIR = 'alone'
@@ -91,19 +92,8 @@ _PLUGIN_ENTRY_NAMES = ('index.py', 'app.py', 'main.py')
 
 def _read_meta_version(py_path, meta_var):
     """从单个 .py 文件解析 <meta_var>['version'] (静态 AST, 不执行代码)"""
-    if not os.path.isfile(py_path):
-        return ''
-    try:
-        with open(py_path, encoding='utf-8') as f:
-            tree = ast.parse(f.read())
-        for node in ast.iter_child_nodes(tree):
-            if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name) and node.targets[0].id == meta_var:
-                meta = ast.literal_eval(node.value)
-                if isinstance(meta, dict):
-                    return str(meta.get('version', ''))
-    except Exception:
-        pass
-    return ''
+    meta = read_dict_assignment(py_path, meta_var)
+    return str(meta.get('version', '')) if meta else ''
 
 
 def _get_local_module_version(name):
@@ -233,7 +223,7 @@ def _install_py(content, plugin_name, url):
 
 def _split_paths(path):
     """path 归一为文件路径列表 (兼容数组/逗号串/单字符串)。"""
-    items = [str(p) for p in path] if isinstance(path, (list, tuple)) else str(path or '').split(',')
+    items = [str(p) for p in path] if isinstance(path, list | tuple) else str(path or '').split(',')
     return [p.strip().strip('/') for p in items if p and p.strip()]
 
 
@@ -333,11 +323,10 @@ def _extract_zip_subset(content, plugin_name, subdir_path=''):
         return {'success': False, 'message': str(e)}
 
 
-def _clean_module_dir(dest_dir):
-    """清理模块目录 (保留 data/ 用户配置)"""
+def _clear_dir_except_data(dest_dir):
+    """清理目录, 保留 data/ 用户配置"""
     if not os.path.isdir(dest_dir):
         return
-    import shutil
 
     for item in os.listdir(dest_dir):
         if item == 'data':
@@ -387,7 +376,7 @@ async def _install_module(github_url, module_name, branch='main', mirror=None):
                 return {'success': False, 'message': '仓库内容为空'}
 
             dest_dir = os.path.join(_modules_dir(), safe)
-            _clean_module_dir(dest_dir)
+            _clear_dir_except_data(dest_dir)
             os.makedirs(dest_dir, exist_ok=True)
 
             extracted = []
@@ -469,7 +458,7 @@ async def _install_single(github_url, plugin_name, path='', branch='main', alone
         return result, _ALONE_DIR
 
     # 专属目录: path 单字符串, 误传数组取首个
-    if isinstance(path, (list, tuple)):
+    if isinstance(path, list | tuple):
         _lst = _split_paths(path)
         path = _lst[0] if _lst else ''
     p = (path or '').strip('/').replace('\\', '/')
@@ -527,22 +516,6 @@ async def handle_market_install(request: web.Request):
 
 
 # ==================== 卸载 ====================
-
-
-def _remove_dir_keep_data(dest_dir):
-    """删除目录中除 data/ 外的全部文件和子目录"""
-    import shutil
-
-    for item in os.listdir(dest_dir):
-        if item == 'data':
-            continue
-        p = os.path.join(dest_dir, item)
-        if os.path.isdir(p):
-            shutil.rmtree(p)
-        else:
-            os.remove(p)
-
-
 async def _unload_plugin_runtime(plugin_name):
     """从运行时卸载插件"""
     try:
@@ -600,7 +573,7 @@ async def handle_market_uninstall(request: web.Request):
     try:
         await _unload_plugin_runtime(safe)
         if keep_data and os.path.isdir(os.path.join(dest_dir, 'data')):
-            _remove_dir_keep_data(dest_dir)
+            _clear_dir_except_data(dest_dir)
             log.info(f'{label} 已卸载 (保留 data/)')
             return web.json_response({'success': True, 'message': f'已卸载 {label} (保留数据)'})
         else:

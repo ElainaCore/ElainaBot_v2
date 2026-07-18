@@ -22,6 +22,7 @@ class WSBroadcast:
     def __init__(self):
         self._clients: set = set()
         self._sse_queues: set = set()
+        self._loop: asyncio.AbstractEventLoop | None = None
 
     @property
     def clients(self):
@@ -53,11 +54,19 @@ class WSBroadcast:
                 q.put_nowait(payload)
 
     def schedule_broadcast(self, msg_type: str, data: dict):
-        """安全调度广播任务 (无事件循环时静默忽略)"""
+        """安全调度广播任务 (非事件循环线程转发到主 loop, 无可用 loop 时静默忽略)"""
         if not self.has_clients():
             return
-        with contextlib.suppress(RuntimeError):
+        try:
             asyncio.get_running_loop().create_task(self.broadcast(msg_type, data))
+            return
+        except RuntimeError:
+            pass
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return
+        with contextlib.suppress(RuntimeError):
+            asyncio.run_coroutine_threadsafe(self.broadcast(msg_type, data), loop)
 
     def push_log(self, log_type: str, entry: dict):
         """实时推送日志到面板 (不缓存, 仅广播)"""
@@ -132,6 +141,7 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
 
     ws = web.WebSocketResponse(heartbeat=30)
     await ws.prepare(request)
+    _broadcast._loop = asyncio.get_running_loop()
     _broadcast.clients.add(ws)
     log.debug(f'面板 WebSocket 已连接 ({len(_broadcast.clients)} clients)')
 
@@ -176,6 +186,7 @@ async def handle_sse(request: web.Request) -> web.StreamResponse:
     await resp.prepare(request)
 
     queue: asyncio.Queue[str] = asyncio.Queue(maxsize=256)
+    _broadcast._loop = asyncio.get_running_loop()
     _broadcast.sse_queues.add(queue)
     log.debug(f'SSE 客户端已连接 (WS:{len(_broadcast.clients)} SSE:{len(_broadcast.sse_queues)})')
 

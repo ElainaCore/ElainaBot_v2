@@ -102,8 +102,7 @@ class TestAuthLoginFlow:
         assert resp.status == 200
         data = await resp.json()
         assert data['success'] is True
-        assert 'token' in data
-        assert len(data['token']) > 0
+        assert len(data['data']['token']) > 0
 
     async def test_login_with_wrong_password(self, auth_client):
         resp = await auth_client.post(
@@ -132,7 +131,7 @@ class TestAuthLoginFlow:
         )
         assert login_resp.status == 200
         login_data = await login_resp.json()
-        token = login_data['token']
+        token = login_data['data']['token']
 
         check_resp = await auth_client.get(
             '/api/auth/check',
@@ -151,7 +150,7 @@ class TestAuthLoginFlow:
             )
             assert resp.status == 200
             data = await resp.json()
-            tokens.add(data['token'])
+            tokens.add(data['data']['token'])
         assert len(tokens) == 3
 
 
@@ -176,7 +175,7 @@ class TestAuthProtectedEndpoints:
             '/api/auth/login',
             json={'password': 'test_integration_pwd'},
         )
-        token = (await login_resp.json())['token']
+        token = (await login_resp.json())['data']['token']
 
         resp = await auth_client.get(
             '/api/config',

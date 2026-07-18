@@ -206,7 +206,6 @@ def _reset_web_singletons():
     _auth._data_dir = ''
     _auth._ip_file = ''
     _auth._session_file = ''
-    _auth._secret_file = ''
 
     # 重置 api 模块全局状态
     _api._bot_manager = None
@@ -336,7 +335,7 @@ async def auth_headers(api_client):
     """登录获取 token, 返回带 Authorization 的请求头"""
     resp = await api_client.post('/api/auth/login', json={'password': 'test_pass'})
     data = await resp.json()
-    token = data.get('token', '')
+    token = (data.get('data') or {}).get('token', '')
     return {'Authorization': f'Bearer {token}'}
 
 
@@ -345,4 +344,4 @@ async def auth_token(api_client):
     """仅返回 token 字符串"""
     resp = await api_client.post('/api/auth/login', json={'password': 'test_pass'})
     data = await resp.json()
-    return data.get('token', '')
+    return (data.get('data') or {}).get('token', '')

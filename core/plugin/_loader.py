@@ -121,7 +121,7 @@ class _LoaderMixin:
         async with self._lock:
             if name in self._plugins:
                 await self._unload_plugin(name)
-            await _install_deps(name, plugin_dir)
+            await _install_deps(name, plugin_dir, skip_if_met=True)
             plugin_ctx = PluginContext(name, plugin_dir)
             _ctx_mod.ctx = plugin_ctx
             start = time.time()
@@ -173,7 +173,7 @@ class _LoaderMixin:
         async with self._lock:
             if name in self._plugins:
                 await self._unload_plugin(name)
-            await _install_deps(name, plugin_dir)
+            await _install_deps(name, plugin_dir, skip_if_met=True)
             _clear_pending()
             plugin_ctx = PluginContext(name, plugin_dir)
             _ctx_mod.ctx = plugin_ctx

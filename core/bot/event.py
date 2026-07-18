@@ -130,6 +130,41 @@ class EventHandlerMixin:
             finally:
                 q.task_done()
 
+    def _message_content(self, event):
+        content = MessageUtils.sanitize_content(event.raw_content, keep_at=True) or event.content or ''
+        if event.image_url and f'<{event.image_url}>' not in content:
+            return f'{content}<{event.image_url}>' if content else f'<{event.image_url}>'
+        return content
+
+    def _message_log_data(self, event, content, raw_json):
+        # 仅全量群消息区分是否艾特机器人; 非全量消息收不到未艾特消息, 一律算艾特
+        at_bot = event.is_at_self if event.event_type == GROUP_MESSAGE_CREATE else True
+        return {
+            'message_id': event.message_id or '',
+            'user_id': event.user_id or '',
+            'reference_id': getattr(event, 'message_reference_id', '') or '',
+            'group_id': event.group_id or '',
+            'content': content,
+            'raw_message': raw_json,
+            'direction': 'receive',
+            'at_bot': at_bot,
+        }
+
+    def _message_web_data(self, bot, event, appid, content, raw_json):
+        return {
+            **self._message_log_data(event, content, raw_json),
+            'appid': appid,
+            'bot_name': bot.name,
+            'bot_qq': getattr(bot, 'robot_qq', '') or '',
+            'event_type': event.event_type,
+        }
+
+    def _record_message_event(self, bot, event, appid):
+        content = self._message_content(event)
+        raw_json = json.dumps(event.raw, ensure_ascii=False)
+        bot.log_service.add_sync('message', self._message_log_data(event, content, raw_json))
+        self._push_web_log('message', self._message_web_data(bot, event, appid, content, raw_json))
+
     # ==================== 事件入口 ====================
 
     async def _on_event(self, event):
@@ -211,28 +246,8 @@ class EventHandlerMixin:
 
         # 消息日志 + 用户追踪
         if et in MESSAGE_TYPES or et == INTERACTION_CREATE:
-            msg_id = event.message_id or ''
-            uid = event.user_id or ''
-            gid = event.group_id or ''
-            content = MessageUtils.sanitize_content(event.raw_content, keep_at=True) or event.content or ''
-            if event.image_url and f'<{event.image_url}>' not in content:
-                content = f'{content}<{event.image_url}>' if content else f'<{event.image_url}>'
-            raw_json = json.dumps(event.raw, ensure_ascii=False)
-            bot.log_service.add_sync('message', {
-                'message_id': msg_id, 'user_id': uid,
-                'reference_id': getattr(event, 'message_reference_id', '') or '',
-                'group_id': gid, 'content': content,
-                'raw_message': raw_json, 'direction': 'receive',
-            })
-            self._push_web_log('message', {
-                'message_id': msg_id, 'user_id': uid,
-                'group_id': gid, 'content': content, 'direction': 'receive',
-                'appid': appid, 'bot_name': bot.name,
-                'bot_qq': getattr(bot, 'robot_qq', '') or '', 'event_type': et,
-                'reference_id': getattr(event, 'message_reference_id', '') or '',
-                'raw_message': raw_json,
-            })
-            if uid:
+            self._record_message_event(bot, event, appid)
+            if event.user_id:
                 self._enqueue_track(bot, event, appid)
 
 

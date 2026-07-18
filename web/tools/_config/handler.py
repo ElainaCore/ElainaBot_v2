@@ -1,10 +1,19 @@
-"""配置文件管理 — YAML 配置读写(保留注释 + 按钮序列化)"""
+"""配置文件管理 — YAML 配置读写(保留注释 + 按钮序列化) / 扫码快捷绑定机器人"""
 
+import base64
+import contextlib
 import os
 import re
+import secrets
+import time
+from urllib.parse import quote
 
+import aiohttp
 import yaml
 from aiohttp import web
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+from web.response import error, ok
 
 _base_dir = ''
 
@@ -204,7 +213,7 @@ async def handle_get_config(request: web.Request):
             result[name] = cfg._resolve_env_vars(raw_text)
         else:
             result[name] = ''
-    return web.json_response({'success': True, **result})
+    return ok(result)
 
 
 async def handle_save_config(request: web.Request):
@@ -213,9 +222,9 @@ async def handle_save_config(request: web.Request):
         file_name = body.get('file', '')
         content = body.get('content', '')
         if file_name not in ('bot', 'settings', 'templates'):
-            return web.json_response({'success': False, 'error': '无效的配置文件名'}, status=400)
+            return error('无效的配置文件名', status=400)
         if not content:
-            return web.json_response({'success': False, 'error': '内容不能为空'}, status=400)
+            return error('内容不能为空', status=400)
 
         cdir = _config_dir()
         path = os.path.join(cdir, f'{file_name}.yaml')
@@ -247,6 +256,161 @@ async def handle_save_config(request: web.Request):
             mtime = os.path.getmtime(path)
             cfg._do_reload('bot', path, mtime)
 
-        return web.json_response({'success': True, 'message': '配置已保存'})
+        return ok(message='配置已保存')
     except Exception as e:
-        return web.json_response({'success': False, 'error': str(e)}, status=500)
+        return error(str(e), status=500)
+
+
+# ===== 扫码快捷绑定机器人 =====
+
+_BIND_URL = 'https://q.qq.com/qqbot/openclaw/connect.html?task_id={task_id}&source=elainabot&_wv=2'
+_BIND_TASK_TTL = 600
+_bind_tasks: dict = {}  # task_id -> (创建时间戳, 解密 key)
+
+
+def _get_bind_api():
+    from web.tools._bot.api import get_bot_api
+
+    return get_bot_api()
+
+
+def _prune_bind_tasks():
+    now = time.time()
+    for tid in [t for t, (ts, _) in _bind_tasks.items() if now - ts > _BIND_TASK_TTL]:
+        _bind_tasks.pop(tid, None)
+
+
+def _decrypt_bind_secret(encrypted_b64: str, key_b64: str) -> str:
+    """AES-256-GCM 解密: 密文 = nonce(12) + 正文 + tag(16)"""
+    raw = base64.b64decode(encrypted_b64)
+    key = base64.b64decode(key_b64)
+    nonce, body = raw[:12], raw[12:]
+    decrypted: bytes = AESGCM(key).decrypt(nonce, body, None)
+    return decrypted.decode('utf-8')
+
+
+async def _fetch_bot_profile(appid: str, secret: str) -> dict:
+    """用绑定到的凭据请求 /users/@me, 提取机器人昵称和 QQ 号"""
+    profile = {'name': '', 'robot_qq': ''}
+    timeout = aiohttp.ClientTimeout(total=10)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.post(
+            'https://bots.qq.com/app/getAppAccessToken',
+            json={'appId': appid, 'clientSecret': secret},
+        ) as r:
+            token = (await r.json(content_type=None)).get('access_token', '')
+        if not token:
+            return profile
+        async with session.get(
+            'https://api.sgroup.qq.com/users/@me',
+            headers={'Authorization': f'QQBot {token}'},
+        ) as r:
+            data = await r.json(content_type=None)
+    if not isinstance(data, dict):
+        return profile
+    profile['name'] = str(data.get('username', '') or '')
+    for field in ('avatar', 'share_url'):
+        m = re.search(r'[?&](?:nk|dst_uin|robot_uin|uin)=(\d+)', str(data.get(field, '') or ''))
+        if m:
+            profile['robot_qq'] = m.group(1)
+            break
+    return profile
+
+
+def _apply_bound_bot(appid: str, secret: str, robot_qq: str = '') -> bool:
+    """将绑定结果写入 bot.yaml 并热重载, 返回是否为新增机器人"""
+    path = os.path.join(_config_dir(), 'bot.yaml')
+    data: dict[str, object] = {}
+    if os.path.exists(path):
+        with open(path, encoding='utf-8') as f:
+            original = f.read()
+        with open(path + '.bak', 'w', encoding='utf-8') as fb:
+            fb.write(original)
+        data = yaml.safe_load(original) or {}
+    bots = data.get('bots')
+    if not isinstance(bots, list):
+        bots = []
+    data['bots'] = bots
+    created = True
+    for bot in bots:
+        if isinstance(bot, dict) and str(bot.get('appid') or '').strip() == appid:
+            bot['secret'] = secret
+            bot['enabled'] = True
+            if robot_qq and not str(bot.get('robot_qq') or '').strip():
+                bot['robot_qq'] = robot_qq
+            if not isinstance(bot.get('websocket'), dict):
+                bot['websocket'] = {'enabled': True}
+            created = False
+            break
+    if created:
+        bots.append(
+            {
+                'enabled': True,
+                'appid': appid,
+                'secret': secret,
+                'robot_qq': robot_qq,
+                'owner_ids': [],
+                'websocket': {'enabled': True},
+            }
+        )
+    content = '# ===== 机器人配置 =====\n# 支持多机器人，每个机器人独立配置\n# 修改后自动热加载，无需重启\n\n' + yaml.dump(
+        data, allow_unicode=True, sort_keys=False, default_flow_style=False
+    )
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write(content)
+
+    from core.base.config import cfg
+
+    cfg._do_reload('bot', path, os.path.getmtime(path))
+    return created
+
+
+async def handle_qr_bind_start(request: web.Request):
+    """创建扫码绑定任务, 返回二维码内容 URL"""
+    api = _get_bind_api()
+    key = base64.b64encode(secrets.token_bytes(32)).decode()
+    resp = await api.create_bind_task(key)
+    task_id = (resp.get('data') or {}).get('task_id') if resp.get('retcode') == 0 else None
+    if not task_id:
+        return error(resp.get('msg') or '创建绑定任务失败')
+    _prune_bind_tasks()
+    task_id = str(task_id)
+    _bind_tasks[task_id] = (time.time(), key)
+    return ok({'task_id': task_id, 'url': _BIND_URL.format(task_id=quote(task_id))})
+
+
+async def handle_qr_bind_poll(request: web.Request):
+    """轮询绑定结果; 扫码完成后解密 Secret 并自动写入 bot.yaml"""
+    body = await request.json()
+    task_id = str(body.get('task_id') or '')
+    entry = _bind_tasks.get(task_id)
+    if not entry:
+        return error('绑定任务不存在或已过期', status=200, data={'status': 'not_found'})
+    api = _get_bind_api()
+    resp = await api.poll_bind_result(task_id)
+    if resp.get('retcode') != 0:
+        return error(resp.get('msg') or '查询绑定结果失败', status=200, data={'status': 'error'})
+    d = resp.get('data') or {}
+    status = d.get('status')
+    if status == 2:  # COMPLETED
+        _bind_tasks.pop(task_id, None)
+        appid = str(d.get('bot_appid') or '')
+        encrypted = d.get('bot_encrypt_secret') or ''
+        if not appid or not encrypted:
+            return error('绑定结果缺少 AppID/Secret', status=200, data={'status': 'error'})
+        try:
+            secret = _decrypt_bind_secret(encrypted, entry[1])
+        except Exception as e:
+            return error(f'解密 Secret 失败: {e}', status=200, data={'status': 'error'})
+        robot_qq = ''
+        with contextlib.suppress(Exception):
+            robot_qq = (await _fetch_bot_profile(appid, secret)).get('robot_qq', '')
+        try:
+            created = _apply_bound_bot(appid, secret, robot_qq)
+        except Exception as e:
+            return error(f'写入配置失败: {e}', status=200, data={'status': 'error'})
+        return ok({'status': 'completed', 'appid': appid, 'created': created})
+    if status == 3:  # EXPIRED
+        _bind_tasks.pop(task_id, None)
+        return ok({'status': 'expired'})
+    return ok({'status': 'waiting'})

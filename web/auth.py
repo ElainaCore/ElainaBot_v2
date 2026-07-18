@@ -10,10 +10,12 @@ import threading
 import time
 import uuid
 from datetime import datetime, timedelta
+from functools import wraps
 
 from aiohttp import web
 
-_COOKIE_SECRET = ''
+from web.response import error
+
 _BAN_DURATION = 43200
 _SESSION_CLEANUP_INTERVAL = 300
 _IP_CLEANUP_INTERVAL = 3600
@@ -21,7 +23,6 @@ _FAIL_WINDOW = 86400
 _MAX_SESSIONS = 10
 _MAX_FAIL_COUNT = 5
 _SESSION_DAYS = 7
-_TOKEN_EXPIRY = 86400 * 7
 _MAX_IP_RECORDS = 10000
 
 valid_sessions: dict = {}
@@ -31,39 +32,17 @@ _last_ip_cleanup = 0
 _data_dir = ''
 _ip_file = ''
 _session_file = ''
-_secret_file = ''
 _io_lock = threading.Lock()  # 串行化文件写入, 避免内容交错损坏
 
 
 def init(base_dir: str):
-    global _data_dir, _ip_file, _session_file, _secret_file, _COOKIE_SECRET
+    global _data_dir, _ip_file, _session_file
     _data_dir = os.path.join(base_dir, 'data', 'web')
     os.makedirs(_data_dir, exist_ok=True)
     _ip_file = os.path.join(_data_dir, 'ip.json')
     _session_file = os.path.join(_data_dir, 'sessions.json')
-    _secret_file = os.path.join(_data_dir, '.cookie_secret')
-    _COOKIE_SECRET = _load_or_create_secret()
     _load_ip_data()
     _load_session_data()
-
-
-def _load_or_create_secret() -> str:
-    """从文件加载 cookie secret, 不存在则随机生成并持久化"""
-    if os.path.exists(_secret_file):
-        try:
-            with open(_secret_file, encoding='utf-8') as f:
-                secret = f.read().strip()
-                if len(secret) >= 32:
-                    return secret
-        except Exception:
-            pass
-    secret = base64.urlsafe_b64encode(os.urandom(48)).decode()
-    try:
-        with open(_secret_file, 'w', encoding='utf-8') as f:
-            f.write(secret)
-    except Exception:
-        pass
-    return secret
 
 
 # ==================== 密码 hash ====================
@@ -259,22 +238,6 @@ def cleanup_expired_ip_bans():
 
 def _generate_token() -> str:
     return base64.urlsafe_b64encode(uuid.uuid4().bytes + uuid.uuid4().bytes).decode().rstrip('=')
-
-
-def _sign(value) -> str:
-    sig = hmac.new(_COOKIE_SECRET.encode(), value.encode(), hashlib.sha256).hexdigest()
-    return f'{value}.{sig}'
-
-
-def _verify_sig(signed) -> tuple:
-    try:
-        value, sig = signed.rsplit('.', 1)
-        expected = hmac.new(_COOKIE_SECRET.encode(), value.encode(), hashlib.sha256).hexdigest()
-        return hmac.compare_digest(sig, expected), value
-    except Exception:
-        return False, None
-
-
 # ==================== Session ====================
 
 
@@ -364,13 +327,12 @@ def validate_token(request: web.Request) -> bool:
 def require_auth(handler):
     """aiohttp 路由装饰器: 要求 Bearer token"""
 
+    @wraps(handler)
     async def wrapped(request):
         if not validate_token(request):
-            return web.json_response({'success': False, 'error': '未登录或会话已过期'}, status=401)
+            return error('未登录或会话已过期', status=401)
         return await handler(request)
 
-    wrapped.__name__ = handler.__name__
-    wrapped.__qualname__ = handler.__qualname__
     return wrapped
 
 

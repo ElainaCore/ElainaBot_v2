@@ -11,8 +11,8 @@ class TestConfigGet:
         assert resp.status == 200
         data = await resp.json()
         assert_success_response(data)
-        assert 'bot' in data
-        assert 'settings' in data
+        assert 'bot' in data['data']
+        assert 'settings' in data['data']
 
     async def test_get_config_no_auth(self, api_client):
         resp = await api_client.get('/api/config')

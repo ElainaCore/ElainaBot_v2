@@ -1,0 +1,1 @@
+var n=Math.pow;function o(r){return r<1024?`${r} B`:r<n(1024,2)?`${(r/1024).toFixed(1)} KB`:`${(r/n(1024,2)).toFixed(1)} MB`}function u(r,t=""){if(!r)return t;try{return new URL(r).hostname}catch(e){return r}}export{o as f,u};

@@ -4,26 +4,37 @@ import json
 import logging
 import os
 import time
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
-from aiohttp import web
+from aiohttp import ClientError, ClientSession, ClientTimeout, web
+from aiohttp.web_request import FileField
 
 log = logging.getLogger('ElainaBot.web.openapi')
 
+# 旧开放平台 (机器人专用通道) 凭证: uin/developerId/ticket, 供系统插件与旧接口使用
 _openapi_user_data: dict = {}
+# 新开放平台 (q.qq.com) 凭证: b_token/qticket_lite 等, 与旧平台隔离存储
+_openapi_v2_data: dict = {}
 _openapi_login_tasks: dict = {}
+_openapi_v2_login_tasks: dict = {}
 _data_file = ''
+_v2_dir = ''
 _bot_api = None
 _bot_manager = None
 
 _WEBHOOK_ALLOWED_PORTS = {'80', '8080', '443', '8443'}
+_AVATAR_MAX_SIZE = 2 * 1024 * 1024
 
 
 def set_context(base_dir: str, bot_manager=None):
-    global _data_file, _bot_manager
-    _data_file = os.path.join(base_dir, 'data', 'openapi.json')
+    global _data_file, _v2_dir, _bot_manager
+    # 旧平台凭证 (机器人专用通道): web/open/openapi.json
+    _data_file = os.path.join(base_dir, 'web', 'open', 'openapi.json')
+    # 新平台凭证 (q.qq.com): web/new_open/<user_id>.json, 与旧平台隔离
+    _v2_dir = os.path.join(base_dir, 'web', 'new_open')
     _bot_manager = bot_manager
     _load_data()
+    _load_v2()
 
 
 def _load_data():
@@ -43,6 +54,46 @@ def _save_data():
             json.dump(_openapi_user_data, f, indent=2, ensure_ascii=False)
     except Exception:
         pass
+
+
+def _load_v2():
+    """加载新开放平台凭证 (data/open/<user_id>.json)"""
+    global _openapi_v2_data
+    _openapi_v2_data = {}
+    try:
+        if not _v2_dir or not os.path.isdir(_v2_dir):
+            return
+        for name in os.listdir(_v2_dir):
+            if not name.endswith('.json'):
+                continue
+            with open(os.path.join(_v2_dir, name), encoding='utf-8') as f:
+                _openapi_v2_data[name[:-5]] = json.load(f)
+    except Exception:
+        _openapi_v2_data = {}
+
+
+def _save_v2(user_id):
+    try:
+        os.makedirs(_v2_dir, exist_ok=True)
+        path = os.path.join(_v2_dir, f'{user_id}.json')
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(_openapi_v2_data.get(user_id, {}), f, indent=2, ensure_ascii=False)
+    except Exception:
+        pass
+
+
+def _remove_v2(user_id):
+    _openapi_v2_data.pop(user_id, None)
+    try:
+        path = os.path.join(_v2_dir, f'{user_id}.json')
+        if os.path.exists(path):
+            os.remove(path)
+    except Exception:
+        pass
+
+
+def _v2_get(user_id):
+    return _openapi_v2_data.get(user_id)
 
 
 def _get_user_data(user_id):
@@ -65,8 +116,8 @@ def _get_bot_api():
     return _bot_api
 
 
-def _err(msg, status=200):
-    return web.json_response({'success': False, 'message': msg}, status=status)
+def _err(msg, status=200, **kwargs):
+    return web.json_response({'success': False, 'message': msg, **kwargs}, status=status)
 
 
 def _ok(**kwargs):
@@ -87,14 +138,45 @@ def _require_api_and_login(body):
 # ==================== 登录 ====================
 
 
+def _apply_login(user_id, creds):
+    """把一次扫码得到的凭证隔离写入新/旧两个存储。
+
+    新平台 (data/open/): b_token/qticket_lite/qticket/developer_id_lite/uin/skey
+    旧平台 (data/openapi.json): uin/developerId/ticket, 供系统插件与旧接口使用
+    """
+    quid = creds.get('developer_id_lite') or creds.get('developerId') or ''
+    uin = creds.get('uin') or ''
+    # 新平台隔离存储
+    v2 = {'type': 'ok'}
+    for k in ('b_token', 'qticket_lite', 'qticket', 'developer_id_lite', 'uin', 'skey', 'p_skey'):
+        if creds.get(k):
+            v2[k] = creds[k]
+    if quid:
+        v2['developerId'] = quid
+    _openapi_v2_data[user_id] = v2
+    _save_v2(user_id)
+    # 旧平台存储 (保留已选 appId)
+    old = _openapi_user_data.get(user_id) or {}
+    old.update(
+        {
+            'type': 'ok',
+            'uin': uin,
+            'developerId': quid,
+            'ticket': creds.get('qticket') or old.get('ticket', ''),
+        }
+    )
+    _openapi_user_data[user_id] = old
+    _save_data()
+
+
 async def handle_start_login(request: web.Request):
+    """旧版面板登录: q.qq.com 机器人专用扫码通道 (qrcode type 777)"""
     api = _get_bot_api()
     if not api:
         return _err('bot_api 模块未加载')
     body = await request.json()
     user_id = body.get('user_id', 'web_user')
     login_data = await api.create_login_qr()
-    log.info(f'[OpenAPI] create_login_qr 返回: {login_data}')
     if login_data.get('status') != 'success' or not login_data.get('url') or not login_data.get('qr'):
         return _err(f'获取二维码失败: {login_data.get("message", str(login_data))}')
     _openapi_login_tasks[user_id] = (time.time(), {'qr': login_data['qr']})
@@ -111,15 +193,26 @@ async def handle_check_login(request: web.Request):
         return _err('bot_api 模块未加载')
     body = await request.json()
     user_id = body.get('user_id', 'web_user')
-    if user_id not in _openapi_login_tasks:
+    task = _openapi_login_tasks.get(user_id)
+    if not task:
         return web.json_response({'success': False, 'status': 'not_started', 'message': '未找到登录任务'})
-    qr = _openapi_login_tasks[user_id][1]['qr']
-    res = await api.get_qr_login_info(qrcode=qr)
+    qr = task[1]['qr']
+    res, cookies = await api.get_qr_login_info(qrcode=qr, return_cookies=True)
     if res.get('code') == 0:
         ld = res.get('data', {}).get('data', {})
-        _openapi_user_data[user_id] = {'type': 'ok', **ld}
+        old = _openapi_user_data.get(user_id) or {}
+        old.update({'type': 'ok', **ld})
+        _openapi_user_data[user_id] = old
         _openapi_login_tasks.pop(user_id, None)
         _save_data()
+        from web.tools._bot.api import extract_login_creds
+
+        v2_creds = extract_login_creds(cookies)
+        if v2_creds.get('b_token'):
+            v2 = _openapi_v2_data.get(user_id) or {'type': 'ok'}
+            v2.update(v2_creds)
+            _openapi_v2_data[user_id] = v2
+            _save_v2(user_id)
         return web.json_response(
             {
                 'success': True,
@@ -128,6 +221,56 @@ async def handle_check_login(request: web.Request):
             }
         )
     return web.json_response({'success': True, 'status': 'waiting', 'message': '等待扫码'})
+
+
+async def handle_v2_start_login(request: web.Request):
+    """新版面板登录: q.qq.com 官方 ptlogin 扫码流程"""
+    api = _get_bot_api()
+    if not api:
+        return _err('bot_api 模块未加载')
+    body = await request.json()
+    user_id = body.get('user_id', 'web_user')
+    from web.tools._bot.api import QQScanLogin
+
+    login = QQScanLogin(auto_select=False)
+    res = await login.start()
+    if res['status'] == 'failed' or not res.get('qr_image'):
+        return _err(f'获取二维码失败: {res.get("error") or "未知错误"}')
+    _openapi_v2_login_tasks[user_id] = login
+    return _ok(qr_image=res['qr_image'], message='请扫描二维码登录')
+
+
+async def handle_v2_check_login(request: web.Request):
+    body = await request.json()
+    user_id = body.get('user_id', 'web_user')
+    login = _openapi_v2_login_tasks.get(user_id)
+    if login is None:
+        return web.json_response({'success': False, 'status': 'not_started', 'message': '未找到登录任务'})
+    developer_id = str(body.get('developer_id') or '')
+    res = await login.select_developer(developer_id) if developer_id else await login.poll()
+    status = res['status']
+    if status == 'logged_in':
+        _apply_login(user_id, res['creds'] or {})
+        _openapi_v2_login_tasks.pop(user_id, None)
+        ud = _openapi_user_data.get(user_id, {})
+        return web.json_response(
+            {
+                'success': True,
+                'status': 'logged_in',
+                'data': {'uin': ud.get('uin', ''), 'developerId': ud.get('developerId', '')},
+            }
+        )
+    if status == 'failed':
+        _openapi_v2_login_tasks.pop(user_id, None)
+        return web.json_response({'success': False, 'status': 'failed', 'message': res.get('error') or '登录失败'})
+    payload = {'success': True, 'status': status}
+    if status == 'waiting' and res.get('qr_image'):
+        payload['qr_image'] = res['qr_image']
+    if status == 'selecting':
+        payload['developers'] = res.get('developers') or []
+        if res.get('error'):
+            payload['message'] = res['error']
+    return web.json_response(payload)
 
 
 async def handle_get_login_status(request: web.Request):
@@ -144,6 +287,9 @@ async def handle_logout(request: web.Request):
     user_id = body.get('user_id', 'web_user')
     _openapi_user_data.pop(user_id, None)
     _save_data()
+    _remove_v2(user_id)
+    _openapi_login_tasks.pop(user_id, None)
+    _openapi_v2_login_tasks.pop(user_id, None)
     return _ok(message='登出成功')
 
 
@@ -153,7 +299,7 @@ async def handle_logout(request: web.Request):
 async def handle_get_botlist(request: web.Request):
     body = await request.json()
     api, ud, err = _require_api_and_login(body)
-    if err:
+    if err is not None:
         return err
     res = await api.get_bot_list(uin=ud.get('uin'), quid=ud.get('developerId'), ticket=ud.get('ticket'))
     if res.get('code') != 0:
@@ -166,7 +312,7 @@ async def handle_get_botlist(request: web.Request):
 async def handle_get_botdata(request: web.Request):
     body = await request.json()
     api, ud, err = _require_api_and_login(body)
-    if err:
+    if err is not None:
         return err
     appid = body.get('appid') or ud.get('appId')
     try:
@@ -225,7 +371,7 @@ async def handle_get_botdata(request: web.Request):
 async def handle_get_notifications(request: web.Request):
     body = await request.json()
     api, ud, err = _require_api_and_login(body)
-    if err:
+    if err is not None:
         return err
     res = await api.get_private_messages(uin=ud.get('uin'), quid=ud.get('developerId'), ticket=ud.get('ticket'))
     if res.get('code', 0) != 0:
@@ -280,7 +426,7 @@ async def handle_verify_saved_login(request: web.Request):
 async def handle_get_whitelist(request: web.Request):
     body = await request.json()
     api, ud, err = _require_api_and_login(body)
-    if err:
+    if err is not None:
         return err
     appid = body.get('appid') or ud.get('appId')
     if not appid:
@@ -306,7 +452,7 @@ async def handle_get_whitelist(request: web.Request):
 async def _batch_whitelist_op(body, action='add'):
     """白名单批量操作公共逻辑"""
     api, ud, err = _require_api_and_login(body)
-    if err:
+    if err is not None:
         return err
     appid = body.get('appid') or ud.get('appId')
     qrcode, ip_list = body.get('qrcode', ''), body.get('ip_list', [])
@@ -343,7 +489,7 @@ async def handle_update_whitelist(request: web.Request):
 async def handle_get_delete_qr(request: web.Request):
     body = await request.json()
     api, ud, err = _require_api_and_login(body)
-    if err:
+    if err is not None:
         return err
     appid = body.get('appid') or ud.get('appId')
     if not appid:
@@ -366,7 +512,7 @@ async def handle_get_delete_qr(request: web.Request):
 async def handle_check_delete_auth(request: web.Request):
     body = await request.json()
     api, ud, err = _require_api_and_login(body)
-    if err:
+    if err is not None:
         return err
     appid = body.get('appid') or ud.get('appId')
     qrcode = body.get('qrcode', '')
@@ -386,7 +532,7 @@ async def handle_check_delete_auth(request: web.Request):
 async def handle_execute_delete_ip(request: web.Request):
     body = await request.json()
     api, ud, err = _require_api_and_login(body)
-    if err:
+    if err is not None:
         return err
     appid = body.get('appid') or ud.get('appId')
     ip, qrcode = body.get('ip', '').strip(), body.get('qrcode', '')
@@ -415,7 +561,7 @@ handle_batch_add_whitelist = handle_update_whitelist
 async def handle_get_event_list(request: web.Request):
     body = await request.json()
     api, ud, err = _require_api_and_login(body)
-    if err:
+    if err is not None:
         return err
     appid = body.get('appid') or ud.get('appId')
     if not appid:
@@ -436,7 +582,7 @@ async def handle_get_event_list(request: web.Request):
 async def handle_get_event_auth_qr(request: web.Request):
     body = await request.json()
     api, ud, err = _require_api_and_login(body)
-    if err:
+    if err is not None:
         return err
     appid = body.get('appid') or ud.get('appId')
     if not appid:
@@ -460,7 +606,7 @@ async def handle_get_event_auth_qr(request: web.Request):
 async def handle_modify_event_subscription(request: web.Request):
     body = await request.json()
     api, ud, err = _require_api_and_login(body)
-    if err:
+    if err is not None:
         return err
     appid = body.get('appid') or ud.get('appId')
     qrcode = body.get('qrcode', '')
@@ -486,7 +632,7 @@ async def handle_modify_event_subscription(request: web.Request):
 async def handle_get_webhook(request: web.Request):
     body = await request.json()
     api, ud, err = _require_api_and_login(body)
-    if err:
+    if err is not None:
         return err
     appid = body.get('appid') or ud.get('appId')
     if not appid:
@@ -506,7 +652,7 @@ async def handle_webhook_suggest(request: web.Request):
     """当本面板端口为 80/8080/443/8443 且框架本地存在该 appid 机器人时, 返回可自动填入的本机回调地址"""
     body = await request.json()
     api, ud, err = _require_api_and_login(body)
-    if err:
+    if err is not None:
         return err
     appid = body.get('appid') or ud.get('appId')
     if not appid:
@@ -528,7 +674,7 @@ async def handle_webhook_suggest(request: web.Request):
 async def handle_check_webhook(request: web.Request):
     body = await request.json()
     api, ud, err = _require_api_and_login(body)
-    if err:
+    if err is not None:
         return err
     appid = body.get('appid') or ud.get('appId')
     webhook_url = body.get('webhook_url', '')
@@ -551,7 +697,7 @@ handle_get_webhook_auth_qr = handle_get_event_auth_qr
 async def handle_set_webhook(request: web.Request):
     body = await request.json()
     api, ud, err = _require_api_and_login(body)
-    if err:
+    if err is not None:
         return err
     appid = body.get('appid') or ud.get('appId')
     qrcode = body.get('qrcode', '')
@@ -569,3 +715,282 @@ async def handle_set_webhook(request: web.Request):
     if res.get('code', 0) != 0:
         return _err(res.get('msg') or '设置回调地址失败')
     return _ok(message='回调地址设置成功')
+
+
+# ==================== 新版开放平台 (v2) ====================
+
+_V2_ALLOWED_PREFIXES = ('/cgi-bin/v2/', '/bopen/v2/', '/api/v3/login/', '/api/v1/logout')
+
+
+def _v2_cookie(ud):
+    quid = ud.get('developer_id_lite') or ud.get('developerId') or ''
+    parts = []
+    if ud.get('uin'):
+        parts.append(f'quin={ud["uin"]}')
+    if quid:
+        parts.extend([f'quid={quid}', f'developerId={quid}', f'developer_id_lite={quid}'])
+    if ud.get('b_token'):
+        parts.append(f'b-token={ud["b_token"]}')
+    if ud.get('qticket_lite'):
+        parts.append(f'qticket_lite={ud["qticket_lite"]}')
+    if ud.get('qticket'):
+        parts.append(f'qticket={ud["qticket"]}')
+    if ud.get('skey'):
+        parts.append(f'skey={ud["skey"]}')
+    if ud.get('p_skey'):
+        parts.append(f'p_skey={ud["p_skey"]}')
+    return '; '.join(parts)
+
+
+def _v2_ready(ud):
+    required = ('b_token', 'qticket_lite', 'developer_id_lite', 'uin', 'skey')
+    return bool(ud and all(ud.get(key) for key in required))
+
+
+def _v2_relogin_message(result):
+    if not isinstance(result, dict):
+        return ''
+    containers = [result]
+    for key in ('data', 'common', 'res'):
+        value = result.get(key)
+        if isinstance(value, dict):
+            containers.append(value)
+    codes = {
+        value
+        for container in containers
+        for key in ('code', 'retcode', 'ret')
+        if isinstance((value := container.get(key)), int)
+    }
+    messages = [
+        str(value)
+        for container in containers
+        for key in ('message', 'msg')
+        if (value := container.get(key))
+    ]
+    message = next(
+        (text for text in messages if '重新登录' in text or '登录已过期' in text),
+        '',
+    )
+    failed = result.get('success') is False or any(code != 0 for code in codes)
+    if failed and (message or codes.intersection({10004, 30018})):
+        return message or '登录已过期，请重新登录'
+    return ''
+
+
+async def handle_v2_status(request: web.Request):
+    body = await request.json() if request.can_read_body else {}
+    ud = _v2_get(body.get('user_id', 'web_user'))
+    if not ud:
+        return _ok(logged_in=False, ready=False)
+    return _ok(
+        logged_in=True,
+        ready=_v2_ready(ud),
+        uin=ud.get('uin', ''),
+        developer_id=ud.get('developer_id_lite') or ud.get('developerId') or '',
+    )
+
+
+async def handle_v2_developers(request: web.Request):
+    body = await request.json() if request.can_read_body else {}
+    user_id = body.get('user_id', 'web_user')
+    ud = _v2_get(user_id)
+    if not ud:
+        return _err('未登录')
+    if not _v2_ready(ud):
+        return _err('新版开放平台未授权，请重新扫码登录')
+    api = _get_bot_api()
+    if not api:
+        return _err('bot_api 模块未加载')
+    result = await api.v2_request(
+        'GET',
+        '/api/v3/login/bopen/developer_list',
+        cookie=_v2_cookie(ud),
+        skey=ud.get('skey', ''),
+    )
+    relogin_message = _v2_relogin_message(result)
+    if relogin_message:
+        _remove_v2(user_id)
+        return _err(relogin_message, relogin=True)
+    response = result.get('res') if isinstance(result, dict) else None
+    if isinstance(response, dict) and response.get('ret') not in (None, 0):
+        return _err(str(response.get('msg') or '获取主体列表失败'))
+    from web.tools._bot.api import parse_login_developers
+
+    return _ok(
+        developers=parse_login_developers(result),
+        current_developer_id=ud.get('developer_id_lite') or ud.get('developerId') or '',
+    )
+
+
+async def handle_v2_switch_developer(request: web.Request):
+    body = await request.json()
+    user_id = body.get('user_id', 'web_user')
+    developer_id = str(body.get('developer_id') or '')
+    if not developer_id:
+        return _err('请选择开发者主体')
+    ud = _v2_get(user_id)
+    if not ud:
+        return _err('未登录')
+    if not _v2_ready(ud):
+        return _err('新版开放平台未授权，请重新扫码登录')
+    api = _get_bot_api()
+    if not api:
+        return _err('bot_api 模块未加载')
+
+    list_result = await api.v2_request(
+        'GET',
+        '/api/v3/login/bopen/developer_list',
+        cookie=_v2_cookie(ud),
+        skey=ud.get('skey', ''),
+    )
+    relogin_message = _v2_relogin_message(list_result)
+    if relogin_message:
+        _remove_v2(user_id)
+        return _err(relogin_message, relogin=True)
+    from web.tools._bot.api import extract_login_creds, parse_login_developers
+
+    developers = parse_login_developers(list_result)
+    if developer_id not in {item['id'] for item in developers}:
+        return _err('请选择有效的开发者主体')
+
+    result, cookies = await api.v2_switch_developer(
+        developer_id,
+        cookie=_v2_cookie(ud),
+        skey=ud.get('skey', ''),
+    )
+    if not isinstance(result, dict):
+        return _err('切换主体失败')
+    ret = result.get('ret')
+    if ret not in (None, 0):
+        return _err(str(result.get('msg') or '切换主体失败'))
+
+    ud.update(extract_login_creds(cookies))
+    ud['developer_id_lite'] = developer_id
+    ud['developerId'] = developer_id
+    _save_v2(user_id)
+    old = _openapi_user_data.get(user_id) or {}
+    old['developerId'] = developer_id
+    if ud.get('qticket'):
+        old['ticket'] = ud['qticket']
+    _openapi_user_data[user_id] = old
+    _save_data()
+    return _ok(developer_id=developer_id, message='主体切换成功')
+
+
+async def handle_v2_proxy(request: web.Request):
+    """新版开放平台接口通用代理: 转发前端与 q.qq.com 完全一致的请求"""
+    body = await request.json()
+    api = _get_bot_api()
+    if not api:
+        return _err('bot_api 模块未加载')
+    user_id = body.get('user_id', 'web_user')
+    ud = _v2_get(user_id)
+    if not ud:
+        return _err('未登录')
+    if not _v2_ready(ud):
+        return _err('新版开放平台未授权，请重新扫码登录', status=200)
+    path = body.get('path', '')
+    if not any(path.startswith(p) for p in _V2_ALLOWED_PREFIXES):
+        return _err('非法的接口路径')
+    method = body.get('method', 'POST')
+    result = await api.v2_request(
+        method,
+        path,
+        cookie=_v2_cookie(ud),
+        skey=ud.get('skey', ''),
+        data=body.get('payload'),
+        params=body.get('params'),
+    )
+    if path == '/cgi-bin/v2/datareport/export' and isinstance(result, dict):
+        content = result.get('data')
+        if result.get('retcode') == 0 and isinstance(content, str):
+            if not content.startswith('\ufeff'):
+                content = f'\ufeff{content}'
+            return web.Response(
+                body=content.encode(),
+                headers={
+                    'Content-Type': 'text/csv; charset=utf-8',
+                    'Content-Disposition': 'attachment; filename=report.csv',
+                },
+            )
+    if isinstance(result, dict) and result.get('_binary'):
+        return web.Response(
+            body=result['content'],
+            headers={
+                'Content-Type': result['content_type'],
+                'Content-Disposition': result.get('disposition') or 'attachment',
+            },
+        )
+    relogin_message = _v2_relogin_message(result)
+    if relogin_message:
+        _remove_v2(user_id)
+        return _err(relogin_message, relogin=True)
+    return web.json_response(result)
+
+
+async def handle_v2_upload_avatar(request: web.Request):
+    form = await request.post()
+    user_id = str(form.get('user_id', 'web_user'))
+    file = form.get('file')
+    if not isinstance(file, FileField) or not file.content_type.startswith('image/'):
+        return _err('请选择图片文件')
+    content = file.file.read(_AVATAR_MAX_SIZE + 1)
+    if len(content) > _AVATAR_MAX_SIZE:
+        return _err('图片需小于 2MB')
+
+    api = _get_bot_api()
+    if not api:
+        return _err('bot_api 模块未加载')
+    ud = _v2_get(user_id)
+    if not ud:
+        return _err('未登录')
+    if not _v2_ready(ud):
+        return _err('新版开放平台未授权，请重新扫码登录')
+    try:
+        bot_appid = int(str(form.get('bot_appid', 0)))
+    except ValueError:
+        return _err('机器人 AppID 无效')
+
+    result = await api.v2_request(
+        'POST',
+        '/cgi-bin/v2/resource/pre_upload',
+        cookie=_v2_cookie(ud),
+        skey=ud.get('skey', ''),
+        data={
+            'type': 2,
+            'bot_appid': bot_appid,
+        },
+    )
+    if not isinstance(result, dict):
+        return _err('获取上传地址失败')
+    relogin_message = _v2_relogin_message(result)
+    if relogin_message:
+        _remove_v2(user_id)
+        return _err(relogin_message, relogin=True)
+    if result.get('retcode') not in (None, 0) or result.get('code') not in (None, 0):
+        return _err(str(result.get('msg') or result.get('message') or '获取上传地址失败'))
+    data = result.get('data')
+    payload = data if isinstance(data, dict) else result
+    upload_url = result.get('upload_url') or payload.get('upload_url')
+    upload_id = result.get('upload_id') or payload.get('upload_id')
+    parsed = urlparse(upload_url if isinstance(upload_url, str) else '')
+    if parsed.scheme != 'https' or not (parsed.hostname or '').endswith('.myqcloud.com') or not upload_id:
+        return _err('获取上传地址失败')
+
+    try:
+        async with (
+            ClientSession(timeout=ClientTimeout(total=30)) as session,
+            session.put(
+                upload_url,
+                data=content,
+                headers={
+                    'Content-Type': file.content_type,
+                    'x-cos-forbid-overwrite': 'true',
+                },
+            ) as response,
+        ):
+            if response.status < 200 or response.status >= 300:
+                return _err(f'图片上传失败: HTTP {response.status}')
+    except (ClientError, TimeoutError):
+        return _err('图片上传失败')
+    return _ok(upload_id=upload_id)

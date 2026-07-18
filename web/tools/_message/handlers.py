@@ -115,11 +115,7 @@ async def handle_get_chats(request: web.Request):
                     bot = next(iter(_shared._bot_manager._bots.values()), None) if _shared._bot_manager else None
                     appid_default = next(iter(_shared._bot_manager._bots), '') if _shared._bot_manager and _shared._bot_manager._bots else ''
                     remarks = _load_remarks()
-                    if chat_type == 'remark':
-                        # 仅显示有备注的群
-                        source_ids = set(remarks.keys())
-                    else:
-                        source_ids = fa_ids
+                    source_ids = set(remarks.keys()) if chat_type == 'remark' else fa_ids
                     chats = [{
                         'chat_id': gid,
                         'appid': appid_filter or appid_default,
@@ -202,10 +198,7 @@ async def handle_get_chat_history(request: web.Request):
     # 查询群成员加入/退出事件
     lifecycle_rows = []
     if chat_type == 'group':
-        if before_date:
-            lc_dates = [before_date]
-        else:
-            lc_dates = _recent_dates(1)
+        lc_dates = [before_date] if before_date else _recent_dates(1)
         lifecycle_rows = await loop.run_in_executor(
             None, _query_lifecycle_events_sync, chat_type, chat_id, appid_filter, lc_dates
         )
@@ -337,6 +330,8 @@ async def handle_send_message(request: web.Request):
         msg_type = fields.get('msg_type', 'text')
         content = fields.get('content', '').strip()
         msg_id = fields.get('msg_id', '')
+        send_mode = fields.get('send_mode', 'default') or 'default'
+        custom_id = fields.get('custom_id', '').strip()
         message_reference_id = fields.get('message_reference_id', '').strip()
         quote_message_id = (fields.get('quote_message_id') or fields.get('message_reference_message_id') or '').strip()
         media_file_type = int(fields.get('media_file_type', '1'))
@@ -359,8 +354,18 @@ async def handle_send_message(request: web.Request):
         if not message_reference_id and quote_message_id:
             message_reference_id = _lookup_reference_id(bot, chat_type, chat_id, quote_message_id)
 
-        # 全量群只用主动消息, 不需要被动消息 msg_id, 引用走 message_reference
-        if chat_type == 'group' and chat_id in _get_full_access_group_ids():
+        # 发送方式: default=全量群主动/普通群被动, active=主动, passive=被动,
+        # custom_msg_id/custom_event_id=手动指定 ID
+        event_id = ''
+        if send_mode == 'active':
+            msg_id = ''
+        elif send_mode == 'custom_msg_id':
+            msg_id = custom_id
+        elif send_mode == 'custom_event_id':
+            msg_id = ''
+            event_id = custom_id
+        elif send_mode != 'passive' and chat_type == 'group' and chat_id in _get_full_access_group_ids():
+            # 全量群默认只用主动消息, 不需要被动消息 msg_id, 引用走 message_reference
             msg_id = ''
 
         # 根据消息类型发送
@@ -379,6 +384,7 @@ async def handle_send_message(request: web.Request):
                 group_id=gid,
                 user_id=uid,
                 msg_id=msg_id,
+                event_id=event_id,
                 message_reference_id=message_reference_id,
             )
         elif msg_type == 'ark' and content:
@@ -389,6 +395,7 @@ async def handle_send_message(request: web.Request):
                 group_id=gid,
                 user_id=uid,
                 msg_id=msg_id,
+                event_id=event_id,
                 message_reference_id=message_reference_id,
             )
         elif msg_type == 'text' and image_data:
@@ -399,6 +406,7 @@ async def handle_send_message(request: web.Request):
                 group_id=gid,
                 user_id=uid,
                 msg_id=msg_id,
+                event_id=event_id,
                 message_reference_id=message_reference_id,
             )
         else:
@@ -409,6 +417,7 @@ async def handle_send_message(request: web.Request):
                 chat_id,
                 content,
                 msg_id=msg_id,
+                event_id=event_id,
                 msg_type=api_msg_type,
                 skip_suffix=True,
                 message_reference_id=message_reference_id,
@@ -617,9 +626,7 @@ def _get_group_members_sync(group_id):
     members: dict[str, dict] = {}
     for inst in _shared._bot_manager._bots.values():
         try:
-            rows = inst.log_service.query_data(
-                'SELECT users FROM groups_users WHERE group_id = ?', (group_id,)
-            )
+            rows = inst.log_service.query_data('SELECT users FROM groups_users WHERE group_id = ?', (group_id,))
             if rows and rows[0].get('users'):
                 users = json.loads(rows[0]['users'])
                 for u in users:

@@ -5,7 +5,7 @@ import asyncio
 import contextlib
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from core.base.logger import SERVICE, get_logger, on_error
 from core.storage._base import _BaseLogService
@@ -53,12 +53,25 @@ class LogService(_BaseLogService, ShareMixin, WakeupMixin):
         if not LogService._global_callbacks_registered:
             LogService._global_callbacks_registered = True
             on_error(LogService._global_error_dispatch)
-        await asyncio.get_running_loop().run_in_executor(None, self._ensure_today_message_schema)
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self._ensure_today_message_schema)
+        # 昨日库结构/索引后台预热, 避免首次统计查询时现场建索引
+        loop.run_in_executor(None, self._warm_yesterday_message_schema)
         await self._start_tasks()
 
     def _ensure_today_message_schema(self):
         """启动时主动校验当天 message.db 结构。"""
         self._get_conn(self._resolve_db_path('message'), 'message')
+
+    def _warm_yesterday_message_schema(self):
+        """预热昨日 message.db (补建缺失索引供同期对比查询)"""
+        try:
+            yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+            db_path = self._resolve_db_path('message', yesterday)
+            if os.path.isfile(db_path):
+                self._get_conn(db_path, 'message')
+        except Exception as e:
+            log.warning(f'[{self._log_tag}] 昨日消息库预热失败: {e}')
 
     async def shutdown(self):
         """关闭日志服务, 刷写缓冲"""
@@ -99,6 +112,7 @@ class LogService(_BaseLogService, ShareMixin, WakeupMixin):
                 _s(data.get('raw_message', '')),
                 _s(data.get('plugin_name', '')),
                 _s(data.get('direction', '')),
+                1 if data.get('at_bot', True) else 0,
                 _json_field(data, 'context', ''),
             )
         common = self._extract_common_row(log_type, data, ts)
@@ -111,6 +125,8 @@ class LogService(_BaseLogService, ShareMixin, WakeupMixin):
                 data.get('active_groups', 0),
                 data.get('total_messages', 0),
                 data.get('private_messages', 0),
+                data.get('received_messages', 0),
+                data.get('sent_messages', 0),
                 data.get('group_join_count', 0),
                 data.get('group_leave_count', 0),
                 data.get('friend_add_count', 0),

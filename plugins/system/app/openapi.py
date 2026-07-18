@@ -10,15 +10,19 @@ from core.base.config import cfg
 from core.base.logger import PLUGIN, get_logger
 from core.plugin.decorators import handler, on_load
 
+from ._reply import reply, sender_reply
+
 log = get_logger(PLUGIN, '开放平台')
 
 # ==================== 数据管理 ====================
 
 _PLUGIN_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(_PLUGIN_DIR)), 'data')
-os.makedirs(_DATA_DIR, exist_ok=True)
+_BASE_DIR = os.path.dirname(os.path.dirname(_PLUGIN_DIR))
+# 旧开放平台凭证: web/open/openapi.json (与 web 面板 handler 一致)
+_OLD_OPEN_DIR = os.path.join(_BASE_DIR, 'web', 'open')
+os.makedirs(_OLD_OPEN_DIR, exist_ok=True)
 
-_DATA_FILE = os.path.join(_DATA_DIR, 'openapi.json')
+_DATA_FILE = os.path.join(_OLD_OPEN_DIR, 'openapi.json')
 
 _user_data = {}  # {user_id: login_data}
 _login_tasks = {}  # {user_id: (timestamp, qr)}
@@ -51,6 +55,7 @@ def _load_data():
 
 def _save_data():
     try:
+        os.makedirs(_OLD_OPEN_DIR, exist_ok=True)
         with open(_DATA_FILE, 'w', encoding='utf-8') as f:
             json.dump(_user_data, f, indent=2, ensure_ascii=False)
     except Exception:
@@ -96,17 +101,17 @@ def _login_button():
 async def _reply_not_logged_in(event):
     content = f'<@{event.user_id}> 未查询到你的登录信息'
     if _use_md(event):
-        await event.reply(content, buttons=_login_button())
+        await reply(event, content, buttons=_login_button())
     else:
-        await event.reply(content)
+        await reply(event, content)
 
 
 async def _reply_expired(event):
     content = f'<@{event.user_id}>登录状态失效'
     if _use_md(event):
-        await event.reply(content, buttons=_login_button())
+        await reply(event, content, buttons=_login_button())
     else:
-        await event.reply(content)
+        await reply(event, content)
 
 
 @on_load
@@ -122,7 +127,7 @@ def _init():
 async def login(event, match):
     api = _get_api()
     if not api:
-        await event.reply('bot_api 模块未加载，无法登录')
+        await reply(event, 'bot_api 模块未加载，无法登录')
         return
 
     user_id = event.user_id
@@ -132,45 +137,37 @@ async def login(event, match):
     if user_id in _last_login_time and now - _last_login_time[user_id] < 20:
         return
     if user_id in _login_tasks and now - _login_tasks[user_id][0] < 15:
-        await event.reply('15秒内你已经申请一次登录了，请稍后重试。')
+        await reply(event, '15秒内你已经申请一次登录了，请稍后重试。')
         return
 
     _login_tasks[user_id] = (now, None)
 
-    # 创建登录二维码
     data = await api.create_login_qr()
     url = data.get('url')
     qr = data.get('qr')
     if not url or not qr:
-        await event.reply('获取登录二维码失败，请稍后重试')
+        await reply(event, '获取登录二维码失败，请稍后重试')
         _login_tasks.pop(user_id, None)
         return
 
-    # 发送二维码消息
     content = f'<@{user_id}>\n[QQ开发平台管理端登录]\n登录具有时效性，请尽快登录\n\n>当你选择登录，代表你已经同意将数据托管给伊蕾娜Bot。'
 
     if _use_md(event):
         login_btn = {'text': '点击登录', 'data': url, 'type': 0, 'style': 4}
         if event.is_group:
             login_btn['list'] = [user_id]
-        await event.reply(content, buttons=[[login_btn]])
+        await reply(event, content, buttons=[[login_btn]])
     else:
         display_url = url
         if '://' in url:
-            parts = url.split('://')
-            protocol = parts[0]
-            rest = parts[1]
-            if '/' in rest:
-                domain, path = rest.split('/', 1)
-                path = '/' + path
-            else:
-                domain, path = rest, ''
+            protocol, rest = url.split('://', 1)
+            domain, separator, path = rest.partition('/')
             if '.' in domain:
-                segs = domain.split('.')
-                segs[-1] = segs[-1].upper()
-                domain = '.'.join(segs)
-            display_url = f'{protocol}://{domain}{path}'
-        await event.reply(f'{content}\n\n登录链接: {display_url}')
+                segments = domain.split('.')
+                segments[-1] = segments[-1].upper()
+                domain = '.'.join(segments)
+            display_url = f'{protocol}://{domain}{separator}{path}'
+        await reply(event, f'{content}\n\n登录链接: {display_url}')
 
     # 后台轮询登录状态 (handler 返回后框架会清空 event._sender, 需在此提前捕获)
     sender = event._sender
@@ -192,11 +189,13 @@ async def _poll_login(event, sender, user_id, qr, use_md):
 
                 app_type = login_data.get('appType')
                 app_type_str = '小程序' if app_type == '0' else '机器人' if app_type == '2' else '未知'
-                content = f'[{login_data.get("uin")}]登录成功\n\n>登录类型：{app_type_str}\nAppId：{login_data.get("appId")}\n切换+appid可以切换机器人'
-
+                content = (
+                    f'[{login_data.get("uin")}]登录成功\n\n'
+                    f'>登录类型：{app_type_str}\nAppId：{login_data.get("appId")}\n切换+appid可以切换机器人'
+                )
                 buttons = _nav_buttons() if use_md else None
                 try:
-                    await sender.reply(event, content, buttons=buttons)
+                    await sender_reply(sender, event, content, buttons=buttons)
                 except Exception as e:
                     log.warning(f'登录成功回复失败: {e}')
 
@@ -208,7 +207,7 @@ async def _poll_login(event, sender, user_id, qr, use_md):
 
     # 超时
     with contextlib.suppress(Exception):
-        await sender.reply(event, f'<@{user_id}>登录失效，请重新尝试')
+        await sender_reply(sender, event, f'<@{user_id}>登录失效，请重新尝试')
     _login_tasks.pop(user_id, None)
 
 
@@ -244,9 +243,9 @@ async def get_message(event, match):
     content = '\n'.join(msglist)
 
     if _use_md(event):
-        await event.reply(content, buttons=_nav_buttons())
+        await reply(event, content, buttons=_nav_buttons())
     else:
-        await event.reply(content)
+        await reply(event, content)
 
 
 # ==================== bot列表 ====================
@@ -283,9 +282,9 @@ async def get_botlist(event, match):
     content = '\n'.join(msglist)
 
     if _use_md(event):
-        await event.reply(content, buttons=_nav_buttons())
+        await reply(event, content, buttons=_nav_buttons())
     else:
-        await event.reply(content)
+        await reply(event, content)
 
 
 # ==================== bot数据 ====================
@@ -371,9 +370,9 @@ async def get_botdata(event, match):
     content = '\n'.join(msglist)
 
     if _use_md(event):
-        await event.reply(content, buttons=_nav_buttons())
+        await reply(event, content, buttons=_nav_buttons())
     else:
-        await event.reply(content)
+        await reply(event, content)
 
 
 # ==================== 切换appid ====================
@@ -391,12 +390,12 @@ async def switch_appid(event, match):
 
     new_appid = match.group(1).strip()
     if not new_appid:
-        await event.reply('请提供有效的AppID')
+        await reply(event, '请提供有效的AppID')
         return
 
     current_appid = ud.get('appId')
     if current_appid == new_appid:
-        await event.reply(f'当前已经是使用AppID: {current_appid}')
+        await reply(event, f'当前已经是使用AppID: {current_appid}')
         return
 
     # 验证 AppID 是否有效
@@ -417,7 +416,7 @@ async def switch_appid(event, match):
 
     if not valid:
         lines = [f'{i}. {a.get("app_name", "未命名")}: {a.get("app_id")}' for i, a in enumerate(apps, 1)]
-        await event.reply(f'提供的AppID无效，请从以下可用AppID中选择：\n\n```python\n{chr(10).join(lines)}\n```\n')
+        await reply(event, f'提供的AppID无效，请从以下可用AppID中选择：\n\n```python\n{chr(10).join(lines)}\n```\n')
         return
 
     old_appid = ud.get('appId')
@@ -427,6 +426,6 @@ async def switch_appid(event, match):
     content = f'AppID已切换成功\n\n```python\n原AppID: {old_appid}\n新AppID: {new_appid}\n机器人: {app_name}\n```\n'
 
     if _use_md(event):
-        await event.reply(content, buttons=_nav_buttons())
+        await reply(event, content, buttons=_nav_buttons())
     else:
-        await event.reply(content)
+        await reply(event, content)

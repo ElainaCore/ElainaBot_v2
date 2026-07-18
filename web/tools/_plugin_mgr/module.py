@@ -1,6 +1,5 @@
 """模块管理 — scan/toggle/upload + 元数据 + 配置文件列表"""
 
-import ast
 import contextlib
 import json
 import os
@@ -12,28 +11,21 @@ from typing import cast
 
 from aiohttp import BodyPartReader, web
 
-from core.base.zipsafe import safe_extractall
 from web.tools._plugin_mgr.shared import (
     bot_manager,
     get_mm,
     list_config_files,
     modules_dir,
 )
+from web.tools._python_source import read_dict_assignment
+from web.tools._zipsafe import safe_extractall
 
 # ==================== 元数据读取 ====================
 
 
 def _read_module_meta(entry_path):
     """通过 AST 读取 main.py 中的 __module_meta__"""
-    try:
-        with open(entry_path, encoding='utf-8') as f:
-            tree = ast.parse(f.read())
-        for node in ast.iter_child_nodes(tree):
-            if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name) and node.targets[0].id == '__module_meta__':
-                return ast.literal_eval(node.value)
-    except Exception:
-        pass
-    return {}
+    return read_dict_assignment(entry_path, '__module_meta__') or {}
 
 
 # ==================== 扫描 ====================
