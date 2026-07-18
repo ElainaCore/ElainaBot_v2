@@ -85,7 +85,13 @@ def _snapshot_completed_hours():
             if h in need:
                 tc[h] = tc.get(h, 0) + c
 
-    yc = _hourly_cache.get(yesterday) or _query_hourly_from_db(yesterday) or None
+    # 昨日缓存可能缺少 23 点数据 (跨天时快照循环不会补齐), 未终结时从 DB 全量补齐并打上 _final 标记
+    yc = _hourly_cache.get(yesterday)
+    if not yc or not yc.get('_final'):
+        fresh = _query_hourly_from_db(yesterday)
+        if fresh:
+            fresh['_final'] = 1
+            yc = fresh
     _hourly_cache.clear()
     _hourly_cache[today] = tc
     if yc:
@@ -158,6 +164,7 @@ def _aggregate_hourly(appid_filter, date):
     # 有缓存且无 appid 过滤
     if cached and not appid_filter:
         hourly = dict(cached)
+        hourly.pop('_final', None)
         if date == today:
             # 补充当前小时实时数据
             cur_h = f'{now.hour:02d}'
@@ -531,7 +538,8 @@ def _gather_top(date, appid_filter):
     top_sql = {
         'groups': "SELECT group_id AS k, COUNT(*) AS c FROM log WHERE group_id!='' AND group_id!='c2c' AND direction!='send' AND COALESCE(at_bot,1)!=0 GROUP BY k ORDER BY c DESC LIMIT 10",
         'users': "SELECT user_id AS k, COUNT(*) AS c FROM log WHERE user_id!='' AND direction!='send' AND COALESCE(at_bot,1)!=0 GROUP BY k ORDER BY c DESC LIMIT 10",
-        'cmds': "SELECT plugin_name AS k, COUNT(*) AS c FROM log WHERE plugin_name!='' AND direction!='send' AND COALESCE(at_bot,1)!=0 GROUP BY k ORDER BY c DESC LIMIT 10",
+        # plugin_name 仅在回复日志 (direction='send') 中写入
+        'cmds': "SELECT plugin_name AS k, COUNT(*) AS c FROM log WHERE plugin_name!='' AND direction='send' GROUP BY k ORDER BY c DESC LIMIT 10",
     }
 
     for _, inst in iter_bots(_bot_manager, appid_filter):

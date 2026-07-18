@@ -13,11 +13,9 @@
 
 from __future__ import annotations
 
-import random
 from typing import Any
 
 from core.message._http import MessageType
-from core.message.media import upload_media_bytes, upload_media_via_url
 from core.message.sender import MessageSender
 from modules.onebot_adapter.payload.payload_converter import PayloadConverter
 from modules.onebot_adapter.payload.segment_parser import ParsedMessage
@@ -130,5 +128,5 @@ class MessageSenderService:
             target_group_id=group_id,
             target_user_id=user_id,
         )
-        error = getattr(sender, 'error') if hasattr(sender, 'error') else None
+        error = sender.error if hasattr(sender, 'error') else None
         return data is not None, data or error, data
