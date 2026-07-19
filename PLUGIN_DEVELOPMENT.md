@@ -239,7 +239,6 @@ async def filter_keywords(event):
 | `event.msg_elements` | `list` | 消息元素列表 (平台原始 msg_elements) |
 | `event.member_role` | `str` | 发送者群身份 (`admin` / `owner` / 空) |
 | `event.bot_member_role` | `str` | 机器人在该群的身份 (被@时由 mentions 解析) |
-| `event.scene_source` | `str` | 消息来源场景 (`message_scene.source`) |
 | `event.error` | `dict` / `None` | 最近一次媒体上传失败的响应 (排查用) |
 
 ### 4.2 场景标识 (布尔属性)

@@ -75,11 +75,10 @@ def extract_msg_idx(scene):
 
 
 def apply_message_scene(event, d):
-    """填充 message_scene / message_reference_id / scene_source"""
+    """填充 message_scene / message_reference_id"""
     scene = d.get('message_scene', {})
     event.message_scene = scene if isinstance(scene, dict) else {}
     event.message_reference_id = MessageUtils.extract_msg_idx(scene)
-    event.scene_source = scene.get('source', '') if isinstance(scene, dict) else ''
 
 
 def _parse_common_fields(event, d):
@@ -88,7 +87,6 @@ def _parse_common_fields(event, d):
     event.raw_content = d.get('content', '')
     event.content = MessageUtils.sanitize_content(event.raw_content)
     event.timestamp = d.get('timestamp', '')
-    event.message_type = d.get('message_type')
     event.msg_elements = d.get('msg_elements', [])
     event.attachments = d.get('attachments', [])
     event.image_url = MessageUtils.extract_image_from_attachments(event.attachments)
