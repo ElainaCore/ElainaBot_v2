@@ -34,6 +34,7 @@ class GroupMessageParser(MessageParser):
     def parse(self, event, d: dict):
         super().parse(event, d)
         is_full = event.event_type == 'GROUP_MESSAGE_CREATE'
+        event.is_full = is_full
         self.handle_mentions(event, d, is_full)
         if '<@' in event.content_with_at:
             # content_with_at 仅剔除艾特机器人自身, 保留艾特其他人的文本

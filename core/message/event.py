@@ -201,6 +201,7 @@ class Event:
         'is_channel',
         'is_interaction',
         'is_lifecycle',
+        'is_full',
         'interaction_data',
         'chat_type_code',
         'scene',
@@ -257,6 +258,7 @@ class Event:
         self.is_channel = False
         self.is_interaction = False
         self.is_lifecycle = False
+        self.is_full = False
         self.interaction_data = None
         self.chat_type_code = None
         self.scene = None
