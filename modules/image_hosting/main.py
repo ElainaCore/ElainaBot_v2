@@ -49,18 +49,20 @@ __module_meta__ = {
     'author': 'ElainaBot',
 }
 
-import os
-import re
 import asyncio
+import contextlib
 import hashlib
 import hmac
 import mimetypes
+import os
+import re
 import tempfile
+from base64 import b64decode as _d
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from io import BytesIO
-from base64 import b64decode as _d
-from core.base.logger import get_logger, EXTENSION
+
+from core.base.logger import EXTENSION, get_logger
 
 log = get_logger(EXTENSION, "图床服务")
 
@@ -403,10 +405,8 @@ class ImageHosting:
             return (False, str(e))
         finally:
             if temp_path and os.path.exists(temp_path):
-                try:
+                with contextlib.suppress(Exception):
                     os.unlink(temp_path)
-                except Exception:
-                    pass
 
     # ==================== QQ频道图床 ====================
 
@@ -460,10 +460,8 @@ class ImageHosting:
             return (False, str(e))
         finally:
             if temp_path and os.path.exists(temp_path):
-                try:
+                with contextlib.suppress(Exception):
                     os.unlink(temp_path)
-                except Exception:
-                    pass
 
 
     # ==================== ChatGLM 图床 ====================

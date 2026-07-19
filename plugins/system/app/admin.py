@@ -53,7 +53,9 @@ def _mask_id(id_str, mask_char='*'):
 
 @handler(r'^dm(.+)$', name='DM调试', desc='dm+内容 发送调试消息', owner_only=True)
 async def send_dm(event, match):
-    content = match.group(1).strip()
+    # 优先使用保留艾特文本的内容, 使 <@xxx> 可原样发送
+    m = re.match(r'^dm(.+)$', event.content_with_at or '', re.S)
+    content = (m.group(1) if m else match.group(1)).strip()
     if not content:
         await reply(event, '❌ 消息内容不能为空\n💡 使用格式：dm+消息内容')
         return

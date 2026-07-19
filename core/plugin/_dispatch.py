@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 import re
 import time
-from typing import TYPE_CHECKING, Any, Iterator
+from collections.abc import Iterator
+from typing import TYPE_CHECKING, Any
 
 from core.base.config import cfg
 from core.base.logger import FRAMEWORK, PLUGIN, get_logger, report_error

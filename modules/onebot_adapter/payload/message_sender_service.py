@@ -13,11 +13,9 @@
 
 from __future__ import annotations
 
-import random
 from typing import Any
 
 from core.message._http import MessageType
-from core.message.media import upload_media_bytes, upload_media_via_url
 from core.message.sender import MessageSender
 from modules.onebot_adapter.payload.segment_parser import ParsedMessage
 from modules.onebot_adapter.payload.payload_converter import PayloadConverter
@@ -27,6 +25,9 @@ from modules.onebot_adapter.payload.segment_parser import ParsedMessage
 class MessageSenderService:
     """统一消息发送服务: 纯文本 / 图片 / 语音 / 视频 / 文件 / Markdown / 按钮"""
 
+    extra_fields = {'msg_id', 'event_id'}
+    extra_media_fields = {'msg_id', 'event_id'}
+
     @classmethod
     async def send(
         cls,
@@ -34,10 +35,10 @@ class MessageSenderService:
         group_id: int | str | None,
         user_id: int | str | None,
         parsed: ParsedMessage,
-        msg_id: int | str | None = None,
+        **kwargs,
     ) -> tuple[bool, Any, dict[str, Any]]:
         """统一发送入口 — 根据 ParsedMessage 选择策略
-
+        kwargs: msg_id,event_id
         Returns:
             (ok, data, send_payload)
         """
@@ -47,37 +48,51 @@ class MessageSenderService:
         # 1. 媒体文件 (语音/视频/文件) — 需要先上传再发送
         if parsed.media_type and parsed.media_type != 1:
             # voice=3, video=2, file=4
-            return await cls._send_media(sender, target, prefix, parsed, msg_id, group_id=group_id, user_id=user_id)
+            payload = {x: kwargs[x] for x in cls.extra_media_fields if x in kwargs}
+            return await cls._send_media(sender, target, prefix, parsed, group_id=group_id, user_id=user_id, **payload)
 
         # 2. 图片 — 上传后以 MSG_TYPE_MEDIA 发送
         if parsed.image_data:
-            return await cls._send_media(sender, target, prefix, parsed, msg_id, group_id=group_id, user_id=user_id)
-
+            payload = {x: kwargs[x] for x in cls.extra_media_fields if x in kwargs}
+            return await cls._send_media(sender, target, prefix, parsed, group_id=group_id, user_id=user_id, **payload)
+        payload = {x: kwargs[x] for x in cls.extra_fields if x in kwargs}
         # 3. Markdown
         if parsed.msg_type == 'markdown' and parsed.markdown_content:
-            return await cls._send_markdown(sender, group_id, user_id, target, parsed, msg_id)
+            return await cls._send_markdown(sender, group_id, user_id, target, parsed, **payload)
 
         # 4. 纯文本 (可能带 buttons)
-        return await cls._send_text(sender, group_id, user_id, target, parsed, msg_id)
+        return await cls._send_text(sender, group_id, user_id, target, parsed, **payload)
 
     # ==================== 文本发送 ====================
 
     @classmethod
     async def _send_text(
-        cls, sender: MessageSender, group_id: int | str | None, user_id: int | str | None, target: int | str, parsed: ParsedMessage, msg_id: int | str | None
+        cls,
+        sender: MessageSender,
+        group_id: int | str | None,
+        user_id: int | str | None,
+        target: int | str,
+        parsed: ParsedMessage,
+        **kwargs,
     ) -> tuple[bool, Any, dict[str, Any]]:
         content = parsed.text_content or '[空的文本消息]'
-        msg_type = MessageType.MSG_TYPE_MARKDOWN if parsed.msg_type == 'text' else MessageType.MSG_TYPE_TEXT
-        return await cls.send_msg_common(sender, group_id, user_id, target, parsed, msg_id, content, msg_type=msg_type)
+        return await cls.send_msg_common(sender, group_id, user_id, target, parsed, content, **kwargs)
 
     # ==================== Markdown 发送 ====================
 
     @classmethod
     async def _send_markdown(
-        cls, sender: MessageSender, group_id: int | str | None, user_id: int | str | None, target: int | str, parsed: ParsedMessage, msg_id: int | str | None
+        cls,
+        sender: MessageSender,
+        group_id: int | str | None,
+        user_id: int | str | None,
+        target: int | str,
+        parsed: ParsedMessage,
+        **kwargs,
     ) -> tuple[bool, Any, dict[str, Any]]:
         content = parsed.markdown_content or parsed.text_content
-        return await cls.send_msg_common(sender, group_id, user_id, target, parsed, msg_id, content, msg_type=MessageType.MSG_TYPE_MARKDOWN)
+        kwargs['msg_type'] = MessageType.MSG_TYPE_MARKDOWN
+        return await cls.send_msg_common(sender, group_id, user_id, target, parsed, content, **kwargs)
 
     @classmethod
     async def send_msg_common(
@@ -87,18 +102,14 @@ class MessageSenderService:
         user_id: int | str | None,
         target: int | str,
         parsed: ParsedMessage,
-        msg_id: int | str | None,
         content: str,
-        msg_type: int | None = None,
+        **kwargs,
     ):
-        kwargs: dict[str, Any] = PayloadConverter.convert(content)
-        if msg_type is not None:
-            kwargs['msg_type'] = msg_type
+        kwargs |= PayloadConverter.convert(content)
         if parsed.buttons:
             kwargs['buttons'] = parsed.buttons
         if parsed.message_reference:
             kwargs['message_reference'] = parsed.message_reference
-        kwargs['msg_id'] = msg_id
         func = sender.send_to_group if group_id else sender.send_to_user
         ok, data, send_payload = await func(target, **kwargs)
         return ok, data, send_payload
@@ -112,10 +123,9 @@ class MessageSenderService:
         target: int | str,
         prefix: str,
         parsed: ParsedMessage,
-        msg_id: int | str | None,
-        *,
         group_id: int | str | None = None,
         user_id: int | str | None = None,
+        **kwargs,
     ) -> tuple[bool, Any, dict[str, Any]]:
         """统一媒体发送: image(1)/video(2)/voice(3)/file(4)"""
         media_type = parsed.media_type or 1
@@ -128,9 +138,9 @@ class MessageSenderService:
             media_data,
             media_type,
             ctn,
-            msg_id=msg_id,
             target_group_id=group_id,
             target_user_id=user_id,
+            **kwargs,
         )
-        error = getattr(sender, 'error') if hasattr(sender, 'error') else None
+        error = sender.error if hasattr(sender, 'error') else None
         return data is not None, data or error, data

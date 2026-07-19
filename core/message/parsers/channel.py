@@ -17,6 +17,7 @@ class ChannelMessageParser(MessageParser):
                     if event.raw_content.startswith(prefix):
                         cleaned = event.raw_content[len(prefix):].lstrip()
                         event.content = MessageUtils.sanitize_content(cleaned)
+                        event.content_with_at = MessageUtils.sanitize_content(cleaned, keep_at=True)
                         break
         event.group_id = d.get('channel_id', '')
 

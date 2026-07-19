@@ -131,7 +131,7 @@ async def _run_check(event, bot):
         f"疑似(仅命中一个错误码, 已记录未删除): {stats['partial']}\n"
         f"其他失败(未处理): {stats['failed']}\n"
         + (f"无 openid, 已用随机 id 探测的机器人: {', '.join(stats['no_openid'])}\n" if stats['no_openid'] else '')
-        + f"\n发送「删除被踢群」执行删除, 待删除列表: 群检测_待删除.json")
+        + "\n发送「删除被踢群」执行删除, 待删除列表: 群检测_待删除.json")
 
 
 @handler(r'^群检测$', name='群检测', desc='检测机器人是否还在群内, 不在则删除群记录', owner_only=True)

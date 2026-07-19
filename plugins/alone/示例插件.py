@@ -43,6 +43,36 @@ async def send_file(event, match):
     await event.reply_file(path, "📄 文件示例", file_name="test.txt")
 
 
+# ==================== 消息类型示例 (强制 markdown / 纯文本) ====================
+# 默认按 bot.yaml 的 message.use_markdown 决定发送类型, 传 msg_type 可单条强制覆盖。
+
+@handler(r'^强制md$', name='强制markdown', desc='无视全局配置, 强制以 markdown 发送', owner_only=True)
+async def force_markdown(event, match):
+    # msg_type=2: markdown
+    await event.reply(
+        "# Markdown 标题\n**加粗** / *斜体* / [链接](https://i.elaina.vin/)",
+        msg_type=2)
+
+
+@handler(r'^强制文本$', name='强制纯文本', desc='无视全局配置, 强制以纯文本发送', owner_only=True)
+async def force_text(event, match):
+    # msg_type=0: 纯文本
+    await event.reply("**这段不会加粗**, markdown 语法原样显示", msg_type=0)
+
+
+@handler(r'^无后缀$', name='跳过markdown后缀', desc='跳过全局 markdown_suffix 后缀', owner_only=True)
+async def skip_suffix_demo(event, match):
+    # skip_suffix=True: 本条不拼接 bot.yaml 中 message.markdown_suffix 配置的全局后缀
+    await event.reply("这条消息不带全局后缀", skip_suffix=True)
+
+
+@handler(r'^主动md\s+(\S+)$', name='主动markdown', desc='向指定群强制发送 markdown 主动消息', owner_only=True)
+async def proactive_markdown(event, match):
+    # send_to_group / send_to_user 同样支持 msg_type / skip_suffix
+    await event.send_to_group(match.group(1), "# 主动 Markdown 消息", msg_type=2)
+    await event.reply("✅ 已发送")
+
+
 # ==================== 撤回示例 ====================
 
 @handler(r'^撤回测试$', name='撤回测试', desc='发送后3秒撤回', owner_only=True)
