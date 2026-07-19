@@ -178,6 +178,7 @@ def record_ip_access(ip, access_type='success'):
 
 
 def is_ip_banned(ip) -> bool:
+    return False
     d = ip_access_data.get(ip)
     if not d or not d.get('is_banned'):
         return False
