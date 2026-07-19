@@ -170,7 +170,6 @@ class Event:
 
     __slots__ = (
         'appid',
-        'op',
         'event_id',
         'event_type',
         'raw',
@@ -187,7 +186,6 @@ class Event:
         'group_id',
         'guild_id',
         'channel_id',
-        'message_type',
         'message_scene',
         'message_reference_id',
         'msg_elements',
@@ -199,11 +197,8 @@ class Event:
         'is_interaction',
         'is_lifecycle',
         'interaction_data',
-        'chat_type_code',
         'scene',
-        'scene_source',
         'sharer_id',
-        'scene_param',
         'mentions',
         'bot_member_role',
         'is_at_self',
@@ -222,7 +217,6 @@ class Event:
 
     def __init__(self):
         self.appid = None
-        self.op = None
         self.event_id = None
         self.event_type = None
         self.raw = None
@@ -239,7 +233,6 @@ class Event:
         self.group_id = None
         self.guild_id = None
         self.channel_id = None
-        self.message_type = None
         self.message_scene = {}
         self.message_reference_id = ''
         self.msg_elements = []
@@ -251,11 +244,8 @@ class Event:
         self.is_interaction = False
         self.is_lifecycle = False
         self.interaction_data = None
-        self.chat_type_code = None
         self.scene = None
-        self.scene_source = None
         self.sharer_id = None
-        self.scene_param = None
         self.mentions = []
         self.bot_member_role = ''
         self.is_at_self = False
@@ -296,7 +286,6 @@ class Event:
     # ==================== 解析 ====================
 
     def _parse_payload(self, payload):
-        self.op = payload.get('op')
         self.event_id = payload.get('id', '')
         self.event_type = payload.get('t', '')
         self.raw = payload

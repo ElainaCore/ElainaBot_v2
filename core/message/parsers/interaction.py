@@ -18,7 +18,6 @@ class InteractionParser(MessageParser):
 
         chat_type = d.get('chat_type')
         scene = d.get('scene')
-        event.chat_type_code = chat_type
         event.scene = scene
 
         if chat_type == 1 or scene == 'group':

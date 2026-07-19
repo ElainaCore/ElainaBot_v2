@@ -86,8 +86,7 @@ class FriendAddParser(LifecycleParser):
             event.scene = int(d.get('scene') or 0)
         except (ValueError, TypeError):
             event.scene = 0
-        event.scene_param = d.get('scene_param')
-        event.sharer_id = self._extract_sharer_id(event.scene_param)
+        event.sharer_id = self._extract_sharer_id(d.get('scene_param'))
         event.content = f'用户 {event.user_id} 添加机器人为好友'
         if event.sharer_id:
             event.content += f' (通过 {event.sharer_id} 的分享链接)'
