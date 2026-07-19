@@ -7,7 +7,7 @@
   2. 配置管理: 加载和验证模块配置
   3. 事件分发: 监听 on_raw_event / after_send, 转换为 OneBot 格式推送
   4. Action 路由: 委托 ActionRegistry 处理外部 action 请求
-  5. 状态管理: 维护 senders / log_services / msg_id_cache / qq_map 等运行时状态
+  5. 状态管理: 维护 senders / log_services / qq_map 等运行时状态
 
 不负责:
   - Action 具体逻辑 → actions/ (Command 模式)
@@ -48,7 +48,7 @@ class OneBotAdapter:
       2. 配置管理: 加载和验证模块配置
       3. 事件分发: 监听 on_raw_event / after_send, 转换为 OneBot 格式推送
       4. Action 路由: 委托 ActionRegistry 处理外部 action 请求
-      5. 状态管理: 维护 senders / log_services / msg_id_cache / qq_map 等运行时状态
+      5. 状态管理: 维护 senders / log_services / qq_map 等运行时状态
 
     不负责:
       - Action 具体逻辑 → actions/ (Command 模式)
@@ -383,9 +383,6 @@ class OneBotAdapter:
 
         self_qq = self._actx.qq_map.get(aid, self._actx.default_qq) or self._actx.default_qq
 
-        # 缓存 msg_id (用于后续回复 quote)
-        # self._cache_msg_id(event, appid) # 让应用层自己缓存
-
         # 事件转换 (Strategy: message / lifecycle)
         ob_event = None
         if event.is_lifecycle:
@@ -398,19 +395,6 @@ class OneBotAdapter:
                 await self.ws_server.broadcast(ob_event, appid=aid)
             if has_webhook:
                 self.http_webhook.push(ob_event, appid=aid)
-
-    def _cache_msg_id(self, event: Event, appid: int) -> None:
-        """缓存消息 ID 用于后续回复"""
-        if not event.message_id:
-            return
-        chat_id = event.group_id or event.user_id or ''
-        if not chat_id:
-            return
-        key = (appid, chat_id)
-        self._actx.msg_id_cache[key] = event.message_id
-        self._actx.msg_id_cache.move_to_end(key)
-        if len(self._actx.msg_id_cache) > 500:
-            self._actx.msg_id_cache.popitem(last=False)
 
     async def _on_after_send(self, data: dict[str, Any]) -> None:
         """after_send hook — 追踪机器人自身回复 (暂留扩展)"""
