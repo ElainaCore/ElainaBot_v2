@@ -61,6 +61,16 @@ class TestResponseFormat:
         ct = resp.headers.get('Content-Type', '')
         assert 'application/json' in ct
 
+    async def test_standard_response_envelope(self, api_client):
+        """公共 API 响应只包含统一 envelope"""
+        resp = await api_client.post('/api/auth/login', json={'password': 'test_pass'})
+        assert resp.status == 200
+        data = await resp.json()
+        assert_success_response(data)
+        assert set(data) == {'success', 'code', 'message', 'data'}
+        assert data['code'] == 0
+        assert data['data']['token']
+
 
 class TestIPBanning:
     """IP 封禁测试"""

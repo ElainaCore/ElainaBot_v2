@@ -5,6 +5,7 @@ import asyncio
 import json
 from functools import partial
 
+from core.message.parsers.base import MessageParser
 from core.message.parsers.channel import ChannelDirectMessageParser, ChannelMessageParser
 from core.message.parsers.direct import DirectMessageParser
 from core.message.parsers.group import GroupMessageParser
@@ -16,10 +17,9 @@ from core.message.parsers.lifecycle import (
     GroupDelRobotParser,
     GroupMemberAddParser,
     GroupMemberRemoveParser,
-    GroupMsgRejectParser,
     GroupMsgReceiveParser,
+    GroupMsgRejectParser,
 )
-from core.message.parsers.base import MessageParser
 
 # 交互回调 (op12 ACK) 默认状态码与默认等待插件超时 (秒)
 _DEFAULT_CALLBACK_CODE = 0
@@ -190,6 +190,7 @@ class Event:
         'guild_id',
         'channel_id',
         'message_type',
+        'content_with_at',
         'message_scene',
         'message_reference_id',
         'msg_elements',
@@ -244,6 +245,8 @@ class Event:
         self.guild_id = None
         self.channel_id = None
         self.message_type = None
+        # 保留艾特文本的内容 (仅剔除艾特机器人自身); 命令匹配仍用 content
+        self.content_with_at = ''
         self.message_scene = {}
         self.message_reference_id = ''
         self.msg_elements = []

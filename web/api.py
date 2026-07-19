@@ -21,11 +21,14 @@ import web.tools._plugin_mgr.files as _plugin_mgr_files
 import web.tools._plugin_mgr.module as _plugin_mgr_module
 import web.tools._plugin_mgr.scan as _plugin_mgr_scan
 import web.tools._plugin_mgr.shared as _plugin_mgr_shared
+import web.tools._stats.dependencies as deps_info
 import web.tools._stats.log as log_query
 import web.tools._stats.statistics as statistics_handler
 import web.tools._stats.system as system_info
 import web.tools._updater.handlers as update_handler
 import web.ws as panel_ws
+from web.response import error, json_body, ok
+from web.tools._bots import configured_bot_payload, iter_bots, running_bot_payload
 
 log = logging.getLogger('ElainaBot.web.api')
 
@@ -51,6 +54,7 @@ def get_routes() -> list:
         web.get('/api/robot/qrcode', robot_info.handle_get_robot_qrcode),
         # ── 系统信息 ──
         web.get('/api/system/info', _(system_info.handle_system_info)),
+        web.get('/api/system/dependencies', _(deps_info.handle_dependencies)),
         # ── 日志 (具体路径必须在 {log_type} 之前) ──
         web.get('/api/logs/recent', _(handle_recent_logs)),
         web.get('/api/logs/login', _(log_query.handle_get_login_logs)),
@@ -84,6 +88,8 @@ def get_routes() -> list:
         # ── 配置 ──
         web.get('/api/config', _(config_handler.handle_get_config)),
         web.post('/api/config/save', _(config_handler.handle_save_config)),
+        web.post('/api/config/qr-bind/start', _(config_handler.handle_qr_bind_start)),
+        web.post('/api/config/qr-bind/poll', _(config_handler.handle_qr_bind_poll)),
         # ── 消息 ──
         web.post('/api/message/chats', _(message_handler.handle_get_chats)),
         web.post('/api/message/history', _(message_handler.handle_get_chat_history)),
@@ -97,6 +103,7 @@ def get_routes() -> list:
         web.post('/api/message/group-roles', _(message_handler.handle_get_group_roles)),
         # ── 统计 ──
         web.get('/api/statistics', _(statistics_handler.handle_get_statistics)),
+        web.get('/api/statistics/core', _(statistics_handler.handle_get_core)),
         web.get('/api/statistics/summary', _(statistics_handler.handle_get_summary)),
         web.get('/api/statistics/active', _(statistics_handler.handle_get_active)),
         web.get('/api/statistics/top', _(statistics_handler.handle_get_top)),
@@ -168,6 +175,14 @@ def get_routes() -> list:
         web.post('/api/openapi/webhook/check', _(openapi_handler.handle_check_webhook)),
         web.post('/api/openapi/webhook/auth-qr', _(openapi_handler.handle_get_webhook_auth_qr)),
         web.post('/api/openapi/webhook/set', _(openapi_handler.handle_set_webhook)),
+        # ── 新版开放平台 (v2, 内测) ──
+        web.post('/api/openapi/v2/start-login', _(openapi_handler.handle_v2_start_login)),
+        web.post('/api/openapi/v2/check-login', _(openapi_handler.handle_v2_check_login)),
+        web.post('/api/openapi/v2/status', _(openapi_handler.handle_v2_status)),
+        web.post('/api/openapi/v2/developers', _(openapi_handler.handle_v2_developers)),
+        web.post('/api/openapi/v2/switch-developer', _(openapi_handler.handle_v2_switch_developer)),
+        web.post('/api/openapi/v2/proxy', _(openapi_handler.handle_v2_proxy)),
+        web.post('/api/openapi/v2/upload-avatar', _(openapi_handler.handle_v2_upload_avatar)),
         # ── 自定义页面 ──
         web.get('/api/web-pages', _(handle_get_web_pages)),
         web.get('/api/web-pages/{key}', _(handle_get_web_page_html)),
@@ -208,6 +223,7 @@ def set_context(bot_manager, base_dir: str):
     update_handler.set_context(base_dir)
     bot_restart.set_context(base_dir)
     system_info.set_context(bot_manager)
+    deps_info.set_context(base_dir)
     openapi_handler.set_context(base_dir, bot_manager)
     _market_shared.set_context(base_dir)
     database_browser.set_context(bot_manager, base_dir)
@@ -220,33 +236,25 @@ async def handle_login(request: web.Request):
     ip = auth.get_real_ip(request)
     auth.cleanup_expired_ip_bans()
     if auth.is_ip_banned(ip):
-        return web.json_response({'success': False, 'error': 'IP 已被封禁'}, status=403)
+        return error('IP 已被封禁', status=403)
 
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({'success': False, 'error': '请求格式错误'}, status=400)
+    body = await json_body(request)
+    if body is None:
+        return error('请求格式错误', status=400)
 
     password = body.get('password', '')
     from core.base.config import cfg
 
     admin_pwd = cfg.get('settings', 'web.admin_password', '')
     if not admin_pwd:
-        return web.json_response({'success': False, 'error': '未配置管理员密码'}, status=500)
+        return error('未配置管理员密码', status=500)
 
     if not auth.verify_password(password, admin_pwd):
         auth.record_ip_access(ip, 'fail')
         remaining = auth.get_remaining_attempts(ip)
         if remaining <= 0:
-            return web.json_response({'success': False, 'error': 'IP 已被封禁，12小时后解除'}, status=403)
-        return web.json_response(
-            {
-                'success': False,
-                'error': f'密码错误，还剩 {remaining} 次机会',
-                'remaining': remaining,
-            },
-            status=401,
-        )
+            return error('IP 已被封禁，12小时后解除', status=403)
+        return error(f'密码错误，还剩 {remaining} 次机会', status=401, data={'remaining': remaining})
 
     if not auth.is_hashed(admin_pwd):
         cfg.set_value('settings', 'web.admin_password', auth.hash_password(password))
@@ -254,11 +262,11 @@ async def handle_login(request: web.Request):
     auth.record_ip_access(ip, 'success')
     token = auth.create_session(request)
     is_weak = password in _WEAK_PASSWORDS
-    return web.json_response({'success': True, 'token': token, 'is_weak': is_weak})
+    return ok({'token': token, 'is_weak': is_weak})
 
 
 async def handle_auth_check(request: web.Request):
-    return web.json_response({'success': True})
+    return ok()
 
 
 _WEAK_PASSWORDS = frozenset({'admin', '123456', 'password', 'admin123', '12345678'})
@@ -269,7 +277,7 @@ async def handle_password_status(request: web.Request):
 
     pwd = cfg.get('settings', 'web.admin_password', '')
     is_default = not pwd or (not auth.is_hashed(pwd) and pwd in _WEAK_PASSWORDS)
-    return web.json_response({'success': True, 'is_default': is_default})
+    return ok({'is_default': is_default})
 
 
 async def handle_get_bots(request: web.Request):
@@ -281,74 +289,30 @@ async def handle_get_bots(request: web.Request):
     if _bot_manager:
         for appid, inst in _bot_manager._bots.items():
             running_appids.add(appid)
-            ws_connected = False
-            if inst.ws_client:
-                ws_connected = bool(getattr(inst.ws_client, '_session_id', None))
-            avatar = getattr(inst, 'avatar_url', '') or ''
-            robot_qq = getattr(inst, 'robot_qq', '') or ''
-            if not avatar and robot_qq:
-                avatar = f'http://q1.qlogo.cn/g?b=qq&nk={robot_qq}&s=100'
-            bots.append(
-                {
-                    'appid': appid,
-                    'name': getattr(inst, 'name', '') or appid,
-                    'robot_qq': robot_qq,
-                    'bot_id': getattr(inst, 'bot_id', ''),
-                    'union_openid': getattr(inst, 'union_openid', ''),
-                    'avatar': avatar,
-                    'connected': ws_connected,
-                    'connection_type': 'WebSocket' if inst.ws_client else 'Webhook',
-                    'enabled': True,
-                }
-            )
+            bots.append(running_bot_payload(appid, inst))
     # 未启动的机器人 (已关闭)
     for bc in cfg.get_bot_configs():
         appid = str(bc.get('appid', ''))
         if appid and bc.get('secret') and appid not in running_appids:
-            robot_qq = str(bc.get('robot_qq', ''))
-            avatar = f'http://q1.qlogo.cn/g?b=qq&nk={robot_qq}&s=100' if robot_qq else ''
-            bots.append(
-                {
-                    'appid': appid,
-                    'name': appid,
-                    'robot_qq': robot_qq,
-                    'bot_id': '',
-                    'union_openid': '',
-                    'avatar': avatar,
-                    'connected': False,
-                    'connection_type': '-',
-                    'enabled': bc.get('enabled', True),
-                }
-            )
-    return web.json_response({'success': True, 'bots': bots})
+            bots.append(configured_bot_payload(bc))
+    return ok({'bots': bots})
 
 
 async def handle_toggle_bot(request: web.Request):
     """切换机器人 enabled 开关"""
     from core.base.config import cfg
 
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({'success': False, 'error': '请求格式错误'}, status=400)
+    body = await json_body(request)
+    if body is None:
+        return error('请求格式错误', status=400)
 
     appid = str(body.get('appid', ''))
     enabled = body.get('enabled')
     if not appid or enabled is None:
-        return web.json_response({'success': False, 'error': '缺少 appid 或 enabled 参数'}, status=400)
+        return error('缺少 appid 或 enabled 参数', status=400)
 
-    bot_configs = cfg.get('bot', 'bots') or []
-    found = False
-    for bc in bot_configs:
-        if str(bc.get('appid', '')) == appid:
-            bc['enabled'] = bool(enabled)
-            found = True
-            break
-
-    if not found:
-        return web.json_response({'success': False, 'error': '未找到该机器人'}, status=404)
-
-    cfg.set_value('bot', 'bots', bot_configs)
+    if not cfg.set_bot_setting(appid, 'enabled', bool(enabled)):
+        return error('未找到该机器人', status=404)
 
     # 同步等待机器人启停完成, 保证前端 fetchBots 能拿到最新状态
     from core.application import get_app
@@ -362,20 +326,10 @@ async def handle_toggle_bot(request: web.Request):
             log.error(f'机器人同步失败: {e}')
             sync_error = str(e)
 
-    status = "启用" if enabled else "关闭"
+    status = '启用' if enabled else '关闭'
     if sync_error:
-        return web.json_response({'success': True, 'message': f'机器人 {appid} 已{status} (同步异常: {sync_error})'})
-    return web.json_response({'success': True, 'message': f'机器人 {appid} 已{status}'})
-
-
-
-def _iter_bots(appid_filter=''):
-    """按 appid 过滤机器人迭代器; 空字符串=全部"""
-    if not _bot_manager:
-        return []
-    if appid_filter and appid_filter in _bot_manager._bots:
-        return [(appid_filter, _bot_manager._bots[appid_filter])]
-    return list(_bot_manager._bots.items())
+        return ok(message=f'机器人 {appid} 已{status} (同步异常: {sync_error})')
+    return ok(message=f'机器人 {appid} 已{status}')
 
 
 # 使用 id (AUTOINCREMENT 主键) 排序, 走 B-tree 倒序扫描, O(LIMIT) 不全表扫描
@@ -385,7 +339,7 @@ _LOG_SQL = 'SELECT * FROM log ORDER BY id DESC LIMIT 50'
 def _query_bot_logs(log_type, appid_filter, post_fn=None):
     """从各机器人 SQLite 查询日志, 返回按 id 排序的最近 50 条 (同步, 由 executor 调用)"""
     results = []
-    for appid, inst in _iter_bots(appid_filter):
+    for appid, inst in iter_bots(_bot_manager, appid_filter):
         try:
             rows = inst.log_service.query(log_type, _LOG_SQL)
             for r in rows:
@@ -413,6 +367,7 @@ def _tag_lifecycle_extra(r):
 
 def _gather_recent_logs_sync(appid_filter):
     """同步聚合所有日志查询 (在 executor 中执行, 避免阻塞事件循环)"""
+    from core.base import console as _console
     from core.storage.log import SharedLogService
 
     messages = _query_bot_logs('message', appid_filter, _tag_direction)
@@ -431,6 +386,7 @@ def _gather_recent_logs_sync(appid_filter):
         'framework': framework,
         'error': errors,
         'lifecycle': lifecycle,
+        'console': _console.get_lines(),
     }
 
 

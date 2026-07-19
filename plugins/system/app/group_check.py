@@ -10,6 +10,8 @@ from datetime import datetime
 from core.message import bot_openid
 from core.plugin.decorators import handler
 
+from ._reply import reply
+
 # 机器人非群成员的错误码 (两个都命中才删除)
 _NOT_IN_GROUP_CODE = 11293
 _NOT_IN_GROUP_ERR_CODE = 40011026
@@ -121,51 +123,53 @@ async def _run_check(event, bot):
     finally:
         _running = False
 
-    await event.reply(
+    await reply(
+        event,
         f"✅ 群检测完成\n"
         f"扫描群数: {stats['scanned']}\n"
         f"被踢群(已记录待删除): {stats['kicked']}\n"
         f"疑似(仅命中一个错误码, 已记录未删除): {stats['partial']}\n"
         f"其他失败(未处理): {stats['failed']}\n"
         + (f"无 openid, 已用随机 id 探测的机器人: {', '.join(stats['no_openid'])}\n" if stats['no_openid'] else '')
-        + f"\n发送「删除被踢群」执行删除, 待删除列表: 群检测_待删除.json")
+        + "\n发送「删除被踢群」执行删除, 待删除列表: 群检测_待删除.json")
 
 
 @handler(r'^群检测$', name='群检测', desc='检测机器人是否还在群内, 不在则删除群记录', owner_only=True)
 async def group_check(event, match):
     global _running
     if _running:
-        return await event.reply('⏳ 群检测正在进行中, 请稍后再试')
+        return await reply(event, '⏳ 群检测正在进行中, 请稍后再试')
 
     bot = _get_bot(event.appid)
     if bot is None:
-        return await event.reply('❌ 未找到当前机器人实例')
+        return await reply(event, '❌ 未找到当前机器人实例')
 
     _running = True
     asyncio.create_task(_run_check(event, bot))
-    await event.reply(f'🔍 检测已在后台启动 (每秒 {_RATE_PER_SEC} 并发), 完成后将汇报结果')
+    await reply(event, f'🔍 检测已在后台启动 (每秒 {_RATE_PER_SEC} 并发), 完成后将汇报结果')
 
 
 @handler(r'^删除被踢群$', name='删除被踢群', desc='删除群检测记录的被踢群数据', owner_only=True)
 async def delete_kicked_groups(event, match):
     bot = _get_bot(event.appid)
     if bot is None:
-        return await event.reply('❌ 未找到当前机器人实例')
+        return await reply(event, '❌ 未找到当前机器人实例')
     ls = getattr(bot, 'log_service', None)
     if ls is None:
-        return await event.reply('❌ 服务不可用')
+        return await reply(event, '❌ 服务不可用')
 
     async with _pending_lock:
         pending = await asyncio.to_thread(_load_pending)
         groups = pending.pop(event.appid, {})
         if not groups:
-            return await event.reply('📋 没有待删除的被踢群, 请先发送「群检测」')
+            return await reply(event, '📋 没有待删除的被踢群, 请先发送「群检测」')
         for gid, info in groups.items():
             ls.db_queue('DELETE FROM groups_users WHERE group_id=?', (gid,))
             await asyncio.to_thread(
                 _append_log, _REMOVED_LOG, event.appid, gid, info.get('response'))
         await asyncio.to_thread(_save_pending, pending)
 
-    await event.reply(
+    await reply(
+        event,
         f"✅ 已删除 {len(groups)} 个被踢群的记录\n"
         f"响应已记录到: 群检测_删除记录.txt")

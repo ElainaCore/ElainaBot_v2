@@ -527,7 +527,7 @@ class MessageSender(_HttpMixin, _MediaSendMixin):
             payload['media'] = media
             if content:
                 payload['content'] = content
-        elif use_md and msg_type != MSG_TYPE_TEXT:
+        elif msg_type == MSG_TYPE_MARKDOWN or (use_md and msg_type != MSG_TYPE_TEXT):
             payload['msg_type'] = MSG_TYPE_MARKDOWN
             md_content = str(content) if content is not None else ''
             suffix = '' if skip_suffix else cfg.get_bot_setting(self._appid, 'message.markdown_suffix', '')

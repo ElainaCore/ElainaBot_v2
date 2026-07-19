@@ -1,6 +1,5 @@
 """插件扫描 — handle_scan_plugins / handle_scan_plugin_dirs"""
 
-import ast
 import os
 from datetime import datetime
 
@@ -13,6 +12,7 @@ from web.tools._plugin_mgr.shared import (
     log,
     plugins_dir,
 )
+from web.tools._python_source import read_dict_assignment
 
 # ==================== 插件元信息查询 ====================
 
@@ -45,18 +45,11 @@ def _get_plugin_bots_map():
 
 def _read_file_meta(py_path):
     """从 .py 文件静态解析 __plugin_meta__ 字典"""
-    try:
-        with open(py_path, encoding='utf-8') as f:
-            tree = ast.parse(f.read())
-        for node in ast.iter_child_nodes(tree):
-            if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name) and node.targets[0].id == '__plugin_meta__':
-                meta = ast.literal_eval(node.value)
-                if isinstance(meta, dict):
-                    allowed = {'name', 'version', 'author', 'description'}
-                    return {k: str(v) for k, v in meta.items() if k in allowed and v}
-    except Exception:
-        pass
-    return None
+    meta = read_dict_assignment(py_path, '__plugin_meta__')
+    if meta is None:
+        return None
+    allowed = {'name', 'version', 'author', 'description'}
+    return {k: str(v) for k, v in meta.items() if k in allowed and v}
 
 
 def _scan_py_files(dir_path, prefix='', read_meta=False):

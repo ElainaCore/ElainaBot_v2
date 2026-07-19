@@ -11,7 +11,7 @@ class TestDatabaseList:
         assert resp.status == 200
         data = await resp.json()
         assert_success_response(data)
-        assert 'databases' in data
+        assert 'databases' in data['data']
 
     async def test_list_databases_no_auth(self, api_client):
         resp = await api_client.get('/api/database/list')

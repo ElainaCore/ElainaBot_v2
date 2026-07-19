@@ -52,3 +52,37 @@ class TestSystemInfo:
     async def test_system_info_no_auth(self, api_client):
         resp = await api_client.get('/api/system/info')
         assert resp.status == 401
+
+
+class TestSystemDependencies:
+    """依赖版本接口测试"""
+
+    async def test_dependencies(self, api_client, auth_headers):
+        resp = await api_client.get('/api/system/dependencies', headers=auth_headers)
+        assert resp.status == 200
+        data = await resp.json()
+        assert 'python' in data
+        assert 'dependencies' in data
+        assert data['python'].get('version')
+        assert data['python'].get('status') in ('ok', 'low', 'high')
+        for dep in data['dependencies']:
+            assert dep.get('name')
+            assert dep.get('status') in ('ok', 'low', 'high', 'missing')
+
+    async def test_dependencies_no_auth(self, api_client):
+        resp = await api_client.get('/api/system/dependencies')
+        assert resp.status == 401
+
+
+class TestCheckSpecifiers:
+    """版本范围比较"""
+
+    def test_ranges(self):
+        from web.tools._stats.dependencies import check_specifiers
+
+        assert check_specifiers('6.0.3', '>=6.0.3,<7.0') == 'ok'
+        assert check_specifiers('5.9', '>=6.0.3,<7.0') == 'low'
+        assert check_specifiers('7.1', '>=6.0.3,<7.0') == 'high'
+        assert check_specifiers('3.10.2', '>=3.11') == 'low'
+        assert check_specifiers('3.12.3', '>=3.11') == 'ok'
+        assert check_specifiers('1.0.0', '') == 'ok'

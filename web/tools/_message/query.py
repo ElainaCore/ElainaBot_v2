@@ -4,7 +4,9 @@ from datetime import date as _date
 from datetime import timedelta
 
 import web.tools._message.shared as _shared
-from web.tools._message.shared import _iter_bots
+from web.tools._bots import iter_bots
+
+_MSG_COLS = 'id, timestamp, message_id, reference_id, user_id, group_id, content, raw_message, plugin_name, direction'
 
 
 def _recent_dates(days=1):
@@ -25,8 +27,8 @@ def _query_chat_messages_sync(chat_type, chat_id, appid_filter, days=3, limit=30
     else:
         where = "user_id = ? AND (group_id = '' OR group_id = 'c2c')"
         params = (chat_id,)
-    sql = f'SELECT * FROM log WHERE {where} ORDER BY id DESC LIMIT {limit}'
-    for appid, inst in _iter_bots(appid_filter):
+    sql = f'SELECT {_MSG_COLS} FROM log WHERE {where} ORDER BY id DESC LIMIT {limit}'
+    for appid, inst in iter_bots(_shared._bot_manager, appid_filter):
         bot_qq = getattr(inst, 'robot_qq', '') or ''
         bot_name = getattr(inst, 'name', appid)
         for d in dates:
@@ -64,12 +66,12 @@ def _query_older_messages_sync(chat_type, chat_id, appid_filter, before_date_str
     else:
         where = "user_id = ? AND (group_id = '' OR group_id = 'c2c')"
         params = (chat_id,)
-    sql = f'SELECT * FROM log WHERE {where} ORDER BY id DESC LIMIT {limit}'
+    sql = f'SELECT {_MSG_COLS} FROM log WHERE {where} ORDER BY id DESC LIMIT {limit}'
 
     for offset in range(1, max_days + 1):
         d = (bd - timedelta(days=offset)).strftime('%Y-%m-%d')
         results = []
-        for appid, inst in _iter_bots(appid_filter):
+        for appid, inst in iter_bots(_shared._bot_manager, appid_filter):
             bot_qq = getattr(inst, 'robot_qq', '') or ''
             bot_name = getattr(inst, 'name', appid)
             try:
@@ -95,7 +97,7 @@ def _query_lifecycle_events_sync(chat_type, chat_id, appid_filter, dates, limit=
     sql = "SELECT * FROM log WHERE group_id = ? AND type IN ('group_member_add', 'group_member_del') ORDER BY id DESC LIMIT ?"
     params = (chat_id, limit)
     results = []
-    for appid, inst in _iter_bots(appid_filter):
+    for appid, inst in iter_bots(_shared._bot_manager, appid_filter):
         for d in dates:
             try:
                 rows = inst.log_service.query('lifecycle', sql, params, date=d)
@@ -109,11 +111,11 @@ def _query_lifecycle_events_sync(chat_type, chat_id, appid_filter, dates, limit=
     return results[-limit:]
 
 
-def _aggregate_chats_sync(chat_type, appid_filter, days=1):
-    """SQL 聚合聊天列表"""
+def _aggregate_chats_sync(chat_type, appid_filter):
+    """SQL 聚合聊天列表 (仅今日)"""
     if not _shared._bot_manager:
         return []
-    dates = _recent_dates(days)
+    dates = _recent_dates(1)
     if chat_type == 'group':
         agg_sql = (
             'SELECT group_id AS chat_id, MAX(id) AS last_id, MAX(timestamp) AS last_time, '
@@ -127,7 +129,7 @@ def _aggregate_chats_sync(chat_type, appid_filter, days=1):
             'GROUP BY user_id'
         )
     merged = {}
-    for appid, inst in _iter_bots(appid_filter):
+    for appid, inst in iter_bots(_shared._bot_manager, appid_filter):
         bot_name = getattr(inst, 'name', appid)
         for d in dates:
             try:

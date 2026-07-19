@@ -234,6 +234,14 @@ async def filter_keywords(event):
 | `event.callback_code` | `int` / `None` | 交互回调状态码, 见 5.8 |
 | `event.message_reference_id` | `str` | 可引用的 REFIDX (用于引用回复, 见 5.7) |
 | `event.message_scene` | `dict` | 消息场景信息 (`source` / `ext` 等) |
+| `event.raw_user_id` | `str` | 平台原始用户 OpenID (不受 union_id 配置影响) |
+| `event.union_openid` | `str` | 用户 union_openid (跨机器人统一 ID, 可能为空) |
+| `event.content_with_at` | `str` | 保留 @其他人 文本的内容 (仅剔除 @机器人自身) |
+| `event.msg_elements` | `list` | 消息元素列表 (平台原始 msg_elements) |
+| `event.member_role` | `str` | 发送者群身份 (`admin` / `owner` / 空) |
+| `event.bot_member_role` | `str` | 机器人在该群的身份 (被@时由 mentions 解析) |
+| `event.scene_source` | `str` | 消息来源场景 (`message_scene.source`) |
+| `event.error` | `dict` / `None` | 最近一次媒体上传失败的响应 (排查用) |
 
 ### 4.2 场景标识 (布尔属性)
 
@@ -291,11 +299,66 @@ await event.reply("⏰ 5秒后撤回", auto_delete_time=5)
 # 图片 (URL 或 bytes)
 await event.reply_image("https://i.elaina.vin/1.png", "图片说明")
 await event.reply_image(open('local.png', 'rb').read(), "本地图片")
+await event.reply_image("https://...", "10秒后撤回", auto_delete_time=10)  # 媒体也支持自动撤回
 
 # 语音 / 视频 / 文件
 await event.reply_voice("https://example.com/audio.wav")
 await event.reply_video("https://example.com/video.mp4")
 await event.reply_file('/path/to/file.txt', "📄 文档", file_name="custom.txt")
+```
+
+#### `reply()` 完整参数一览
+
+```python
+await event.reply(
+    content=None,              # 文本内容
+    buttons=None,              # 按钮 (见 5.2)
+    media=None,                # 已上传的 media 对象 {'file_info': ...} (高级用法)
+    msg_type=None,             # 强制消息类型 (见 5.1.2)
+    template_name=None,        # 模板名 (见 5.4)
+    template_vars=None,        # 模板变量 dict
+    prompt_buttons=None,       # 扩展 prompt 按钮 (见 5.2)
+    auto_delete_time=None,     # N 秒后自动撤回
+    skip_suffix=False,         # 跳过全局 markdown_suffix 后缀 (见 5.1.2)
+    message_reference_id=None, # 引用回复 REFIDX (见 5.7)
+    message_reference=None,    # 完整引用对象 dict (优先于 message_reference_id)
+    button_font_size=None,     # 键盘级按钮字号 small/middle/large (见 5.2)
+    button_style=None,         # 键盘级样式 dict, 直接并入 keyboard.content.style
+    # **kwargs: 其余关键字原样并入平台载荷 (payload), 支持平台新增字段
+)
+```
+
+> **kwargs 透传**: 未列出的关键字参数会原样写入发送载荷, 例如 `await event.reply('hi', markdown={'custom_template_id': 'xxx', 'params': [...]})` 可直接使用平台原生字段。`reply_image` / `reply_voice` / `reply_video` / `reply_file` 支持的关键字为 `file_name` / `auto_delete_time` / `target_user_id` / `target_group_id` (见 5.5)。
+
+#### 5.1.2 消息类型: 强制 markdown / 强制纯文本
+
+框架默认按 `bot.yaml` 的 `message.use_markdown` 决定用 markdown (`msg_type=2`) 还是纯文本 (`msg_type=0`) 发送。单条消息可通过 `msg_type` 参数强制覆盖:
+
+```python
+# 强制以纯文本发送 (即使全局开启 use_markdown)
+await event.reply("**不会加粗**, 原样显示", msg_type=0)
+
+# 强制以 markdown 发送 (即使全局关闭 use_markdown)
+await event.reply("**加粗** 和 [链接](https://example.com)", msg_type=2)
+
+# 主动消息同样支持
+await event.send_to_group(event.group_id, "# 标题", msg_type=2)
+```
+
+| 值 | 说明 |
+| --- | --- |
+| `0` | 纯文本 |
+| `2` | 原生 Markdown |
+| `3` | Ark 卡片 (由 `reply_ark` 自动设置) |
+| `7` | 富媒体 (由 `reply_image` 等自动设置) |
+
+> 不传 `msg_type` 时按 `message.use_markdown` 配置决定。
+
+**markdown 全局后缀**: markdown 消息会自动拼接 `bot.yaml` 中 `message.markdown_suffix` 配置的全局后缀 (支持 `\n` 等转义)。单条消息可用 `skip_suffix=True` 跳过:
+
+```python
+await event.reply("这条消息不带全局后缀", skip_suffix=True)
+await event.send_to_group(event.group_id, "主动消息同样支持", skip_suffix=True)
 ```
 
 ### 5.2 按钮完整字段参考
@@ -377,6 +440,16 @@ await event.reply("📌 小按钮面板", buttons={'rows': buttons, 'font_size':
 
 不传则保持原默认大小。
 
+键盘级样式还可以整体传 dict (对应平台 `keyboard.content.style`):
+
+```python
+# 方式一: reply 关键字 button_style
+await event.reply("📌", buttons=buttons, button_style={'font_size': 'small'})
+
+# 方式二: buttons dict 包装的 style 字段
+await event.reply("📌", buttons={'rows': buttons, 'style': {'font_size': 'small'}})
+```
+
 #### 附: 扩展 prompt 按钮 (最多 3 个)
 
 ```python
@@ -418,7 +491,14 @@ await event.reply(template_name='maintenance',
 # 主动推送图片到指定群/用户 (不关联消息)
 await event.send_image('group', event.group_id, "https://...", "图片说明")
 await event.send_image('user', event.user_id, image_bytes, "说明")
+
+# 或者用 reply_* 系列 + target_group_id / target_user_id 主动推送任意媒体
+await event.reply_image("https://...", "说明", target_group_id="群ID")
+await event.reply_video("https://...", target_user_id="用户ID")
+await event.reply_file('/path/file.zip', "📦", file_name="pkg.zip", target_group_id="群ID")
 ```
+
+> 传入 `target_group_id` / `target_user_id` 后, 媒体不再关联当前消息 (变为主动推送), 可另传 `msg_id=...` 使其关联指定消息成为被动回复。媒体上传失败时, 最近一次失败响应会记录到 `event.error` 供排查。
 
 ### 5.6 主动消息推送
 
@@ -446,6 +526,25 @@ await event.send_to_group("指定群ID", "通知内容")
 await event.send_to_user("指定用户ID", "私信内容")
 await event.send_to_channel("指定频道ID", "频道消息")
 ```
+
+#### `send_to_group` / `send_to_user` 完整参数
+
+```python
+await event.send_to_group(
+    group_id,                  # 目标群 ID (send_to_user 为 user_id)
+    content=None,              # 文本内容
+    msg_id=None,               # 关联消息 ID → 变为被动回复 (不占主动推送额度)
+    event_id=None,             # 关联事件 ID (加群/加好友等事件回复)
+    buttons=None,              # 按钮 (同 reply)
+    media=None,                # media 对象 (高级用法)
+    msg_type=None,             # 强制消息类型 (见 5.1.2)
+    skip_suffix=False,         # 跳过全局 markdown 后缀
+    message_reference_id=None, # 引用回复 REFIDX
+    # **kwargs 同样透传到载荷
+)
+```
+
+`send_to_channel(channel_id, content, *, msg_id=None, buttons=None, **kwargs)` 支持 `msg_id` 被动化与 `buttons`。
 
 > **`event.reply()` vs `event.send_to_*()`**: `reply` 是被动回复 (关联当前消息 msg_id), `send_to_*` 是主动推送 (不关联消息)。日常使用 `reply` 即可, 延迟场景 (如定时任务、sleep 后) 可以用 `send_to_*`。
 
@@ -495,7 +594,7 @@ if ref:
 await event.send_to_group(event.group_id, "通知", message_reference_id=ref)
 ```
 
-> 框架会自动组装为 `{"message_reference": {"message_id": "REFIDX_xxx", "ignore_get_message_error": true}}`。只有显式传 `message_reference_id` 才会引用。
+> 框架会自动组装为 `{"message_reference": {"message_id": "REFIDX_xxx", "ignore_get_message_error": true}}`。只有显式传 `message_reference_id` 才会引用。需要完全自定义引用对象时可直接传 `message_reference={...}` (优先级高于 `message_reference_id`)。
 
 ### 5.8 撤回与交互回调
 

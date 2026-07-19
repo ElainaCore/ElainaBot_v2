@@ -87,6 +87,7 @@ def _parse_common_fields(event, d):
     event.message_id = d.get('id', '')
     event.raw_content = d.get('content', '')
     event.content = MessageUtils.sanitize_content(event.raw_content)
+    event.content_with_at = MessageUtils.sanitize_content(event.raw_content, keep_at=True)
     event.timestamp = d.get('timestamp', '')
     event.message_type = d.get('message_type')
     event.msg_elements = d.get('msg_elements', [])
@@ -107,10 +108,9 @@ def _parse_common_fields(event, d):
     event.guild_id = d.get('guild_id', '')
     event.channel_id = d.get('channel_id', '')
 
-    if event.image_url and event.content:
-        event.content = f'{event.content}<{event.image_url}>'
-    elif event.image_url:
-        event.content = f'<{event.image_url}>'
+    if event.image_url:
+        event.content = f'{event.content}<{event.image_url}>' if event.content else f'<{event.image_url}>'
+        event.content_with_at = f'{event.content_with_at}<{event.image_url}>' if event.content_with_at else f'<{event.image_url}>'
 
 
 def parse_message_generic(event, d):

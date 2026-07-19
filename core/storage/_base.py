@@ -21,6 +21,7 @@ from core.storage._schema import (
     _json_field,
     _migrate_data_tables,
     _migrate_missing_columns,
+    _missing_index_sqls,
 )
 
 
@@ -104,6 +105,7 @@ class _BaseLogService:
             if conn is not None:
                 return conn
             os.makedirs(os.path.dirname(db_path), exist_ok=True)
+            preexisting = os.path.isfile(db_path) and os.path.getsize(db_path) > 0
             conn = sqlite3.connect(db_path, check_same_thread=False)
             if self._wal:
                 conn.execute('PRAGMA journal_mode=WAL')
@@ -119,11 +121,35 @@ class _BaseLogService:
                         conn.commit()
                     if log_type != 'data':
                         _migrate_missing_columns(conn, log_type)
-                    _ensure_indexes(conn, log_type)
+                    if preexisting:
+                        # 已有大库现场建索引可能需要数十秒, 改为后台线程补建
+                        self._build_missing_indexes_bg(db_path, conn, log_type)
+                    else:
+                        _ensure_indexes(conn, log_type)
                 self._initialized.add(db_path)
             self._conn_locks.setdefault(db_path, threading.Lock())
             self._conns[db_path] = conn  # 最后赋值, 确保读端看到的连接已完全初始化
             return conn
+
+    def _build_missing_indexes_bg(self, db_path, conn, log_type):
+        """检查缺失索引并在后台线程用独立连接补建 (不阻塞查询/写入线程)"""
+        missing = _missing_index_sqls(conn, log_type)
+        if not missing:
+            return
+
+        def _build():
+            try:
+                bg = sqlite3.connect(db_path)
+                bg.execute('PRAGMA busy_timeout=30000')
+                for sql in missing:
+                    bg.execute(sql)
+                    bg.commit()
+                bg.close()
+                log.info(f'[{self._log_tag}] 后台补建索引完成 ({log_type}): {len(missing)}个 {os.path.dirname(db_path)}')
+            except Exception as e:
+                log.warning(f'[{self._log_tag}] 后台补建索引失败 ({log_type}): {e}')
+
+        threading.Thread(target=_build, name=f'idx-{log_type}', daemon=True).start()
 
     def _get_read_conn(self, db_path, log_type):
         """获取独立的读连接 (WAL 模式下读写不互锁)"""

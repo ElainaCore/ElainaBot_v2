@@ -11,7 +11,7 @@ class TestBots:
         assert resp.status == 200
         data = await resp.json()
         assert_success_response(data)
-        assert 'bots' in data
+        assert 'bots' in data['data']
 
     async def test_get_bots_no_auth(self, api_client):
         resp = await api_client.get('/api/bots')

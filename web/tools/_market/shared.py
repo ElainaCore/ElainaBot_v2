@@ -106,7 +106,7 @@ def _github_to_archive(url, branch='main'):
     """将 GitHub 仓库 URL 转为 zip 下载地址"""
     if '/archive/' in url or 'codeload.github.com' in url:
         return url
-    m = re.match(r'https?://github\.com/([^/]+)/([^/]+)/?$', url.rstrip('/'))
+    m = re.match(r'https?://github\.com/([^/]+)/([^/]+?)(?:\.git)?$', url.rstrip('/'))
     if m:
         user, repo = m.groups()
         return f'https://github.com/{user}/{repo}/archive/refs/heads/{branch}.zip'

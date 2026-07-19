@@ -1,8 +1,10 @@
 """框架更新 — FrameworkUpdater 更新流程类"""
 
+import asyncio
 import fnmatch
 import json
 import os
+import re
 import shutil
 import zipfile
 from datetime import datetime
@@ -20,6 +22,14 @@ from web.tools._updater.shared import (
     _load_mirror_cache,
     log,
 )
+
+_SHA_RE = re.compile(r'[0-9a-f]{8,40}', re.IGNORECASE)
+
+
+def _normalize_version(version):
+    """commit SHA 统一为 8 位短 SHA"""
+    v = str(version or '').strip()
+    return v[:8] if _SHA_RE.fullmatch(v) else v
 
 
 class FrameworkUpdater:
@@ -60,6 +70,7 @@ class FrameworkUpdater:
             return 'unknown'
 
     def _save_version(self, version):
+        version = _normalize_version(version)
         try:
             with open(self.version_file, 'w', encoding='utf-8') as f:
                 json.dump(
@@ -292,8 +303,15 @@ class FrameworkUpdater:
                     dirs[:] = [d for d in dirs if not any(os.path.relpath(os.path.join(root, d), self.base_dir).startswith(p) for p in skip_prefixes)]
                     for fname in files:
                         fp = os.path.join(root, fname)
-                        if not any(s in fp for s in skip_contains):
+                        if any(s in fp for s in skip_contains):
+                            continue
+                        if not os.path.isfile(fp):  # 悬空符号链接等
+                            log.warning(f'备份跳过无效文件: {fp}')
+                            continue
+                        try:
                             zf.write(fp, os.path.relpath(fp, self.base_dir))
+                        except OSError as e:
+                            log.warning(f'备份跳过 {fp}: {e}')
 
                 # 单独收集日志目录中的 data.db / dau.db
                 log_abs = self.base_dir / 'data' / log_dir_name
@@ -397,7 +415,8 @@ class FrameworkUpdater:
         zip_file = await self.download_update(version)
         if not zip_file:
             return {'success': False, 'message': '下载失败'}
-        result = self.apply_update(zip_file, version, skip_backup=skip_backup)
+        # apply_update 为同步阻塞操作 (备份/解压/复制), 放线程执行避免阻塞事件循环导致进度接口无响应
+        result = await asyncio.to_thread(self.apply_update, zip_file, version, skip_backup)
         if result['success']:
             self._save_version(version)
             result['environment'] = env

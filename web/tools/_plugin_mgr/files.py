@@ -16,6 +16,7 @@ from web.tools._plugin_mgr.shared import (
     plugins_dir,
     validate_path,
 )
+from web.tools._zipsafe import safe_extractall
 
 _PLUGIN_TEMPLATE = """from core.plugin.decorators import handler
 
@@ -277,7 +278,7 @@ async def handle_upload_plugin(request: web.Request):
                     shutil.move(target_dir, backup)
 
                 extract_tmp = tempfile.mkdtemp()
-                zf.extractall(extract_tmp)
+                safe_extractall(zf, extract_tmp)
                 src = os.path.join(extract_tmp, folder_name)
                 shutil.move(src, target_dir)
                 shutil.rmtree(extract_tmp, ignore_errors=True)
@@ -294,7 +295,7 @@ async def handle_upload_plugin(request: web.Request):
                     shutil.move(target_dir, backup)
 
                 os.makedirs(target_dir, exist_ok=True)
-                zf.extractall(target_dir)
+                safe_extractall(zf, target_dir)
 
             plugin_name = os.path.basename(target_dir)
 

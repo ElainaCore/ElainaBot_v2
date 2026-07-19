@@ -1,4 +1,4 @@
-"""消息管理 — 全局状态, 昵称缓存, bot 迭代器"""
+"""消息管理 — 全局状态, 昵称缓存"""
 
 import time
 from typing import Any
@@ -72,17 +72,6 @@ def _batch_get_nicknames(user_ids):
         if uid and uid not in out:
             out[uid] = f'用户{uid[-6:]}'
     return out
-
-
-def _iter_bots(appid_filter=''):
-    """按 appid 过滤机器人迭代器; 空字符串=全部"""
-    if not _bot_manager:
-        return []
-    if appid_filter and appid_filter in _bot_manager._bots:
-        return [(appid_filter, _bot_manager._bots[appid_filter])]
-    return list(_bot_manager._bots.items())
-
-
 def _get_bot(appid=''):
     """按 appid 获取单个 bot 实例, 找不到返回 None"""
     if not _bot_manager or not _bot_manager._bots:

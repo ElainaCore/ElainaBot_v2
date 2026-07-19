@@ -5,8 +5,8 @@ from core.message.parsers.base import (
     MessageParser,
     MessageUtils,
     apply_message_scene,
-    extract_msg_idx,
     extract_image_from_attachments,
+    extract_msg_idx,
     parse_message_generic,
     sanitize_content,
 )

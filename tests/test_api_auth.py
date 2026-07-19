@@ -10,14 +10,13 @@ class TestAuthLogin:
         resp, data = await do_login(api_client, 'test_pass')
         assert_200(resp)
         assert_success_response(data)
-        assert 'token' in data
-        assert data['token']
+        assert data['data']['token']
 
     async def test_login_wrong_password(self, api_client):
         resp, data = await do_login(api_client, 'wrong_pass')
         assert resp.status == 401
         assert_error_response(data)
-        assert 'remaining' in data
+        assert 'remaining' in data['data']
 
     async def test_login_empty_password(self, api_client):
         resp = await api_client.post('/api/auth/login', json={'password': ''})
@@ -35,12 +34,12 @@ class TestAuthLogin:
         """弱密码应被检测"""
         resp, data = await do_login(api_client, '123456')
         if resp.status == 200:
-            assert data.get('is_weak') is True
+            assert data['data']['is_weak'] is True
 
     async def test_login_token_reuse(self, api_client):
         """Token 可重复用于认证检查"""
         resp, data = await do_login(api_client)
-        token = data['token']
+        token = data['data']['token']
         check_resp = await api_client.get(
             '/api/auth/check',
             headers={'Authorization': f'Bearer {token}'},
@@ -78,7 +77,7 @@ class TestPasswordStatus:
         assert_200(resp)
         data = await resp.json()
         assert_success_response(data)
-        assert 'is_default' in data
+        assert 'is_default' in data['data']
 
     async def test_password_status_no_auth(self, api_client):
         """未认证时返回 401"""

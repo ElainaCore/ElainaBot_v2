@@ -51,16 +51,14 @@ bots:
     # 事件去重 (过滤重复 message_id / event_id, 缓存5分钟)
     dedup:
       enabled: false
-    # 黑名单
+    # 黑名单 (列表非空即生效)
     blacklist:
-      user_enabled: false              # 用户黑名单开关
-      group_enabled: false             # 群黑名单开关
       user_list: []                    # 用户黑名单列表 (OpenID)
       group_list: []                   # 群黑名单列表 (群 OpenID)
 
     # 未@消息 (开启后全量消息匹配正则插件, 不判断是否@机器人)
     non_at_message:
-      enabled: false                   # 全量时未@消息响应开关
+      enabled: true                    # 全量时未@消息响应开关
       group_whitelist: []              # 群白名单 (关闭时仅白名单群触发插件)
       ignore_at_other_bot: true        # 忽略仅@其他机器人的消息 (未@自己时静默跳过)
       ignore_at_other_user: true       # 忽略仅@其他用户的消息 (未@自己时静默跳过)

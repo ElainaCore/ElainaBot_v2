@@ -11,6 +11,8 @@ from core.base.config import cfg
 from core.base.logger import PLUGIN, get_logger
 from core.plugin.decorators import handler, on_load
 
+from ._reply import reply
+
 log = get_logger(PLUGIN, '系统管理')
 
 # ==================== 数据文件 ====================
@@ -40,18 +42,6 @@ def _save_json(path, data):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
-def _get_plugin_manager():
-    """获取框架的 PluginManager 实例"""
-    try:
-        from core.application import get_app
-        app = get_app()
-        if app:
-            return app.plugin_manager
-    except Exception:
-        pass
-    return None
-
-
 def _mask_id(id_str, mask_char='*'):
     if not id_str or len(id_str) <= 6:
         return id_str
@@ -63,9 +53,11 @@ def _mask_id(id_str, mask_char='*'):
 
 @handler(r'^dm(.+)$', name='DM调试', desc='dm+内容 发送调试消息', owner_only=True)
 async def send_dm(event, match):
-    content = match.group(1).strip()
+    # 优先使用保留艾特文本的内容, 使 <@xxx> 可原样发送
+    m = re.match(r'^dm(.+)$', event.content_with_at or '', re.S)
+    content = (m.group(1) if m else match.group(1)).strip()
     if not content:
-        await event.reply('❌ 消息内容不能为空\n💡 使用格式：dm+消息内容')
+        await reply(event, '❌ 消息内容不能为空\n💡 使用格式：dm+消息内容')
         return
 
     # 处理转义字符
@@ -103,7 +95,7 @@ async def send_dm(event, match):
             buttons = build_keyboard(button_rows, event.appid)
         content = message_content
 
-    await event.reply(content, buttons=buttons)
+    await reply(event, content, buttons=buttons)
 
 
 # ==================== 重启 ====================
@@ -120,7 +112,7 @@ async def restart_bot(event, match):
     }
     _save_json(_RESTART_STATUS_FILE, restart_data)
 
-    await event.reply('🔄 正在重启...')
+    await reply(event, '🔄 正在重启...')
     await asyncio.sleep(0.5)
 
     # 优雅重启: 走 Application 流程, 刷写 SQLite 缓冲再 os.execv
@@ -192,30 +184,37 @@ def _check_restart_status():
 # ==================== 用户黑名单 ====================
 
 
+def _get_blacklist(appid, key):
+    return [str(x) for x in (cfg.get_bot_setting(appid, f'blacklist.{key}', []) or [])]
+
+
+def _set_blacklist(appid, key, values):
+    return cfg.set_bot_setting(appid, f'blacklist.{key}_list', sorted(values))
+
+
 @handler(r'^黑名单帮助$', name='黑名单帮助', desc='查看黑名单管理帮助', owner_only=True)
 async def show_blacklist_help(event, match):
-    pm = _get_plugin_manager()
     lines = ['📖 黑名单管理']
 
     # 用户黑名单
     lines.append('\n━━━ 🚫 用户黑名单 ━━━')
-    user_set = pm._blacklist_users if pm else set()
-    if not user_set:
+    user_list = _get_blacklist(event.appid, 'user_list')
+    if not user_list:
         lines.append('✅ 空')
     else:
-        for idx, uid in enumerate(sorted(user_set), 1):
+        for idx, uid in enumerate(sorted(user_list), 1):
             lines.append(f'{idx}. {_mask_id(uid)}')
 
     # 群黑名单
     lines.append('\n━━━ 🚫 群黑名单 ━━━')
-    group_set = pm._blacklist_groups if pm else set()
-    if not group_set:
+    group_list = _get_blacklist(event.appid, 'group_list')
+    if not group_list:
         lines.append('✅ 空')
     else:
-        for idx, gid in enumerate(sorted(group_set), 1):
+        for idx, gid in enumerate(sorted(group_list), 1):
             lines.append(f'{idx}. {_mask_id(gid)}')
 
-    await event.reply('\n'.join(lines))
+    await reply(event, '\n'.join(lines))
 
 
 @handler(r'^黑名单查看$', name='黑名单查看', desc='查看所有黑名单', owner_only=True)
@@ -232,22 +231,24 @@ async def view_blacklist(event, match):
 async def add_blacklist(event, match):
     user_id = match.group(2)
     if not user_id:
-        return await event.reply('请提供用户ID')
+        return await reply(event, '请提供用户ID')
 
     # 检查是否是主人
     try:
         bot_cfg = cfg.get_bot_config(event.appid)
         owner_ids = bot_cfg.get('owner_ids', []) if bot_cfg else []
         if user_id in owner_ids:
-            return await event.reply('无法将主人添加到黑名单')
+            return await reply(event, '无法将主人添加到黑名单')
     except Exception:
         pass
 
-    pm = _get_plugin_manager()
-    if not pm:
-        return await event.reply('框架未就绪，无法操作黑名单')
-    pm.add_blacklist_user(user_id)
-    await event.reply(f'已添加用户 {user_id} 到黑名单')
+    user_list = _get_blacklist(event.appid, 'user_list')
+    if user_id in user_list:
+        return await reply(event, f'用户 {user_id} 已在黑名单中')
+    user_list.append(user_id)
+    if not _set_blacklist(event.appid, 'user', user_list):
+        return await reply(event, '写入配置失败，无法操作黑名单')
+    await reply(event, f'已添加用户 {user_id} 到黑名单')
 
 
 @handler(
@@ -258,13 +259,13 @@ async def add_blacklist(event, match):
 )
 async def remove_blacklist(event, match):
     user_id = match.group(1)
-    pm = _get_plugin_manager()
-    if not pm:
-        return await event.reply('框架未就绪，无法操作黑名单')
-    if user_id not in pm._blacklist_users:
-        return await event.reply(f'用户 {user_id} 不在黑名单中')
-    pm.remove_blacklist_user(user_id)
-    await event.reply(f'已移除用户 {user_id}')
+    user_list = _get_blacklist(event.appid, 'user_list')
+    if user_id not in user_list:
+        return await reply(event, f'用户 {user_id} 不在黑名单中')
+    user_list.remove(user_id)
+    if not _set_blacklist(event.appid, 'user', user_list):
+        return await reply(event, '写入配置失败，无法操作黑名单')
+    await reply(event, f'已移除用户 {user_id}')
 
 
 # ==================== 群黑名单 ====================
@@ -279,12 +280,14 @@ async def remove_blacklist(event, match):
 async def add_group_blacklist(event, match):
     group_id = match.group(2)
     if not group_id:
-        return await event.reply('❌ 请提供群组ID\n💡 格式：群黑名单添加 [群ID]')
-    pm = _get_plugin_manager()
-    if not pm:
-        return await event.reply('框架未就绪，无法操作黑名单')
-    pm.add_blacklist_group(group_id)
-    await event.reply(f'已添加群组 {group_id} 到群黑名单')
+        return await reply(event, '❌ 请提供群组ID\n💡 格式：群黑名单添加 [群ID]')
+    group_list = _get_blacklist(event.appid, 'group_list')
+    if group_id in group_list:
+        return await reply(event, f'群组 {group_id} 已在群黑名单中')
+    group_list.append(group_id)
+    if not _set_blacklist(event.appid, 'group', group_list):
+        return await reply(event, '写入配置失败，无法操作黑名单')
+    await reply(event, f'已添加群组 {group_id} 到群黑名单')
 
 
 @handler(
@@ -295,10 +298,10 @@ async def add_group_blacklist(event, match):
 )
 async def remove_group_blacklist(event, match):
     group_id = match.group(1)
-    pm = _get_plugin_manager()
-    if not pm:
-        return await event.reply('框架未就绪，无法操作黑名单')
-    if group_id not in pm._blacklist_groups:
-        return await event.reply(f'群组 {group_id} 不在群黑名单中')
-    pm.remove_blacklist_group(group_id)
-    await event.reply(f'已移除群组 {group_id}')
+    group_list = _get_blacklist(event.appid, 'group_list')
+    if group_id not in group_list:
+        return await reply(event, f'群组 {group_id} 不在群黑名单中')
+    group_list.remove(group_id)
+    if not _set_blacklist(event.appid, 'group', group_list):
+        return await reply(event, '写入配置失败，无法操作黑名单')
+    await reply(event, f'已移除群组 {group_id}')

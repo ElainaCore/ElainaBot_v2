@@ -1,7 +1,6 @@
 """_EventDedup 去重逻辑单元测试"""
 
 import time
-from unittest.mock import patch
 
 from core.bot.event import _EventDedup
 

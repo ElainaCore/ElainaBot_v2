@@ -8,6 +8,8 @@ import sqlite3
 
 from aiohttp import web
 
+from web.response import error, ok
+
 log = logging.getLogger('ElainaBot.web.database')
 
 _bot_manager = None
@@ -163,7 +165,7 @@ def _open_readwrite(db_path):
 async def handle_list_databases(request: web.Request):
     """列出所有数据库文件 (含已挂载)"""
     databases = _find_databases() + _mounted_databases()
-    return web.json_response({'success': True, 'databases': databases})
+    return ok({'databases': databases})
 
 
 async def handle_list_tables(request: web.Request):
@@ -171,11 +173,11 @@ async def handle_list_tables(request: web.Request):
     body = await request.json()
     db_path = body.get('path', '')
     if not db_path:
-        return web.json_response({'success': False, 'message': '缺少 path'}, status=400)
+        return error('缺少 path', status=400)
 
     valid, abs_path = _validate_db_path(db_path)
     if not valid:
-        return web.json_response({'success': False, 'message': '无效路径'}, status=403)
+        return error('无效路径', status=403)
 
     try:
         conn = _open_readonly(abs_path)
@@ -205,10 +207,10 @@ async def handle_list_tables(request: web.Request):
                 }
             )
         conn.close()
-        return web.json_response({'success': True, 'tables': tables})
+        return ok({'tables': tables})
     except Exception as e:
         log.warning(f'列出表失败: {e}')
-        return web.json_response({'success': False, 'message': str(e)}, status=500)
+        return error(str(e), status=500)
 
 
 async def handle_query_table(request: web.Request):
@@ -222,15 +224,15 @@ async def handle_query_table(request: web.Request):
     order_dir = body.get('order_dir', 'DESC')
 
     if not db_path or not table:
-        return web.json_response({'success': False, 'message': '缺少参数'}, status=400)
+        return error('缺少参数', status=400)
 
     valid, abs_path = _validate_db_path(db_path)
     if not valid:
-        return web.json_response({'success': False, 'message': '无效路径'}, status=403)
+        return error('无效路径', status=403)
 
     # 防注入: 表名只允许字母数字下划线
     if not re.match(r'^[\w]+$', table):
-        return web.json_response({'success': False, 'message': '无效表名'}, status=400)
+        return error('无效表名', status=400)
 
     if order_dir.upper() not in ('ASC', 'DESC'):
         order_dir = 'DESC'
@@ -258,10 +260,9 @@ async def handle_query_table(request: web.Request):
             columns.append({'name': col['name'], 'type': col['type']})
 
         conn.close()
-        return web.json_response(
+        return ok(
             {
-                'success': True,
-                'data': data,
+                'rows': data,
                 'columns': columns,
                 'total': total,
                 'page': page,
@@ -270,7 +271,7 @@ async def handle_query_table(request: web.Request):
         )
     except Exception as e:
         log.warning(f'查询表失败: {e}')
-        return web.json_response({'success': False, 'message': str(e)}, status=500)
+        return error(str(e), status=500)
 
 
 async def handle_execute_sql(request: web.Request):
@@ -280,11 +281,11 @@ async def handle_execute_sql(request: web.Request):
     sql = (body.get('sql', '') or '').strip()
 
     if not db_path or not sql:
-        return web.json_response({'success': False, 'message': '缺少参数'}, status=400)
+        return error('缺少参数', status=400)
 
     valid, abs_path = _validate_db_path(db_path)
     if not valid:
-        return web.json_response({'success': False, 'message': '无效路径'}, status=403)
+        return error('无效路径', status=403)
 
     is_read = _READ_PATTERN.match(sql)
 
@@ -300,7 +301,7 @@ async def handle_execute_sql(request: web.Request):
         if len(statements) > 1 and not is_read:
             conn.executescript(sql)
             conn.close()
-            return web.json_response({'success': True, 'message': f'已执行 {len(statements)} 条语句', 'affected': -1})
+            return ok({'affected': -1}, message=f'已执行 {len(statements)} 条语句')
 
         cursor = conn.execute(sql)
 
@@ -309,15 +310,15 @@ async def handle_execute_sql(request: web.Request):
             columns = [{'name': desc[0], 'type': ''} for desc in cursor.description] if cursor.description else []
             data = [dict(r) for r in rows]
             conn.close()
-            return web.json_response({'success': True, 'data': data, 'columns': columns, 'total': len(data)})
+            return ok({'rows': data, 'columns': columns, 'total': len(data)})
 
         # 写操作: 返回影响行数
         affected = cursor.rowcount
         conn.commit()
         conn.close()
-        return web.json_response({'success': True, 'message': f'执行成功, 影响 {affected} 行', 'affected': affected})
+        return ok({'affected': affected}, message=f'执行成功, 影响 {affected} 行')
     except Exception as e:
-        return web.json_response({'success': False, 'message': str(e)}, status=400)
+        return error(str(e), status=400)
 
 
 async def handle_search_database(request: web.Request):
@@ -328,11 +329,11 @@ async def handle_search_database(request: web.Request):
     limit = min(200, max(1, int(body.get('limit', 50))))
 
     if not db_path or not keyword:
-        return web.json_response({'success': False, 'message': '缺少参数 (path/keyword)'}, status=400)
+        return error('缺少参数 (path/keyword)', status=400)
 
     valid, abs_path = _validate_db_path(db_path)
     if not valid:
-        return web.json_response({'success': False, 'message': '无效路径'}, status=403)
+        return error('无效路径', status=403)
 
     escaped = keyword.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
     pattern = f'%{escaped}%'
@@ -367,10 +368,10 @@ async def handle_search_database(request: web.Request):
                 }
             )
         conn.close()
-        return web.json_response({'success': True, 'results': results, 'keyword': keyword})
+        return ok({'results': results, 'keyword': keyword})
     except Exception as e:
         log.warning(f'全库搜索失败: {e}')
-        return web.json_response({'success': False, 'message': str(e)}, status=500)
+        return error(str(e), status=500)
 
 
 async def handle_browse_files(request: web.Request):
@@ -381,9 +382,9 @@ async def handle_browse_files(request: web.Request):
     base_abs = os.path.abspath(_base_dir)
     target = os.path.abspath(os.path.join(base_abs, rel_dir)) if rel_dir else base_abs
     if not (target == base_abs or target.startswith(base_abs + os.sep)):
-        return web.json_response({'success': False, 'message': '无效路径'}, status=403)
+        return error('无效路径', status=403)
     if not os.path.isdir(target):
-        return web.json_response({'success': False, 'message': '目录不存在'}, status=404)
+        return error('目录不存在', status=404)
 
     dirs, files = [], []
     try:
@@ -396,10 +397,10 @@ async def handle_browse_files(request: web.Request):
             elif f.endswith('.db') and os.path.isfile(fpath):
                 files.append({'name': f, 'type': 'db', 'size': os.path.getsize(fpath), 'path': fpath.replace('\\', '/')})
     except OSError as e:
-        return web.json_response({'success': False, 'message': str(e)}, status=500)
+        return error(str(e), status=500)
 
     rel = os.path.relpath(target, base_abs).replace('\\', '/')
-    return web.json_response({'success': True, 'dir': '' if rel == '.' else rel, 'items': dirs + files})
+    return ok({'dir': '' if rel == '.' else rel, 'items': dirs + files})
 
 
 async def handle_mount_database(request: web.Request):
@@ -407,21 +408,21 @@ async def handle_mount_database(request: web.Request):
     body = await request.json()
     db_path = str(body.get('path', '') or '').strip()
     if not db_path:
-        return web.json_response({'success': False, 'message': '缺少 path'}, status=400)
+        return error('缺少 path', status=400)
 
     abs_path = os.path.abspath(db_path)
     base_abs = os.path.abspath(_base_dir)
     if not abs_path.startswith(base_abs + os.sep):
-        return web.json_response({'success': False, 'message': '只能挂载框架目录下的数据库'}, status=403)
+        return error('只能挂载框架目录下的数据库', status=403)
     if not abs_path.endswith('.db') or not os.path.isfile(abs_path):
-        return web.json_response({'success': False, 'message': '不是有效的 .db 文件'}, status=400)
+        return error('不是有效的 .db 文件', status=400)
 
     mounted = _load_mounted()
     norm = abs_path.replace('\\', '/')
     if norm not in mounted:
         mounted.append(norm)
         _save_mounted(mounted)
-    return web.json_response({'success': True, 'path': norm})
+    return ok({'path': norm})
 
 
 async def handle_unmount_database(request: web.Request):
@@ -429,14 +430,14 @@ async def handle_unmount_database(request: web.Request):
     body = await request.json()
     db_path = str(body.get('path', '') or '').strip()
     if not db_path:
-        return web.json_response({'success': False, 'message': '缺少 path'}, status=400)
+        return error('缺少 path', status=400)
 
     abs_path = os.path.abspath(db_path).replace('\\', '/')
     mounted = _load_mounted()
     remaining = [p for p in mounted if os.path.abspath(p).replace('\\', '/') != abs_path]
     if len(remaining) != len(mounted):
         _save_mounted(remaining)
-    return web.json_response({'success': True})
+    return ok()
 
 
 async def handle_delete_rows(request: web.Request):
@@ -447,17 +448,17 @@ async def handle_delete_rows(request: web.Request):
     rowids = body.get('rowids', [])
 
     if not db_path or not table or not rowids:
-        return web.json_response({'success': False, 'message': '缺少参数 (path/table/rowids)'}, status=400)
+        return error('缺少参数 (path/table/rowids)', status=400)
 
     if not re.match(r'^[\w]+$', table):
-        return web.json_response({'success': False, 'message': '无效表名'}, status=400)
+        return error('无效表名', status=400)
 
     if not isinstance(rowids, list) or not all(isinstance(r, int) for r in rowids):
-        return web.json_response({'success': False, 'message': 'rowids 必须是整数数组'}, status=400)
+        return error('rowids 必须是整数数组', status=400)
 
     valid, abs_path = _validate_db_path(db_path)
     if not valid:
-        return web.json_response({'success': False, 'message': '无效路径'}, status=403)
+        return error('无效路径', status=403)
 
     try:
         conn = _open_readwrite(abs_path)
@@ -466,7 +467,7 @@ async def handle_delete_rows(request: web.Request):
         deleted = cursor.rowcount
         conn.commit()
         conn.close()
-        return web.json_response({'success': True, 'deleted': deleted})
+        return ok({'deleted': deleted})
     except Exception as e:
         log.warning(f'删除数据失败: {e}')
-        return web.json_response({'success': False, 'message': str(e)}, status=500)
+        return error(str(e), status=500)

@@ -38,6 +38,8 @@ DAU_TABLE_SQL = """
         active_groups INTEGER DEFAULT 0,
         total_messages INTEGER DEFAULT 0,
         private_messages INTEGER DEFAULT 0,
+        received_messages INTEGER DEFAULT 0,
+        sent_messages INTEGER DEFAULT 0,
         group_join_count INTEGER DEFAULT 0,
         group_leave_count INTEGER DEFAULT 0,
         friend_add_count INTEGER DEFAULT 0,
@@ -62,6 +64,7 @@ _SCHEMAS = {
             raw_message TEXT DEFAULT '',
             plugin_name TEXT DEFAULT '',
             direction TEXT DEFAULT '',
+            at_bot INTEGER DEFAULT 1,
             context TEXT DEFAULT ''
         )
     """,
@@ -141,19 +144,22 @@ _SCHEMAS = {
 
 # INSERT SQL
 _INSERTS = {
-    'message': 'INSERT INTO log (timestamp, message_id, reference_id, user_id, group_id, content, raw_message, plugin_name, direction, context) VALUES (?,?,?,?,?,?,?,?,?,?)',
+    'message': 'INSERT INTO log (timestamp, message_id, reference_id, user_id, group_id, content, raw_message, plugin_name, direction, at_bot, context) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
     'framework': 'INSERT INTO log (timestamp, content, level) VALUES (?,?,?)',
     'error': 'INSERT INTO log (timestamp, appid, module_type, module_name, content, traceback, context) VALUES (?,?,?,?,?,?,?)',
     'lifecycle': 'INSERT INTO log (timestamp, type, user_id, group_id, extra) VALUES (?,?,?,?,?)',
     'dau': """INSERT INTO log (date, active_users, active_groups, total_messages, private_messages,
+              received_messages, sent_messages,
               group_join_count, group_leave_count, friend_add_count, friend_remove_count,
               message_stats_detail, user_stats_detail, command_stats_detail)
-              VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+              VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
               ON CONFLICT(date) DO UPDATE SET
               active_users=MAX(active_users, excluded.active_users),
               active_groups=MAX(active_groups, excluded.active_groups),
               total_messages=MAX(total_messages, excluded.total_messages),
               private_messages=MAX(private_messages, excluded.private_messages),
+              received_messages=MAX(received_messages, excluded.received_messages),
+              sent_messages=MAX(sent_messages, excluded.sent_messages),
               group_join_count=group_join_count+excluded.group_join_count,
               group_leave_count=group_leave_count+excluded.group_leave_count,
               friend_add_count=friend_add_count+excluded.friend_add_count,
@@ -176,6 +182,10 @@ _INDEXES = {
 
         'CREATE INDEX IF NOT EXISTS idx_msg_direction ON log(direction, user_id, group_id, content)',
         'CREATE INDEX IF NOT EXISTS idx_msg_plugin_name ON log(plugin_name)',
+        # 统计覆盖索引: 计数/峰值/排行只扫索引, 避免读取 raw_message 大字段
+        'CREATE INDEX IF NOT EXISTS idx_msg_stats_cover ON log(direction, at_bot, group_id, user_id, timestamp)',
+        'CREATE INDEX IF NOT EXISTS idx_msg_stats_user ON log(user_id, direction, at_bot)',
+        'CREATE INDEX IF NOT EXISTS idx_msg_stats_group ON log(group_id, direction, at_bot)',
     ],
     'lifecycle': [
         'CREATE INDEX IF NOT EXISTS idx_lc_user_id ON log(user_id)',
@@ -256,3 +266,20 @@ def _ensure_indexes(conn, log_type):
             log.warning(f'创建索引失败 ({log_type}): {e}')
     with contextlib.suppress(Exception):
         conn.commit()
+
+
+_INDEX_NAME_RE = re.compile(r'CREATE INDEX IF NOT EXISTS (\w+)', re.IGNORECASE)
+
+
+def _missing_index_sqls(conn, log_type):
+    """返回该库缺失的索引建表语句列表"""
+    try:
+        existing = {row[1] for row in conn.execute("PRAGMA index_list('log')").fetchall()}
+    except Exception:
+        return []
+    missing = []
+    for sql in _INDEXES.get(log_type, ()):
+        m = _INDEX_NAME_RE.search(sql)
+        if m and m.group(1) not in existing:
+            missing.append(sql)
+    return missing

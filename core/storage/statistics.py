@@ -200,16 +200,19 @@ class StatisticsService(DailyScanService):
         if not conn:
             return None, None
         try:
+            # 旧库可能没有 at_bot 列, 按已艾特处理
+            has_at_bot = any(r['name'] == 'at_bot' for r in conn.execute('PRAGMA table_info(log)'))
+            # 仅统计接收消息, 全量群仅计艾特机器人的
+            at_ok = 'COALESCE(at_bot, 1) != 0' if has_at_bot else '1=1'
             cur = conn.execute(
-                "SELECT user_id, group_id, content FROM log WHERE direction='receive'"
+                f"SELECT user_id, group_id, content FROM log WHERE direction='receive' AND {at_ok}"
             )
             users = {}
             groups = {}
             has_row = False
-            for uid, gid, content in cur:
+            for row in cur:
                 has_row = True
-                uid = uid or ''
-                gid = gid or ''
+                uid, gid, content = row[0] or '', row[1] or '', row[2]
                 is_private = gid in _PRIVATE_GIDS
                 cmd = _extract_command(content)
 
