@@ -1,0 +1,32 @@
+# 腾讯云 COS 对象存储配置
+cos:
+  enabled: false  # 是否启用 COS 图床
+  region: ap-guangzhou  # 存储桶所在地域, 如 ap-guangzhou
+  secret_id: ''  # 腾讯云 API SecretId
+  secret_key: ''  # 腾讯云 API SecretKey
+  bucket_name: ''  # 存储桶名称, 如 mybucket-1250000000
+  domain: ''  # 自定义域名, 留空使用默认域名
+  upload_path_prefix: elaina/  # 上传路径前缀
+  max_file_size: 104857600  # 最大文件大小 (字节), 默认 100MB
+# B站图床配置
+bilibili:
+  enabled: false  # 是否启用 B站图床
+  csrf_token: ''  # B站 Cookie 中的 bili_jct 值
+  sessdata: ''  # B站 Cookie 中的 SESSDATA 值
+  bucket: openplatform  # 上传 bucket, 一般无需修改
+# QQ频道图床配置
+qq_channel:
+  enabled: false  # 是否启用 QQ频道图床
+  channel_id: ''  # 用于上传图片的子频道 ID
+# 智谱 ChatGLM 图床 (免费, 无需配置)
+chatglm:
+  enabled: false  # 是否启用 ChatGLM 图床
+# Ukaka 图床 (免费, 无需配置)
+ukaka:
+  enabled: false  # 是否启用 Ukaka 图床
+# 星野图床 (免费, 无需配置)
+xingye:
+  enabled: false  # 是否启用星野图床
+# Nature 图床 (腾讯 COS 直传, 密钥内置, 仅图片)
+nature:
+  enabled: false  # 是否启用 Nature 图床
