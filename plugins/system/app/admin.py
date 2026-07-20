@@ -9,6 +9,7 @@ import sys
 
 from core.base.config import cfg
 from core.base.logger import PLUGIN, get_logger
+from core.plugin._blacklist import get_blacklist_map, set_blacklist_map
 from core.plugin.decorators import handler, on_load
 
 from ._reply import reply
@@ -118,6 +119,7 @@ async def restart_bot(event, match):
     # 优雅重启: 走 Application 流程, 刷写 SQLite 缓冲再 os.execv
     try:
         from core.application import get_app
+
         app = get_app()
         if app:
             app._restart_requested = True
@@ -184,12 +186,12 @@ def _check_restart_status():
 # ==================== 用户黑名单 ====================
 
 
-def _get_blacklist(appid, key):
-    return [str(x) for x in (cfg.get_bot_setting(appid, f'blacklist.{key}', []) or [])]
-
-
-def _set_blacklist(appid, key, values):
-    return cfg.set_bot_setting(appid, f'blacklist.{key}_list', sorted(values))
+def _bl_lines(lines, bl_map):
+    if not bl_map:
+        lines.append('✅ 空')
+        return
+    for idx, (bid, reason) in enumerate(sorted(bl_map.items()), 1):
+        lines.append(f'{idx}. {_mask_id(bid)}' + (f'（{reason}）' if reason else ''))
 
 
 @handler(r'^黑名单帮助$', name='黑名单帮助', desc='查看黑名单管理帮助', owner_only=True)
@@ -198,21 +200,11 @@ async def show_blacklist_help(event, match):
 
     # 用户黑名单
     lines.append('\n━━━ 🚫 用户黑名单 ━━━')
-    user_list = _get_blacklist(event.appid, 'user_list')
-    if not user_list:
-        lines.append('✅ 空')
-    else:
-        for idx, uid in enumerate(sorted(user_list), 1):
-            lines.append(f'{idx}. {_mask_id(uid)}')
+    _bl_lines(lines, get_blacklist_map(event.appid, 'user'))
 
     # 群黑名单
     lines.append('\n━━━ 🚫 群黑名单 ━━━')
-    group_list = _get_blacklist(event.appid, 'group_list')
-    if not group_list:
-        lines.append('✅ 空')
-    else:
-        for idx, gid in enumerate(sorted(group_list), 1):
-            lines.append(f'{idx}. {_mask_id(gid)}')
+    _bl_lines(lines, get_blacklist_map(event.appid, 'group'))
 
     await reply(event, '\n'.join(lines))
 
@@ -223,15 +215,14 @@ async def view_blacklist(event, match):
 
 
 @handler(
-    r'^黑名单添加 *(.+?) *([a-zA-Z0-9]+)$',
+    r'^黑名单添加 +([a-zA-Z0-9]{32})(?: +(.+))?$',
     name='黑名单添加',
-    desc='添加用户到黑名单',
+    desc='添加用户到黑名单，可附带理由',
     owner_only=True,
 )
 async def add_blacklist(event, match):
-    user_id = match.group(2)
-    if not user_id:
-        return await reply(event, '请提供用户ID')
+    user_id = match.group(1)
+    reason = (match.group(2) or '').strip()
 
     # 检查是否是主人
     try:
@@ -242,28 +233,28 @@ async def add_blacklist(event, match):
     except Exception:
         pass
 
-    user_list = _get_blacklist(event.appid, 'user_list')
-    if user_id in user_list:
+    bl = get_blacklist_map(event.appid, 'user')
+    if user_id in bl:
         return await reply(event, f'用户 {user_id} 已在黑名单中')
-    user_list.append(user_id)
-    if not _set_blacklist(event.appid, 'user', user_list):
+    bl[user_id] = reason or None
+    if not set_blacklist_map(event.appid, 'user', bl):
         return await reply(event, '写入配置失败，无法操作黑名单')
-    await reply(event, f'已添加用户 {user_id} 到黑名单')
+    await reply(event, f'已添加用户 {user_id} 到黑名单' + (f'，理由：{reason}' if reason else ''))
 
 
 @handler(
-    r'^黑名单删除 *([a-zA-Z0-9]+)$',
+    r'^黑名单删除 *([a-zA-Z0-9]{32})$',
     name='黑名单删除',
     desc='从黑名单移除用户',
     owner_only=True,
 )
 async def remove_blacklist(event, match):
     user_id = match.group(1)
-    user_list = _get_blacklist(event.appid, 'user_list')
-    if user_id not in user_list:
+    bl = get_blacklist_map(event.appid, 'user')
+    if user_id not in bl:
         return await reply(event, f'用户 {user_id} 不在黑名单中')
-    user_list.remove(user_id)
-    if not _set_blacklist(event.appid, 'user', user_list):
+    del bl[user_id]
+    if not set_blacklist_map(event.appid, 'user', bl):
         return await reply(event, '写入配置失败，无法操作黑名单')
     await reply(event, f'已移除用户 {user_id}')
 
@@ -272,36 +263,35 @@ async def remove_blacklist(event, match):
 
 
 @handler(
-    r'^群黑名单添加 +(?:(.+?) +)?([A-Z0-9]{20,})$',
+    r'^群黑名单添加 +([a-zA-Z0-9]{32})(?: +(.+))?$',
     name='群黑名单添加',
-    desc='添加群到黑名单',
+    desc='添加群到黑名单，可附带理由',
     owner_only=True,
 )
 async def add_group_blacklist(event, match):
-    group_id = match.group(2)
-    if not group_id:
-        return await reply(event, '❌ 请提供群组ID\n💡 格式：群黑名单添加 [群ID]')
-    group_list = _get_blacklist(event.appid, 'group_list')
-    if group_id in group_list:
+    group_id = match.group(1)
+    reason = (match.group(2) or '').strip()
+    bl = get_blacklist_map(event.appid, 'group')
+    if group_id in bl:
         return await reply(event, f'群组 {group_id} 已在群黑名单中')
-    group_list.append(group_id)
-    if not _set_blacklist(event.appid, 'group', group_list):
+    bl[group_id] = reason or None
+    if not set_blacklist_map(event.appid, 'group', bl):
         return await reply(event, '写入配置失败，无法操作黑名单')
-    await reply(event, f'已添加群组 {group_id} 到群黑名单')
+    await reply(event, f'已添加群组 {group_id} 到群黑名单' + (f'，理由：{reason}' if reason else ''))
 
 
 @handler(
-    r'^群黑名单删除 *([a-zA-Z0-9]+)$',
+    r'^群黑名单删除 *([a-zA-Z0-9]{32})$',
     name='群黑名单删除',
     desc='从群黑名单移除群',
     owner_only=True,
 )
 async def remove_group_blacklist(event, match):
     group_id = match.group(1)
-    group_list = _get_blacklist(event.appid, 'group_list')
-    if group_id not in group_list:
+    bl = get_blacklist_map(event.appid, 'group')
+    if group_id not in bl:
         return await reply(event, f'群组 {group_id} 不在群黑名单中')
-    group_list.remove(group_id)
-    if not _set_blacklist(event.appid, 'group', group_list):
+    del bl[group_id]
+    if not set_blacklist_map(event.appid, 'group', bl):
         return await reply(event, '写入配置失败，无法操作黑名单')
     await reply(event, f'已移除群组 {group_id}')

@@ -142,6 +142,10 @@ class Application(EventHandlerMixin):
         # 1) 初始化配置
         cfg.init(self._path('config'))
 
+        from core.plugin._blacklist import migrate_blacklist_config
+
+        migrate_blacklist_config()
+
         fw_name = cfg.get('settings', 'web.framework_name', 'ElainaBot')
         log_level_str = cfg.get('settings', 'logging.level', 'INFO').upper()
         log_level = getattr(logging, log_level_str, logging.INFO)

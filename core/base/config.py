@@ -47,8 +47,8 @@ _BOT_DEFAULTS = {
     'welcome.new_user_welcome': False,
     'welcome.friend_add_message': False,
     'maintenance.enabled': False,
-    'blacklist.user_list': [],
-    'blacklist.group_list': [],
+    'blacklist.user_list': {},
+    'blacklist.group_list': {},
     'non_at_message.enabled': True,
     'non_at_message.group_whitelist': [],
 }

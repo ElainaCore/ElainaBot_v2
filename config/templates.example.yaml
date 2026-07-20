@@ -93,6 +93,7 @@ blacklist:
 group_blacklist:
   markdown: |
     该群组已被列入黑名单，机器人已停止服务
+    > 原因：{reason}
     > 如有疑问，请联系管理员
 
 # ===== API 错误 =====
