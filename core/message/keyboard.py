@@ -72,6 +72,22 @@ def build_keyboard(button_rows, appid=None, *, font_size=None, style=None):
             if 'tips' in btn:
                 b['action']['unsupport_tips'] = btn['tips']
 
+            # 二次确认弹窗
+            if modal := btn.get('modal'):
+                b['action']['modal'] = {'content': modal} if isinstance(modal, str) else modal
+
+            # 订阅按钮: subscribe -> type=4 + subscribe_data
+            if (sub := btn.get('subscribe')) is not None:
+                b['action']['type'] = 4
+                b['action']['subscribe_data'] = _build_subscribe_data(sub)
+
+            # 平台原生 action 字段直接写在 btn 里时原样透传
+            for key in ('subscribe_data', 'click_limit', 'unsupport_tips', 'anchor'):
+                if key in btn:
+                    b['action'][key] = btn[key]
+            if 'subscribe_data' in btn and 'type' not in btn:
+                b['action']['type'] = 4
+
             buttons.append(b)
         rows.append({'buttons': buttons})
 
@@ -82,6 +98,18 @@ def build_keyboard(button_rows, appid=None, *, font_size=None, style=None):
     if kb_style:
         content['style'] = kb_style
     return {'content': content}
+
+
+def _build_subscribe_data(sub):
+    """订阅数据: dict 原样透传; str/list 转 template_ids (含 '_' 的 ID 视为自定义模板)"""
+    if isinstance(sub, dict):
+        return sub
+    ids = [sub] if isinstance(sub, str | int) else list(sub)
+    template_ids = []
+    for i in ids:
+        i = str(i)
+        template_ids.append({'custom_template_id': i} if '_' in i else {'template_id': i})
+    return {'template_ids': template_ids}
 
 
 def build_prompt_keyboard(prompt_buttons):

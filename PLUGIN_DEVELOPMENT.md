@@ -368,7 +368,7 @@ await event.send_to_group(event.group_id, "主动消息同样支持", skip_suffi
 | 字段 | 类型 | 默认 | 说明 |
 | --- | --- | --- | --- |
 | `text` | `str` | `''` | 按钮显示文字 (**必填**) |
-| `type` | `int` | `2` | 按钮类型: `0`=跳转链接 / `1`=回调 / `2`=输入指令 |
+| `type` | `int` | `2` | 按钮类型: `0`=跳转链接 / `1`=回调 / `2`=输入指令 / `4`=订阅 |
 | `data` | `str` | `text` | type=0: URL; type=1: 回调标识; type=2: 填充到输入框的内容 |
 | `link` | `str` | — | 快捷方式: 设置后自动设为 `type=0 + data=link` |
 | `show` | `str` | `text` | 点击后显示的文字 (visited_label) |
@@ -382,6 +382,10 @@ await event.send_to_group(event.group_id, "主动消息同样支持", skip_suffi
 | `reply` | `bool` | 点击后作为引用回复发送 |
 | `limit` | `int` | 点击次数限制 (`click_limit`)可能无效 |
 | `tips` | `str` | 不支持时的提示文字 (`unsupport_tips`) |
+| `modal` | `str`/`dict` | 点击后的二次确认弹窗; 字符串等价于 `{'content': 文本}`, dict 可额外指定 `confirm_text` / `cancel_text` |
+| `subscribe` | `str`/`list`/`dict` | 订阅模板 ID, 设置后自动设为 `type=4` 并生成 `subscribe_data`; 含 `_` 的 ID 转为 `custom_template_id`, 否则为 `template_id`; dict 原样透传 |
+
+平台原生 action 字段 (`subscribe_data` / `click_limit` / `unsupport_tips` / `anchor`) 也可以直接写在按钮字典里, 原样透传到 `action`; 写了 `subscribe_data` 且未指定 `type` 时自动设为 `type=4`。
 
 #### 权限字段 (五者二选一, 优先级从上到下)
 
@@ -421,6 +425,20 @@ buttons = [
 ]
 await event.reply("📌 多功能按钮面板", buttons=buttons)
 ```
+
+#### 订阅按钮 (type=4)
+
+```python
+buttons = [[{
+    'text': '订阅', 'show': '已订阅',
+    'subscribe': '102722993_1769091467',          # 自定义模板 ID (含 '_')
+    'modal': {'content': '确认订阅？', 'confirm_text': '✔️确认', 'cancel_text': '❌取消'},
+    'tips': '请升级QQ版本',
+}]]
+await event.reply('🔔 订阅推送', buttons=buttons)
+```
+
+> ⚠️ `subscribe` 必须传入真实存在的模板 ID: 无效模板 (如 `template_id: "0"`) 会导致部分 QQ 客户端点击按钮后闪退。
 
 #### 小按钮 (键盘级字号)
 

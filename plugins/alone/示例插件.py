@@ -148,6 +148,23 @@ async def send_small_buttons(event, match):
     await event.reply("📌 小按钮演示 (font_size=small)", buttons={'rows': rows, 'font_size': 'small'})
 
 
+@handler(r'^订阅按钮$', name='订阅按钮示例', desc='发送订阅按钮 (type=4) 与二次确认弹窗', owner_only=True)
+async def send_subscribe_buttons(event, match):
+    buttons = [
+        [
+            {'text': '订阅', 'show': '已订阅',
+             'subscribe': '你的AppID_模板ID',  # 替换为自己机器人的订阅模板 ID
+             'modal': {'content': '确认订阅？', 'confirm_text': '✔️确认', 'cancel_text': '❌取消'},
+             'tips': '请升级QQ版本'},
+        ],
+        # modal 不限于订阅按钮: 任何类型按钮都可加二次确认弹窗 (字符串等价于 {'content': ...})
+        [
+            {'text': '带确认的回调', 'data': 'callback_1', 'type': 1, 'modal': '确认执行？'},
+        ],
+    ]
+    await event.reply("🔔 订阅按钮 / 二次确认演示", buttons=buttons)
+
+
 # ==================== 交互回调示例 ====================
 # 回调按钮 (type=1) 被点击时, 框架会下发 INTERACTION_CREATE 事件,
 # event.content 就是按钮的 data。用 set_callback_code 应答这次点击。
