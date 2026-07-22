@@ -15,12 +15,13 @@ from core.storage._schema import (
     _json_field,
 )
 from core.storage.share import ShareMixin
+from core.storage.subscribe import SubscribeMixin
 from core.storage.wakeup import WakeupMixin
 
 log = get_logger(SERVICE, '日志')
 
 
-class LogService(_BaseLogService, ShareMixin, WakeupMixin):
+class LogService(_BaseLogService, ShareMixin, WakeupMixin, SubscribeMixin):
     """SQLite 日志服务 (每个 bot 一个实例, 异步)"""
 
     _global_callbacks_registered = False

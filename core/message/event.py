@@ -19,6 +19,7 @@ from core.message.parsers.lifecycle import (
     GroupMemberRemoveParser,
     GroupMsgReceiveParser,
     GroupMsgRejectParser,
+    SubscribeStatusParser,
 )
 
 # 交互回调 (op12 ACK) 默认状态码与默认等待插件超时 (秒)
@@ -48,6 +49,9 @@ GROUP_MSG_RECEIVE = 'GROUP_MSG_RECEIVE'
 # 群成员 (用户入群/退群)
 GROUP_MEMBER_ADD = 'GROUP_MEMBER_ADD'
 GROUP_MEMBER_REMOVE = 'GROUP_MEMBER_REMOVE'
+
+# 订阅消息 (用户允许/拒绝订阅)
+SUBSCRIBE_MESSAGE_STATUS = 'SUBSCRIBE_MESSAGE_STATUS'
 
 # 表态
 MESSAGE_REACTION_ADD = 'MESSAGE_REACTION_ADD'
@@ -84,6 +88,7 @@ LIFECYCLE_TYPES = frozenset(
         GROUP_MSG_RECEIVE,
         GROUP_MEMBER_ADD,
         GROUP_MEMBER_REMOVE,
+        SUBSCRIBE_MESSAGE_STATUS,
     }
 )
 REACTION_TYPES = frozenset({MESSAGE_REACTION_ADD, MESSAGE_REACTION_REMOVE})
@@ -126,6 +131,7 @@ _GROUP_MEMBER_REMOVE_PARSER = GroupMemberRemoveParser()
 _MESSAGE_PARSER = MessageParser()
 _GROUP_MSG_REJECT_PARSER = GroupMsgRejectParser()
 _GROUP_MSG_RECEIVE_PARSER = GroupMsgReceiveParser()
+_SUBSCRIBE_STATUS_PARSER = SubscribeStatusParser()
 
 # 解析器映射表
 _PARSERS = {
@@ -144,6 +150,7 @@ _PARSERS = {
     FRIEND_DEL: _FRIEND_DEL_PARSER,
     GROUP_MSG_REJECT: _GROUP_MSG_REJECT_PARSER,
     GROUP_MSG_RECEIVE: _GROUP_MSG_RECEIVE_PARSER,
+    SUBSCRIBE_MESSAGE_STATUS: _SUBSCRIBE_STATUS_PARSER,
 }
 
 
@@ -199,6 +206,7 @@ class Event:
         'interaction_data',
         'scene',
         'sharer_id',
+        'subscribe_results',
         'mentions',
         'bot_member_role',
         'is_at_self',
@@ -246,6 +254,7 @@ class Event:
         self.interaction_data = None
         self.scene = None
         self.sharer_id = None
+        self.subscribe_results = []
         self.mentions = []
         self.bot_member_role = ''
         self.is_at_self = False

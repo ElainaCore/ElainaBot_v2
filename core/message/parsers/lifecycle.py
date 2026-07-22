@@ -99,3 +99,14 @@ class FriendDelParser(LifecycleParser):
         self._parse_base(event, d)
         event.group_id = ''
         event.content = f'用户 {event.user_id} 删除机器人好友'
+
+
+class SubscribeStatusParser(LifecycleParser):
+    """订阅消息状态事件解析器 (单聊 openid / 群聊 group_openid 两种链路)"""
+
+    def parse(self, event, d):
+        self._parse_base(event, d)
+        results = d.get('result')
+        event.subscribe_results = results if isinstance(results, list) else []
+        target = event.group_id or event.user_id
+        event.content = f'订阅消息状态变更 {target} ({len(event.subscribe_results)} 条)'

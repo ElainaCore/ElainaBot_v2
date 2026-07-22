@@ -21,6 +21,7 @@ from core.message.event import (
     INTERACTION_CREATE,
     MESSAGE_TYPES,
     SILENT_TYPES,
+    SUBSCRIBE_MESSAGE_STATUS,
 )
 from core.message.parsers import IdentityHelper
 from core.message.parsers.base import MessageUtils
@@ -386,6 +387,18 @@ class EventHandlerMixin:
             raw_event=event.raw,
         )
 
+    async def _handle_subscribe_status(self, bot, event):
+        try:
+            await bot.log_service.subscribe_record(
+                event.subscribe_results, event.group_id or '', event.user_id or '')
+        except Exception as e:
+            report_error(FRAMEWORK, '订阅记录', e, context={'appid': event.appid})
+        self._log_lifecycle(
+            bot, 'subscribe_status',
+            {'group_id': event.group_id or '', 'user_id': event.user_id or ''},
+            raw_event=event.raw,
+        )
+
     async def _handle_group_msg_receive(self, bot, event):
         gid = event.group_id or ''
         uid = event.user_id or ''
@@ -412,6 +425,7 @@ class EventHandlerMixin:
         FRIEND_DEL: _handle_friend_del,
         GROUP_MSG_REJECT: _handle_group_msg_reject,
         GROUP_MSG_RECEIVE: _handle_group_msg_receive,
+        SUBSCRIBE_MESSAGE_STATUS: _handle_subscribe_status,
     }
 
     # ==================== 用户/群组追踪 ====================
