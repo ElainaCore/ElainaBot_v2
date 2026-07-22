@@ -97,6 +97,15 @@ class SubscribeMixin:
             params.append(sub_type)
         return self.query('subscribe', sql, tuple(params))
 
+    def subscribe_get_by_target(self, target_id, target_type='group'):
+        """查询某群/用户已订阅的模板列表 [{template_id, sub_type, subscribe_id}, ...]"""
+        sql = 'SELECT template_id, sub_type, subscribe_id FROM log WHERE status=1 AND target_id=?'
+        params = [str(target_id)]
+        if target_type:
+            sql += ' AND target_type=?'
+            params.append(target_type)
+        return self.query('subscribe', sql, tuple(params))
+
     async def subscribe_consume(self, template_id, target_id):
         """单次订阅发送后作废 (status=0)"""
         loop = asyncio.get_running_loop()

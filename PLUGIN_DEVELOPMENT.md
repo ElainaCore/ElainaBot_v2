@@ -433,17 +433,16 @@ await event.reply("📌 多功能按钮面板", buttons=buttons)
 ```python
 buttons = [[{
     'text': '订阅', 'show': '已订阅',
-    'subscribe': '102722993_1769091467',          # 自定义模板 ID (含 '_')
+    'subscribe': '102134274_1749040268',          # 机器人Markdown模板 id
     'modal': {'content': '确认订阅？', 'confirm_text': '✔️确认', 'cancel_text': '❌取消'},
     'tips': '请升级QQ版本',
 }]]
-# content 仅用于通过非空检查/日志记录, 实际展示内容由 markdown 模板参数决定
 await event.reply(
     '🔔 订阅推送',
     buttons=buttons,
     msg_type=2,
     markdown={
-        'custom_template_id': '102134274_1749040268',  # 替换为你自己的 markdown 模板 ID
+        'custom_template_id': '102134274_1749040268',  # markdown 模板 id (这条消息的显示模板)
         'params': [{'key': 'text', 'values': ['🔔 订阅推送']}],
     },
 )
@@ -455,24 +454,25 @@ await event.reply(
 
 #### 发送订阅消息
 
-用户点击订阅按钮后, 平台下发 `SUBSCRIBE_MESSAGE_STATUS` 订阅事件, 事件中返回 `subscribe_id` (发送订阅消息的票据, 注意不是订阅事件本身的 event id)。框架会自动记录订阅关系 (模板ID ↔ 群/用户, 含 `subscribe_id`), 也可用 `event_types=['SUBSCRIBE_MESSAGE_STATUS']` 订阅该事件自行读取 `event.subscribe_results`。
+用户点击订阅按钮后, 平台下发 `SUBSCRIBE_MESSAGE_STATUS` 订阅事件, 事件中返回 `subscribe_id` (发送订阅消息的票据)。框架会自动记录订阅关系 (模板ID ↔ 群/用户, 含 `subscribe_id`), 也可用 `event_types=['SUBSCRIBE_MESSAGE_STATUS']` 订阅该事件自行读取 `event.subscribe_results`。
 
-推送内容为普通消息即可 (文本 / markdown / 图片均可), 但**必须携带 `subscribe_id`** — 不填写将按普通主动消息推送 (占用主动消息条数):
+但**必须携带 `subscribe_id`** — 不填写将按普通主动消息推送 (占用主动消息条数):
 
 ```python
-subscribe = '你的AppID_模板ID'  # 订阅按钮 subscribe 字段使用的订阅模板 ID
-# 查询该模板已订阅的群并取出指定群的 subscribe_id: [{target_id, sub_type, subscribe_id}, ...]
-targets = log_service.subscribe_get_targets(subscribe)
-t = next((x for x in targets if x['target_id'] == group_id), None)
+markdown_id = '102134274_1749040268'  # markdown 模板 id (订阅按钮 subscribe 字段填的那个)
+# 先查该群订阅了哪些模板: [{template_id, sub_type, subscribe_id}, ...]
+subs = log_service.subscribe_get_by_target(group_id)
+t = next((x for x in subs if x['template_id'] == markdown_id), None)
 if t:
+    subscribe = t['subscribe_id']  # 订阅事件返回的 subscribe_id
     ok, data, _ = await event.send_to_group(
-        group_id, '🔔 这是一条订阅消息推送', subscribe_id=t['subscribe_id'])
+        group_id, '🔔 这是一条订阅消息推送', subscribe_id=subscribe)
     # 单次订阅 (sub_type='once') 发送后作废, 永久订阅可重复推送
     if ok and t['sub_type'] == 'once':
-        await log_service.subscribe_consume(subscribe, group_id)
+        await log_service.subscribe_consume(markdown_id, group_id)
 ```
 
-> ⚠️ 订阅消息有推送限额, 不要对全部订阅群批量群发, 按需向指定群推送。
+> ⚠️ 订阅消息有单群每日推送限额,  按需推送。
 
 完整可运行示例见 `plugins/alone/示例插件.py` 的「订阅消息」指令 (含 `log_service` 获取方式)。
 
