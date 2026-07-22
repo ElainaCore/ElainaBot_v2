@@ -15,6 +15,7 @@ _DEFAULTS = {
     'password': '',
     'db': 0,
     'max_connections': 50,
+    'pool_timeout': 10,
     'socket_timeout': 5,
     'socket_connect_timeout': 5,
     'health_check_interval': 30,
@@ -27,6 +28,7 @@ _COMMENTS = {
     'password': '连接密码, 无密码留空',
     'db': '数据库编号 (0-15)',
     'max_connections': '最大连接数',
+    'pool_timeout': '连接池耗尽时等待空闲连接的超时 (秒)',
     'socket_timeout': '读写超时 (秒)',
     'socket_connect_timeout': '连接超时 (秒)',
     'health_check_interval': '健康检查间隔 (秒)',
@@ -47,18 +49,19 @@ class RedisPool:
 
     async def initialize(self):
         try:
-            from redis.asyncio import ConnectionPool, Redis
+            from redis.asyncio import BlockingConnectionPool, Redis
         except ImportError:
             self._log.error('redis 未安装 (pip install redis>=5.0)')
             return
         try:
             password = self._cfg.get('password') or None
-            pool = ConnectionPool(
+            pool = BlockingConnectionPool(
                 host=self._cfg.get('host', '127.0.0.1'),
                 port=int(self._cfg.get('port', 6379)),
                 password=password,
                 db=int(self._cfg.get('db', 0)),
                 max_connections=int(self._cfg.get('max_connections', 50)),
+                timeout=int(self._cfg.get('pool_timeout', 10)),
                 socket_timeout=int(self._cfg.get('socket_timeout', 5)),
                 socket_connect_timeout=int(self._cfg.get('socket_connect_timeout', 5)),
                 health_check_interval=int(self._cfg.get('health_check_interval', 30)),
