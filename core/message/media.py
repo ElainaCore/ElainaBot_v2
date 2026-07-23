@@ -98,7 +98,6 @@ async def upload_media_via_url(
     success, resp = await sender.post_json(endpoint, req_data)
     if success:
         return resp.get('file_info')
-    log.warning(f'upload_media_via_url.fail:{resp}')
     if event:
         event.error = resp
     return None

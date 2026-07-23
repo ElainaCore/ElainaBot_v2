@@ -63,7 +63,7 @@ class _MediaSendMixin:
         target_user_id=None,
         target_group_id=None,
         msg_id=None,
-        max_try: int = 3,
+        max_try: int = 1,
     ):
         upload_ep = _resolve_upload_ep(target_group_id, target_user_id, event)
         if not upload_ep:
@@ -89,10 +89,11 @@ class _MediaSendMixin:
                 if file_info:
                     break
             if not file_info:
-                log.debug(f'[{self._appid}] URL直传失败, 回退下载上传: {data}')
                 data = await self.download_media(data)
 
         if not file_info and not isinstance(data, bytes):
+            if original_url:
+                log.warning(f'[{self._appid}] {type_name}发送失败: URL直传与本地下载均失败 (url={original_url}, resp={event.error if event else None})')
             return None
 
         if original_url:
@@ -103,6 +104,8 @@ class _MediaSendMixin:
         if not file_info:
             file_info = await upload_media_bytes(self, data, file_type, upload_ep, file_name=file_name)
         if not file_info:
+            if original_url:
+                log.warning(f'[{self._appid}] {type_name}发送失败: URL直传与本地上传均失败 (url={original_url})')
             return None
         return await self._send_media_payload(
             event,
