@@ -148,7 +148,6 @@ def sample_event():
     evt.is_group = True
     evt.is_direct = False
     evt.raw_content = '/help'
-    evt.member_openid = 'member_xyz'
     return evt
 
 

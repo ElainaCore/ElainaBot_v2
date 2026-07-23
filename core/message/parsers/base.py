@@ -75,11 +75,10 @@ def extract_msg_idx(scene):
 
 
 def apply_message_scene(event, d):
-    """填充 message_scene / message_reference_id / scene_source"""
+    """填充 message_scene / message_reference_id"""
     scene = d.get('message_scene', {})
     event.message_scene = scene if isinstance(scene, dict) else {}
     event.message_reference_id = MessageUtils.extract_msg_idx(scene)
-    event.scene_source = scene.get('source', '') if isinstance(scene, dict) else ''
 
 
 def _parse_common_fields(event, d):
@@ -87,9 +86,7 @@ def _parse_common_fields(event, d):
     event.message_id = d.get('id', '')
     event.raw_content = d.get('content', '')
     event.content = MessageUtils.sanitize_content(event.raw_content)
-    event.content_with_at = MessageUtils.sanitize_content(event.raw_content, keep_at=True)
     event.timestamp = d.get('timestamp', '')
-    event.message_type = d.get('message_type')
     event.msg_elements = d.get('msg_elements', [])
     event.attachments = d.get('attachments', [])
     event.image_url = MessageUtils.extract_image_from_attachments(event.attachments)
@@ -98,19 +95,16 @@ def _parse_common_fields(event, d):
     event.user_id = author.get('member_openid') or author.get('id', '')
     event.raw_user_id = event.user_id
     event.username = author.get('username', '')
-    event.member_openid = author.get('member_openid', '')
     event.member_role = author.get('member_role', '')
     event.union_openid = author.get('union_openid', '')
     event.is_bot = author.get('bot', False)
 
     event.group_id = d.get('group_openid') or d.get('group_id', '')
-    event.group_openid = d.get('group_openid', '')
     event.guild_id = d.get('guild_id', '')
     event.channel_id = d.get('channel_id', '')
 
     if event.image_url:
         event.content = f'{event.content}<{event.image_url}>' if event.content else f'<{event.image_url}>'
-        event.content_with_at = f'{event.content_with_at}<{event.image_url}>' if event.content_with_at else f'<{event.image_url}>'
 
 
 def parse_message_generic(event, d):

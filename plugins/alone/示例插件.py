@@ -148,6 +148,63 @@ async def send_small_buttons(event, match):
     await event.reply("📌 小按钮演示 (font_size=small)", buttons={'rows': rows, 'font_size': 'small'})
 
 
+@handler(r'^订阅按钮$', name='订阅按钮示例', desc='发送订阅按钮 (type=4) 与二次确认弹窗', owner_only=True)
+async def send_subscribe_buttons(event, match):
+    # ⚠️ 订阅按钮必须挂在 markdown 模板消息上发送, 原生 markdown / 纯文本消息无法携带订阅按钮。
+    # 框架未适配 markdown 模板, 需通过 kwargs 透传自行构建 markdown 字段。
+    buttons = [
+        [
+            {'text': '订阅', 'show': '已订阅',
+             'subscribe': '102134274_1749040268',  # 替换机器人Markdown模板 id 
+             'modal': {'content': '确认订阅？', 'confirm_text': '✔️确认', 'cancel_text': '❌取消'},
+             'tips': '请升级QQ版本'},
+        ],
+    ]
+    await event.reply(
+        "🔔 订阅按钮 / 二次确认演示",
+        buttons=buttons,
+        msg_type=2,
+        markdown={
+            'custom_template_id': '102134274_1749040268',  # markdown 模板 id (这条消息的显示模板)
+            'params': [{'key': 'text', 'values': ['🔔 订阅按钮 / 二次确认演示']}],
+        },
+    )
+
+
+# 用户点击订阅按钮后, 平台下发 SUBSCRIBE_MESSAGE_STATUS 订阅事件, 事件中返回 subscribe_id
+# 框架已自动把 (模板ID ↔ 群/用户, subscribe_id) 写入订阅表, 无需手动存储; 如需自行处理可订阅该事件:
+
+@handler(r'', name='订阅状态事件', desc='用户订阅/取消订阅时触发', event_types=['SUBSCRIBE_MESSAGE_STATUS'])
+async def on_subscribe_status(event, match):
+    for r in event.subscribe_results:
+        _ = r.get('subscribe_id')  # 发送订阅消息用的票据 (框架已自动入库, 这里仅演示读取)
+
+
+@handler(r'^订阅消息\s+(\S+)$', name='订阅消息推送示例', desc='向指定群推送订阅消息', owner_only=True)
+async def send_subscribe_message(event, match):
+    # 推送订阅消息 = 发消息时带上订阅事件返回的 subscribe_id (框架已自动存库, 这里自动取出)。
+    # 不带 subscribe_id 就会按普通主动消息推送 (占用主动消息条数)。
+    markdown_id = '102134274_1749040268'  # markdown 模板 id (订阅按钮 subscribe 字段填的那个)
+    group_id = match.group(1)
+    ls = _get_log_service(event)
+    if not ls:
+        return await event.reply('❌ 服务不可用')
+    # 先查该群订阅了哪些模板, 再取 markdown_id 对应的 subscribe_id
+    subs = ls.subscribe_get_by_target(group_id)  # [{template_id, sub_type, subscribe_id}, ...]
+    t = next((x for x in subs if x['template_id'] == markdown_id), None)
+    if not t:
+        return await event.reply('📭 该群未订阅此模板')
+    subscribe = t['subscribe_id']  # 订阅事件返回的 subscribe_id, 如 59923650-848d-498b-b521-b5f1fba1c46d
+
+    ok, data, _ = await event.send_to_group(
+        group_id, '🔔 这是一条订阅消息推送', subscribe_id=subscribe)
+
+    # 单次订阅 (sub_type='once') 发送后作废, 永久订阅可重复推送
+    if ok and t['sub_type'] == 'once':
+        await ls.subscribe_consume(markdown_id, group_id)
+    await event.reply('✅ 订阅消息已发送' if ok else f'❌ 发送失败: {data}')
+
+
 # ==================== 交互回调示例 ====================
 # 回调按钮 (type=1) 被点击时, 框架会下发 INTERACTION_CREATE 事件,
 # event.content 就是按钮的 data。用 set_callback_code 应答这次点击。
@@ -166,8 +223,8 @@ async def on_demo_ack(event, match):
 # ==================== 用户入群回复示例 ====================
 # 群内有新用户加入时, 框架下发 GROUP_MEMBER_ADD 生命周期事件 (用户退群为 GROUP_MEMBER_REMOVE),
 # 用 event_types 订阅即可在用户入群时自动回复 (event.reply 会发到该群)。
-#   - event.user_id / event.member_openid : 入群用户的 openid
-#   - event.group_id                      : 群 openid
+#   - event.user_id  : 入群用户的 openid
+#   - event.group_id : 群 openid
 # 注意: 正则 r'' 对生命周期事件恒匹配; 这类事件无消息文本, 不要依赖 match 分组。
 
 @handler(r'', name='用户入群回复', desc='有新成员加入群聊时的处理示例（默认不发送，避免影响正常使用）', event_types=['GROUP_MEMBER_ADD'])

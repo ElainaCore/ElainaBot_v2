@@ -51,10 +51,10 @@ bots:
     # 事件去重 (过滤重复 message_id / event_id, 缓存5分钟)
     dedup:
       enabled: false
-    # 黑名单 (列表非空即生效)
+    # 黑名单 (非空即生效, 格式 {ID: 理由}, 理由可为空)
     blacklist:
-      user_list: []                    # 用户黑名单列表 (OpenID)
-      group_list: []                   # 群黑名单列表 (群 OpenID)
+      user_list: {}                    # 用户黑名单 {OpenID: 理由}
+      group_list: {}                   # 群黑名单 {群 OpenID: 理由}
 
     # 未@消息 (开启后全量消息匹配正则插件, 不判断是否@机器人)
     non_at_message:
