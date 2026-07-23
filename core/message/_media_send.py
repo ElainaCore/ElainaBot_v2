@@ -102,10 +102,13 @@ class _MediaSendMixin:
             media_label = await self._save_media(data, file_type)
 
         if not file_info:
-            file_info = await upload_media_bytes(self, data, file_type, upload_ep, file_name=file_name)
+            file_info = await upload_media_bytes(self, data, file_type, upload_ep, file_name=file_name, event=event)
         if not file_info:
             if original_url:
-                log.warning(f'[{self._appid}] {type_name}发送失败: URL直传与本地上传均失败 (url={original_url})')
+                log.warning(
+                    f'[{self._appid}] {type_name}发送失败: URL直传与本地上传均失败 '
+                    f'(url={original_url}, resp={event.error if event else None})'
+                )
             return None
         return await self._send_media_payload(
             event,

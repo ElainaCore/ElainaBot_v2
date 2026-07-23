@@ -19,7 +19,7 @@ CHUNK_THRESHOLD = 5 * 1024 * 1024  # 5MB
 # ==================== 上传 ====================
 
 
-async def upload_media_bytes(sender, file_bytes, file_type, endpoint, *, file_name=None):
+async def upload_media_bytes(sender, file_bytes, file_type, endpoint, *, file_name=None, event=None):
     """上传媒体 bytes, 返回 file_info (>5MB 自动分片)"""
     if not file_bytes:
         return None
@@ -57,7 +57,10 @@ async def upload_media_bytes(sender, file_bytes, file_type, endpoint, *, file_na
         success, resp = await sender.post_json(endpoint, req_data)
         last_resp = resp
         if not success:
-            log.warning(f'[{sender._appid}] 上传API失败: {resp} (endpoint={endpoint})')
+            if event:
+                event.error = resp
+            else:
+                log.warning(f'[{sender._appid}] 上传API失败: {resp} (endpoint={endpoint})')
             return None
         file_info = resp.get('file_info')
         if file_info:
@@ -65,7 +68,10 @@ async def upload_media_bytes(sender, file_bytes, file_type, endpoint, *, file_na
         if attempt == 0:
             log.debug(f'[{sender._appid}] 上传返回无 file_info, 重试 (resp={resp})')
             await asyncio.sleep(0.15)
-    log.warning(f'[{sender._appid}] 上传失败: 无 file_info (endpoint={endpoint}, resp={last_resp})')
+    if event:
+        event.error = last_resp
+    else:
+        log.warning(f'[{sender._appid}] 上传失败: 无 file_info (endpoint={endpoint}, resp={last_resp})')
     return None
 
 
