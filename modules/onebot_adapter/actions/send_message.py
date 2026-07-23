@@ -46,8 +46,8 @@ class SendMessageAction(BaseAction):
         """执行 send_msg / send_group_msg / send_private_msg"""
         # ---- 1. 确定目标 ----
         msg_type = self._force_type or params.get('message_type', '')
-        group_id = params.get('group_id')
-        user_id = params.get('user_id')
+        group_id = params.pop('group_id', None)
+        user_id = params.pop('user_id', None)
 
         if not msg_type:
             msg_type = 'group' if group_id else 'private'
@@ -58,7 +58,7 @@ class SendMessageAction(BaseAction):
             return self._fail('缺少 group_id 或 user_id', echo=echo)
 
         # ---- 2. 解析消息段 → ParsedMessage ----
-        message = params.get('message', '')
+        message = params.pop('message', '')
         parsed = SegmentParser.parse(message)
 
         # 空消息保护
@@ -86,9 +86,8 @@ class SendMessageAction(BaseAction):
         # ---- 6. 发送 ----
         gid = real_id if is_group else None
         uid = None if is_group else real_id
-        msg_id_ref = params.get('msg_id')
 
-        ok, data, send_payload = await MessageSenderService.send(sender, gid, uid, parsed, msg_id_ref)
+        ok, data, send_payload = await MessageSenderService.send(sender, gid, uid, parsed, **params)
 
         # ---- 7. 记录日志 ----
         await self._ctx.log_send('group' if is_group else 'private', real_id, label, ok, data, send_payload)

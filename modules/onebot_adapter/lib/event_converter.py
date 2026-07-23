@@ -149,6 +149,7 @@ async def convert_message_event(event, id_mapper, self_qq: int) -> dict | None:
         },
         'real_user_id': event.user_id,
         'real_group_id': event.group_id,
+        'full': event.is_full,
     }
 
     if is_group:
@@ -191,6 +192,8 @@ async def convert_lifecycle_event(event, id_mapper, self_qq: int) -> dict | None
         'real_group_id': event.group_id,
         'user_id': self_qq if group_mode == 'robot' else qq_user,
     }
+    if event_id := event.event_id:
+        result['event_id'] = event_id
     if sub_type:
         result['sub_type'] = sub_type
     if group_mode:

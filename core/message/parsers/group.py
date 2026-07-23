@@ -34,6 +34,7 @@ class GroupMessageParser(MessageParser):
     def parse(self, event, d: dict):
         super().parse(event, d)
         is_full = event.event_type == 'GROUP_MESSAGE_CREATE'
+        event.is_full = is_full
         self.handle_mentions(event, d, is_full)
         if is_full and event.appid:
             only_self_at = event.is_at_self and not event.is_at_other_bot and not event.is_at_other_user and not event.is_at_all

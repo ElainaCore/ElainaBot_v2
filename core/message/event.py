@@ -203,6 +203,7 @@ class Event:
         'is_channel',
         'is_interaction',
         'is_lifecycle',
+        'is_full',
         'interaction_data',
         'scene',
         'sharer_id',
@@ -251,6 +252,7 @@ class Event:
         self.is_channel = False
         self.is_interaction = False
         self.is_lifecycle = False
+        self.is_full = False
         self.interaction_data = None
         self.scene = None
         self.sharer_id = None

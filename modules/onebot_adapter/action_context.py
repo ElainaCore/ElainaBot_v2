@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import json
-from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -28,7 +27,6 @@ class ActionContext:
     senders: dict[int, MessageSender] = field(default_factory=dict)  # {appid: sender}
     log_services: dict[int, LogService] = field(default_factory=dict)  # {appid: LogService}
     id_mapper: IDMapper | None = None
-    msg_id_cache: OrderedDict[tuple[int, int | str], int | str] = field(default_factory=OrderedDict)  # {(appid, chat_id): msg_id}
     qq_map: dict[str, int] = field(default_factory=dict)  # {appid_str: robot_qq_int}
     default_qq: int = 0
     current_appid: str = ''  # 当前 action 上下文的 appid
@@ -45,14 +43,6 @@ class ActionContext:
         """获取 LogService"""
         aid = appid or self.current_appid
         return self.log_services.get(aid) or next(iter(self.log_services.values()), None)
-
-    def find_msg_id(self, chat_id: int | str) -> int | str | None:
-        """从缓存查找 msg_id"""
-        for appid in self.senders:
-            mid = self.msg_id_cache.get((appid, chat_id))
-            if mid:
-                return mid
-        return None
 
     # ==================== 日志推送 ====================
 
