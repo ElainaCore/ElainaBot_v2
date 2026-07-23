@@ -75,6 +75,8 @@ class MessageSenderService:
         **kwargs,
     ) -> tuple[bool, Any, dict[str, Any]]:
         content = parsed.text_content or '[空的文本消息]'
+        if parsed.msg_type == 'raw_text':
+            kwargs['msg_type'] = MessageType.MSG_TYPE_TEXT
         return await cls.send_msg_common(sender, group_id, user_id, target, parsed, content, **kwargs)
 
     # ==================== Markdown 发送 ====================
