@@ -38,7 +38,6 @@ class GroupMemberAddParser(LifecycleParser):
 
     def parse(self, event, d):
         self._parse_base(event, d, 'member_openid')
-        event.member_openid = event.user_id
         event.content = f'用户 {event.user_id} 加入群聊 {event.group_id}'
 
 
@@ -47,7 +46,6 @@ class GroupMemberRemoveParser(LifecycleParser):
 
     def parse(self, event, d):
         self._parse_base(event, d, 'member_openid')
-        event.member_openid = event.user_id
         event.content = f'用户 {event.user_id} 退出群聊 {event.group_id}'
 
 
@@ -88,8 +86,7 @@ class FriendAddParser(LifecycleParser):
             event.scene = int(d.get('scene') or 0)
         except (ValueError, TypeError):
             event.scene = 0
-        event.scene_param = d.get('scene_param')
-        event.sharer_id = self._extract_sharer_id(event.scene_param)
+        event.sharer_id = self._extract_sharer_id(d.get('scene_param'))
         event.content = f'用户 {event.user_id} 添加机器人为好友'
         if event.sharer_id:
             event.content += f' (通过 {event.sharer_id} 的分享链接)'
@@ -102,3 +99,14 @@ class FriendDelParser(LifecycleParser):
         self._parse_base(event, d)
         event.group_id = ''
         event.content = f'用户 {event.user_id} 删除机器人好友'
+
+
+class SubscribeStatusParser(LifecycleParser):
+    """订阅消息状态事件解析器 (单聊 openid / 群聊 group_openid 两种链路)"""
+
+    def parse(self, event, d):
+        self._parse_base(event, d)
+        results = d.get('result')
+        event.subscribe_results = results if isinstance(results, list) else []
+        target = event.group_id or event.user_id
+        event.content = f'订阅消息状态变更 {target} ({len(event.subscribe_results)} 条)'

@@ -83,13 +83,3 @@ def learn(appid, content):
     e['ids'].update(_AT.findall(content))
     e['done'] = True
     _save()
-
-
-def strip_self_at(appid, content):
-    """移除 content 中本机器人的所有 <@id>"""
-    e = _data.get(appid)
-    if not e:
-        return content
-    for i in e['ids']:
-        content = content.replace(f'<@{i}>', '')
-    return content.strip()

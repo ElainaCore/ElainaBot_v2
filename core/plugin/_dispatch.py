@@ -141,14 +141,15 @@ class _DispatchMixin:
             )
         )
 
-        # 黑名单
-        if not suppress_reply:
-            bl: str | None = self._check_blacklist(event)
-            if bl:
-                tpl: str = 'blacklist' if bl == 'user' else 'group_blacklist'
-                tvars: dict[str, str] | None = {'user_id': user_id, 'reason': '未指明原因'} if bl == 'user' else None
+        # 黑名单 (始终拦截, 仅在非静默场景回复)
+        bl: tuple[str, str] | None = self._check_blacklist(event)
+        if bl:
+            if not suppress_reply:
+                kind, reason = bl
+                tpl: str = 'blacklist' if kind == 'user' else 'group_blacklist'
+                tvars: dict[str, str] = {'user_id': user_id, 'reason': reason}
                 asyncio.create_task(event.reply(template_name=tpl, template_vars=tvars))
-                return True
+            return True
 
         # 维护模式
         if not suppress_reply and _get(appid, 'maintenance.enabled', False) and not self._is_owner(event):

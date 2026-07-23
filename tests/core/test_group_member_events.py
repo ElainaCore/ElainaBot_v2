@@ -35,7 +35,6 @@ class TestGroupMemberParsing:
         assert evt.is_lifecycle is True
         assert evt.group_id == 'group_001'
         assert evt.user_id == 'user_001'
-        assert evt.member_openid == 'user_001'
 
     def test_parse_member_remove(self):
         evt = _build(GROUP_MEMBER_REMOVE)

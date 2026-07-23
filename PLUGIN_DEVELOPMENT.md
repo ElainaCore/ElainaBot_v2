@@ -236,11 +236,9 @@ async def filter_keywords(event):
 | `event.message_scene` | `dict` | 消息场景信息 (`source` / `ext` 等) |
 | `event.raw_user_id` | `str` | 平台原始用户 OpenID (不受 union_id 配置影响) |
 | `event.union_openid` | `str` | 用户 union_openid (跨机器人统一 ID, 可能为空) |
-| `event.content_with_at` | `str` | 保留 @其他人 文本的内容 (仅剔除 @机器人自身) |
 | `event.msg_elements` | `list` | 消息元素列表 (平台原始 msg_elements) |
 | `event.member_role` | `str` | 发送者群身份 (`admin` / `owner` / 空) |
 | `event.bot_member_role` | `str` | 机器人在该群的身份 (被@时由 mentions 解析) |
-| `event.scene_source` | `str` | 消息来源场景 (`message_scene.source`) |
 | `event.error` | `dict` / `None` | 最近一次媒体上传失败的响应 (排查用) |
 
 ### 4.2 场景标识 (布尔属性)
@@ -370,7 +368,7 @@ await event.send_to_group(event.group_id, "主动消息同样支持", skip_suffi
 | 字段 | 类型 | 默认 | 说明 |
 | --- | --- | --- | --- |
 | `text` | `str` | `''` | 按钮显示文字 (**必填**) |
-| `type` | `int` | `2` | 按钮类型: `0`=跳转链接 / `1`=回调 / `2`=输入指令 |
+| `type` | `int` | `2` | 按钮类型: `0`=跳转链接 / `1`=回调 / `2`=输入指令 / `4`=订阅 |
 | `data` | `str` | `text` | type=0: URL; type=1: 回调标识; type=2: 填充到输入框的内容 |
 | `link` | `str` | — | 快捷方式: 设置后自动设为 `type=0 + data=link` |
 | `show` | `str` | `text` | 点击后显示的文字 (visited_label) |
@@ -384,6 +382,10 @@ await event.send_to_group(event.group_id, "主动消息同样支持", skip_suffi
 | `reply` | `bool` | 点击后作为引用回复发送 |
 | `limit` | `int` | 点击次数限制 (`click_limit`)可能无效 |
 | `tips` | `str` | 不支持时的提示文字 (`unsupport_tips`) |
+| `modal` | `str`/`dict` | 点击后的二次确认弹窗; 字符串等价于 `{'content': 文本}`, dict 可额外指定 `confirm_text` / `cancel_text` |
+| `subscribe` | `str`/`list`/`dict` | 订阅模板 ID, 设置后自动设为 `type=4` 并生成 `subscribe_data`; 含 `_` 的 ID 转为 `custom_template_id`, 否则为 `template_id`; dict 原样透传 |
+
+平台原生 action 字段 (`subscribe_data` / `click_limit` / `unsupport_tips` / `anchor`) 也可以直接写在按钮字典里, 原样透传到 `action`; 写了 `subscribe_data` 且未指定 `type` 时自动设为 `type=4`。
 
 #### 权限字段 (五者二选一, 优先级从上到下)
 
@@ -423,6 +425,56 @@ buttons = [
 ]
 await event.reply("📌 多功能按钮面板", buttons=buttons)
 ```
+
+#### 订阅按钮 (type=4)
+
+订阅按钮**必须挂在 markdown 模板消息上发送**: 原生 markdown / 纯文本消息无法携带订阅按钮。框架未适配 markdown 模板, 需通过 kwargs 透传自行构建 `markdown` 字段 (见 5.1 kwargs 透传):
+
+```python
+buttons = [[{
+    'text': '订阅', 'show': '已订阅',
+    'subscribe': '102134274_1749040268',          # 机器人Markdown模板 id
+    'modal': {'content': '确认订阅？', 'confirm_text': '✔️确认', 'cancel_text': '❌取消'},
+    'tips': '请升级QQ版本',
+}]]
+await event.reply(
+    '🔔 订阅推送',
+    buttons=buttons,
+    msg_type=2,
+    markdown={
+        'custom_template_id': '102134274_1749040268',  # markdown 模板 id (这条消息的显示模板)
+        'params': [{'key': 'text', 'values': ['🔔 订阅推送']}],
+    },
+)
+```
+
+> ⚠️ `subscribe` 必须传入真实存在的模板 ID: 无效模板 (如 `template_id: "0"`) 会导致部分 QQ 客户端点击按钮后闪退。
+>
+> `markdown` kwarg 会整体覆盖框架自动构建的 markdown 内容, `params` 中的 `key` / `values` 需与你在 QQ 开放平台申请的 markdown 模板参数一一对应。
+
+#### 发送订阅消息
+
+用户点击订阅按钮后, 平台下发 `SUBSCRIBE_MESSAGE_STATUS` 订阅事件, 事件中返回 `subscribe_id` (发送订阅消息的票据)。框架会自动记录订阅关系 (模板ID ↔ 群/用户, 含 `subscribe_id`), 也可用 `event_types=['SUBSCRIBE_MESSAGE_STATUS']` 订阅该事件自行读取 `event.subscribe_results`。
+
+但**必须携带 `subscribe_id`** — 不填写将按普通主动消息推送 (占用主动消息条数):
+
+```python
+markdown_id = '102134274_1749040268'  # markdown 模板 id (订阅按钮 subscribe 字段填的那个)
+# 先查该群订阅了哪些模板: [{template_id, sub_type, subscribe_id}, ...]
+subs = log_service.subscribe_get_by_target(group_id)
+t = next((x for x in subs if x['template_id'] == markdown_id), None)
+if t:
+    subscribe = t['subscribe_id']  # 订阅事件返回的 subscribe_id
+    ok, data, _ = await event.send_to_group(
+        group_id, '🔔 这是一条订阅消息推送', subscribe_id=subscribe)
+    # 单次订阅 (sub_type='once') 发送后作废, 永久订阅可重复推送
+    if ok and t['sub_type'] == 'once':
+        await log_service.subscribe_consume(markdown_id, group_id)
+```
+
+> ⚠️ 订阅消息有单群每日推送限额,  按需推送。
+
+完整可运行示例见 `plugins/alone/示例插件.py` 的「订阅消息」指令 (含 `log_service` 获取方式)。
 
 #### 小按钮 (键盘级字号)
 

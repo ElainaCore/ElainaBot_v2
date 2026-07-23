@@ -19,6 +19,7 @@ from core.message.parsers.lifecycle import (
     GroupMemberRemoveParser,
     GroupMsgReceiveParser,
     GroupMsgRejectParser,
+    SubscribeStatusParser,
 )
 
 # 交互回调 (op12 ACK) 默认状态码与默认等待插件超时 (秒)
@@ -48,6 +49,9 @@ GROUP_MSG_RECEIVE = 'GROUP_MSG_RECEIVE'
 # 群成员 (用户入群/退群)
 GROUP_MEMBER_ADD = 'GROUP_MEMBER_ADD'
 GROUP_MEMBER_REMOVE = 'GROUP_MEMBER_REMOVE'
+
+# 订阅消息 (用户允许/拒绝订阅)
+SUBSCRIBE_MESSAGE_STATUS = 'SUBSCRIBE_MESSAGE_STATUS'
 
 # 表态
 MESSAGE_REACTION_ADD = 'MESSAGE_REACTION_ADD'
@@ -84,6 +88,7 @@ LIFECYCLE_TYPES = frozenset(
         GROUP_MSG_RECEIVE,
         GROUP_MEMBER_ADD,
         GROUP_MEMBER_REMOVE,
+        SUBSCRIBE_MESSAGE_STATUS,
     }
 )
 REACTION_TYPES = frozenset({MESSAGE_REACTION_ADD, MESSAGE_REACTION_REMOVE})
@@ -103,8 +108,8 @@ _EVENT_ID_TYPES = frozenset({INTERACTION_CREATE, GROUP_ADD_ROBOT, FRIEND_ADD, GR
 
 # 回复端点模板 (event_type -> lambda event: endpoint_str)
 _REPLY_ENDPOINTS = {
-    GROUP_AT_MESSAGE_CREATE: lambda e: (f'/v2/groups/{e.group_openid or e.group_id}/messages'),
-    GROUP_MESSAGE_CREATE: lambda e: (f'/v2/groups/{e.group_openid or e.group_id}/messages'),
+    GROUP_AT_MESSAGE_CREATE: lambda e: f'/v2/groups/{e.group_id}/messages',
+    GROUP_MESSAGE_CREATE: lambda e: f'/v2/groups/{e.group_id}/messages',
     C2C_MESSAGE_CREATE: lambda e: f'/v2/users/{e.raw_user_id or e.user_id}/messages',
     AT_MESSAGE_CREATE: lambda e: f'/channels/{e.channel_id}/messages',
     DIRECT_MESSAGE_CREATE: lambda e: f'/dms/{e.guild_id}/messages',
@@ -126,6 +131,7 @@ _GROUP_MEMBER_REMOVE_PARSER = GroupMemberRemoveParser()
 _MESSAGE_PARSER = MessageParser()
 _GROUP_MSG_REJECT_PARSER = GroupMsgRejectParser()
 _GROUP_MSG_RECEIVE_PARSER = GroupMsgReceiveParser()
+_SUBSCRIBE_STATUS_PARSER = SubscribeStatusParser()
 
 # 解析器映射表
 _PARSERS = {
@@ -144,6 +150,7 @@ _PARSERS = {
     FRIEND_DEL: _FRIEND_DEL_PARSER,
     GROUP_MSG_REJECT: _GROUP_MSG_REJECT_PARSER,
     GROUP_MSG_RECEIVE: _GROUP_MSG_RECEIVE_PARSER,
+    SUBSCRIBE_MESSAGE_STATUS: _SUBSCRIBE_STATUS_PARSER,
 }
 
 
@@ -170,7 +177,6 @@ class Event:
 
     __slots__ = (
         'appid',
-        'op',
         'event_id',
         'event_type',
         'raw',
@@ -181,16 +187,12 @@ class Event:
         'user_id',
         'raw_user_id',
         'username',
-        'member_openid',
         'member_role',
         'union_openid',
         'is_bot',
         'group_id',
-        'group_openid',
         'guild_id',
         'channel_id',
-        'message_type',
-        'content_with_at',
         'message_scene',
         'message_reference_id',
         'msg_elements',
@@ -203,11 +205,9 @@ class Event:
         'is_lifecycle',
         'is_full',
         'interaction_data',
-        'chat_type_code',
         'scene',
-        'scene_source',
         'sharer_id',
-        'scene_param',
+        'subscribe_results',
         'mentions',
         'bot_member_role',
         'is_at_self',
@@ -226,7 +226,6 @@ class Event:
 
     def __init__(self):
         self.appid = None
-        self.op = None
         self.event_id = None
         self.event_type = None
         self.raw = None
@@ -237,17 +236,12 @@ class Event:
         self.user_id = None
         self.raw_user_id = None
         self.username = None
-        self.member_openid = None
         self.member_role = ''
         self.union_openid = None
         self.is_bot = None
         self.group_id = None
-        self.group_openid = None
         self.guild_id = None
         self.channel_id = None
-        self.message_type = None
-        # 保留艾特文本的内容 (仅剔除艾特机器人自身); 命令匹配仍用 content
-        self.content_with_at = ''
         self.message_scene = {}
         self.message_reference_id = ''
         self.msg_elements = []
@@ -260,11 +254,9 @@ class Event:
         self.is_lifecycle = False
         self.is_full = False
         self.interaction_data = None
-        self.chat_type_code = None
         self.scene = None
-        self.scene_source = None
         self.sharer_id = None
-        self.scene_param = None
+        self.subscribe_results = []
         self.mentions = []
         self.bot_member_role = ''
         self.is_at_self = False
@@ -305,7 +297,6 @@ class Event:
     # ==================== 解析 ====================
 
     def _parse_payload(self, payload):
-        self.op = payload.get('op')
         self.event_id = payload.get('id', '')
         self.event_type = payload.get('t', '')
         self.raw = payload
@@ -373,7 +364,7 @@ class Event:
 
     def _fallback_msg_ep(self, strict=False):
         """group/user 消息端点 (strict: 仅在 is_group/is_direct 时返回)"""
-        gid = self.group_openid or self.group_id
+        gid = self.group_id
         uid = self.raw_user_id or self.user_id
         if gid and (not strict or self.is_group):
             return f'/v2/groups/{gid}/messages'
@@ -383,7 +374,7 @@ class Event:
 
     @property
     def recall_endpoint(self):
-        gid = self.group_openid or self.group_id
+        gid = self.group_id
         uid = self.raw_user_id or self.user_id
         if self.is_group and gid:
             return f'/v2/groups/{gid}/messages/{{message_id}}'
@@ -395,7 +386,7 @@ class Event:
 
     @property
     def media_upload_endpoint(self):
-        gid = self.group_openid or self.group_id
+        gid = self.group_id
         uid = self.raw_user_id or self.user_id
         if self.is_group and gid:
             return f'/v2/groups/{gid}/files'

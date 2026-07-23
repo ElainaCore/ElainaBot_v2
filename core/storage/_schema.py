@@ -26,7 +26,7 @@ def _json_field(data, key, default=''):
 # 按日期分目录的类型
 DAILY_TYPES = frozenset({'message', 'framework', 'error', 'lifecycle'})
 # 不分日期的类型
-STATIC_TYPES = frozenset({'data', 'dau', 'share', 'wakeup'})
+STATIC_TYPES = frozenset({'data', 'dau', 'share', 'wakeup', 'subscribe'})
 ALL_TYPES = DAILY_TYPES | STATIC_TYPES
 
 # DAU 表结构 (公开常量, dau.py 复用)
@@ -105,6 +105,20 @@ _SCHEMAS = {
             wakeup_stage INTEGER DEFAULT 0,
             last_wakeup_date TEXT,
             updated_at TEXT
+        )
+    """,
+    'subscribe': """
+        CREATE TABLE IF NOT EXISTS log (
+            template_id TEXT NOT NULL,
+            target_id TEXT NOT NULL,
+            target_type TEXT DEFAULT 'group',
+            sub_type TEXT DEFAULT 'permanent',
+            subscribe_id TEXT DEFAULT '',
+            status INTEGER DEFAULT 1,
+            subscribe_ts INTEGER DEFAULT 0,
+            update_ts INTEGER DEFAULT 0,
+            updated_at TEXT DEFAULT '',
+            PRIMARY KEY (template_id, target_id)
         )
     """,
     'lifecycle': """
