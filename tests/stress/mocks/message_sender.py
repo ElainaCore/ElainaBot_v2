@@ -78,6 +78,10 @@ class MockMessageSender:
                         *, auto_delete_time=None):
         return await self._simulate_send("reply_ark")
 
+    async def reply_tuwen(self, event, title="", description="", pic_url="",
+                          url="", content="", *, auto_delete_time=None):
+        return await self._simulate_send("reply_tuwen")
+
     async def send_to_group(self, group_id, content=None, *,
                             msg_id=None, event_id=None, buttons=None,
                             media=None, msg_type=None, skip_suffix=False, **kwargs):

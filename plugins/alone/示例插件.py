@@ -115,6 +115,14 @@ async def send_ark37(event, match):
         "https://i.elaina.vin/api/"))
 
 
+@handler(r'^图文卡片$', name='图文卡片', desc='tuwen图文卡片示例', owner_only=True)
+async def send_tuwen(event, match):
+    await event.reply_tuwen((
+        "QQ开放平台", "2分钟完成注册并创建QQBot",
+        "https://gchat.qpic.cn/qmeetpic/0/0-0-52C851D5FB926BC645528EB4AB462B3D/0",
+        "https://q.qq.com/#/"))
+
+
 # ==================== 按钮示例 ====================
 
 @handler(r'^按钮$', name='按钮示例', desc='发送带按钮的消息', owner_only=True)

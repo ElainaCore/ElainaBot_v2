@@ -349,6 +349,7 @@ await event.send_to_group(event.group_id, "# 标题", msg_type=2)
 | `2` | 原生 Markdown |
 | `3` | Ark 卡片 (由 `reply_ark` 自动设置) |
 | `7` | 富媒体 (由 `reply_image` 等自动设置) |
+| `8` | 图文卡片 (由 `reply_tuwen` 自动设置) |
 
 > 不传 `msg_type` 时按 `message.use_markdown` 配置决定。
 
@@ -517,6 +518,22 @@ await event.reply_ark(24, (
 # ark37 — 大图文
 await event.reply_ark(37, (
     "提示", "标题", "副标题", "图片URL", "跳转URL"))
+```
+
+### 5.3.1 图文卡片 (tuwen)
+
+```python
+# 元组简写: (标题, 描述, 图片URL, 跳转URL)
+await event.reply_tuwen((
+    "QQ开放平台", "2分钟完成注册并创建QQBot",
+    "https://example.com/pic.png", "https://q.qq.com/#/"))
+
+# 关键字参数写法
+await event.reply_tuwen(
+    title="QQ开放平台",
+    description="2分钟完成注册并创建QQBot",
+    pic_url="https://example.com/pic.png",
+    url="https://q.qq.com/#/")
 ```
 
 ### 5.4 模板消息

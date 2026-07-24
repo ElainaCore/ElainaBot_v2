@@ -16,6 +16,7 @@ from core.message._http import (
     MSG_TYPE_MARKDOWN,
     MSG_TYPE_MEDIA,
     MSG_TYPE_TEXT,
+    MSG_TYPE_TUWEN,
     _HttpMixin,
     log,
 )
@@ -187,6 +188,33 @@ class MessageSender(_HttpMixin, _MediaSendMixin, _SenderLogMixin):
             'msg_seq': _msg_seq(),
             'content': content or '',
             'ark': {'template_id': template_id, 'kv': kv_data},
+        }
+        _set_msg_or_event_id(payload, event)
+        endpoint = event.reply_endpoint
+        if not endpoint:
+            return None
+        success, data = await self._send_with_error_handling(endpoint, payload, event, content)
+        if success:
+            self._maybe_auto_recall(event, data, auto_delete_time)
+        return data
+
+    async def reply_tuwen(self, event, title='', description='', pic_url='', url='', content='', *, auto_delete_time=None):
+        """回复图文卡片消息, title 可传 (标题, 描述, 图片URL, 跳转URL) 元组/列表简写"""
+        if isinstance(title, tuple | list):
+            title, description, pic_url, url = (list(title) + [''] * 4)[:4]
+        payload = {
+            'msg_type': MSG_TYPE_TUWEN,
+            'msg_seq': _msg_seq(),
+            'content': content or '',
+            'card': {
+                'type': 'tuwen',
+                'content': {
+                    'title': title or '',
+                    'description': description or '',
+                    'pic_url': pic_url or '',
+                    'url': url or '',
+                },
+            },
         }
         _set_msg_or_event_id(payload, event)
         endpoint = event.reply_endpoint

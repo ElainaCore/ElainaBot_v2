@@ -14,6 +14,7 @@ MSG_TYPE_TEXT = 0
 MSG_TYPE_MARKDOWN = 2
 MSG_TYPE_ARK = 3
 MSG_TYPE_MEDIA = 7
+MSG_TYPE_TUWEN = 8
 
 
 class MessageType:
@@ -23,6 +24,7 @@ class MessageType:
     MSG_TYPE_MARKDOWN = MSG_TYPE_MARKDOWN
     MSG_TYPE_ARK = MSG_TYPE_ARK
     MSG_TYPE_MEDIA = MSG_TYPE_MEDIA
+    MSG_TYPE_TUWEN = MSG_TYPE_TUWEN
 
 
 _API_BASE = 'https://api.sgroup.qq.com'
