@@ -18,7 +18,7 @@ from web.tools._plugin_mgr.shared import (
     modules_dir,
 )
 from web.tools._python_source import read_dict_assignment
-from web.tools._zipsafe import safe_extractall
+from web.tools._zipsafe import replace_dir_from_zip
 
 # ==================== 元数据读取 ====================
 
@@ -172,22 +172,8 @@ async def handle_module_upload(request: web.Request):
             mdir = modules_dir()
             os.makedirs(mdir, exist_ok=True)
             target_dir = os.path.join(mdir, mod_name)
-
-            if os.path.exists(target_dir):
-                backup = target_dir + '.bak'
-                if os.path.exists(backup):
-                    shutil.rmtree(backup)
-                shutil.move(target_dir, backup)
-
-            if len(top_dirs) == 1:
-                extract_tmp = tempfile.mkdtemp()
-                safe_extractall(zf, extract_tmp)
-                src = os.path.join(extract_tmp, list(top_dirs)[0])
-                shutil.move(src, target_dir)
-                shutil.rmtree(extract_tmp, ignore_errors=True)
-            else:
-                os.makedirs(target_dir, exist_ok=True)
-                safe_extractall(zf, target_dir)
+            top_dir = list(top_dirs)[0] if len(top_dirs) == 1 else ''
+            replace_dir_from_zip(zf, target_dir, top_dir=top_dir)
 
         if not os.path.isfile(os.path.join(target_dir, 'main.py')):
             py_files = [f for f in os.listdir(target_dir) if f.endswith('.py')]

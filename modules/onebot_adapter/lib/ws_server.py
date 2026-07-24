@@ -242,7 +242,7 @@ class OneBotWSServer:
             headers['X-Client-Role'] = 'Universal'
             try:
                 self._log.info(f'反向 WS 正在连接: {url}')
-                async with self._reverse_session.ws_connect(url, headers=headers, ssl=False) as ws:
+                async with self._reverse_session.ws_connect(url, headers=headers) as ws:
                     wrapper = _WSWrapper(ws, remote=url, is_client=True, appid=appid, self_qq=self_qq)
                     self._clients.add(wrapper)
                     self._reverse_status[name] = {'connected': True, 'error': ''}

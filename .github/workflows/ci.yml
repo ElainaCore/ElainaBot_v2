@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install "pytest>=9.1,<10.0" pytest-asyncio pytest-cov "mypy>=2.2,<3.0" "ruff>=0.15,<0.16" types-PyYAML
+
+      - name: Ruff
+        run: ruff check .
+
+      - name: Mypy
+        run: mypy core web main.py
+
+      - name: Pytest
+        run: pytest -q

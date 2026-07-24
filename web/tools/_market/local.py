@@ -5,6 +5,7 @@ import os
 from aiohttp import web
 
 from web.tools._market.shared import _plugins_dir
+from web.tools._zipsafe import is_within
 
 
 async def handle_local_plugins(request: web.Request):
@@ -38,6 +39,8 @@ async def handle_local_plugin_read(request: web.Request):
     if not path or '..' in path:
         return web.json_response({'success': False, 'message': '无效路径'}, status=400)
     full = os.path.join(_plugins_dir(), path)
+    if not is_within(_plugins_dir(), full):
+        return web.json_response({'success': False, 'message': '无效路径'}, status=403)
     if os.path.isfile(full) and full.endswith('.py'):
         with open(full, encoding='utf-8') as f:
             content = f.read()
@@ -101,6 +104,9 @@ async def handle_local_plugin_save(request: web.Request):
             errors.append(f'{fp}: 无效')
             continue
         full = os.path.join(_plugins_dir(), fp)
+        if not is_within(_plugins_dir(), full):
+            errors.append(f'{fp}: 无效')
+            continue
         try:
             os.makedirs(os.path.dirname(full), exist_ok=True)
             with open(full, 'w', encoding='utf-8') as f:

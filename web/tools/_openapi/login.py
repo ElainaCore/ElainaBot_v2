@@ -5,6 +5,7 @@ import time
 from aiohttp import web
 
 import web.tools._openapi.handler as h
+from web.tools._bot.api import QQScanLogin, extract_login_creds
 
 
 async def handle_start_login(request: web.Request):
@@ -43,8 +44,6 @@ async def handle_check_login(request: web.Request):
         h._openapi_user_data[user_id] = old
         h._openapi_login_tasks.pop(user_id, None)
         h._save_data()
-        from web.tools._bot.api import extract_login_creds
-
         v2_creds = extract_login_creds(cookies)
         if v2_creds.get('b_token'):
             v2 = h._openapi_v2_data.get(user_id) or {'type': 'ok'}
@@ -68,8 +67,6 @@ async def handle_v2_start_login(request: web.Request):
         return h._err('bot_api 模块未加载')
     body = await request.json()
     user_id = body.get('user_id', 'web_user')
-    from web.tools._bot.api import QQScanLogin
-
     login = QQScanLogin(auto_select=False)
     res = await login.start()
     if res['status'] == 'failed' or not res.get('qr_image'):

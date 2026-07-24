@@ -2,7 +2,7 @@
 
 import logging
 from datetime import date as _date
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import web.tools._message.shared as _shared
 from web.tools._bots import iter_bots
@@ -56,8 +56,6 @@ def _query_older_messages_sync(chat_type, chat_id, appid_filter, before_date_str
     """从 before_date 前一天开始往前搜索, 找到第一个有消息的日期即返回"""
     if not _shared._bot_manager:
         return [], '', False
-    from datetime import datetime
-
     try:
         bd = datetime.strptime(before_date_str, '%Y-%m-%d').date()
     except ValueError:

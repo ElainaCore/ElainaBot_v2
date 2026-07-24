@@ -4,7 +4,6 @@
 import asyncio
 import json
 import os
-import random
 import re
 
 from core.base.config import cfg
@@ -18,6 +17,7 @@ from core.message._http import (
     MSG_TYPE_MEDIA,
     MSG_TYPE_TEXT,
     _HttpMixin,
+    _msg_seq,
     log,
 )
 from core.message._media_send import (
@@ -33,11 +33,6 @@ from core.message.keyboard import (
 from core.message.media import get_image_size as _get_image_size
 from core.message.media import upload_media_bytes, upload_media_via_url
 from core.message.template import tpl
-
-
-def _msg_seq():
-    return random.randint(10000, 999999)
-
 
 _ESCAPE_MAP = {'n': '\n', 't': '\t', 'r': '\r', '\\': '\\', '0': '\0', 'a': '\a', 'b': '\b', 'f': '\f', 'v': '\v'}
 
@@ -199,11 +194,7 @@ class MessageSender(_HttpMixin, _MediaSendMixin, _SenderLogMixin):
         return data
 
     async def reply_card(self, event, card_type='tuwen', data=None, content='', *, auto_delete_time=None):
-        """回复卡片消息 (msg_type=8), card_type 可自定义以支持新卡片类型.
-
-        data 为 dict 时原样作为 card.content;
-        card_type='tuwen' 时也可传 (标题, 描述, 图片URL, 跳转URL) 元组/列表简写
-        """
+        """回复卡片消息 (msg_type=8); data 为 dict 时原样作为 card.content, card_type='tuwen' 时也可传 (标题,描述,图片URL,跳转URL) 元组简写"""
         if isinstance(data, tuple | list) and card_type == 'tuwen':
             title, description, pic_url, url = (list(data) + [''] * 4)[:4]
             data = {'title': title or '', 'description': description or '',

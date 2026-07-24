@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 
 from core.base.config import cfg
 from core.base.logger import FRAMEWORK, get_logger, report_error
+from core.base.tasks import spawn
 from core.message.event import (
     FRIEND_ADD,
     FRIEND_DEL,
@@ -316,7 +317,7 @@ class EventHandlerMixin:
         if raw_event:
             raw_json = json.dumps(raw_event, ensure_ascii=False)
             entry['extra'] = raw_json
-        asyncio.create_task(bot.log_service.add('lifecycle', entry))
+        spawn(bot.log_service.add('lifecycle', entry))
         web_entry = {'appid': bot.appid, 'bot_name': bot.name, **entry}
         if raw_event:
             web_entry['raw_message'] = entry['extra']
@@ -450,6 +451,7 @@ class EventHandlerMixin:
         if now - self._cache_clean_ts > 600:
             self._cache_clean_ts = now
             self._known_users = {k: v for k, v in self._known_users.items() if v > now}
+            self._full_access_cache = {k: v for k, v in self._full_access_cache.items() if v > now}
             # 清理过期群缓存 (expire_ts < now), 避免不活跃群的 user_map 一直占用内存
             active = {k: v for k, v in self._group_users_cache.items() if v[0] > now}
             self._group_users_cache = active

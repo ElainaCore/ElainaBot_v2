@@ -94,7 +94,7 @@ class QQBotAPI:
                 headers['Cookie'] = self._build_cookie(uin, quid, ticket)
             if extra_headers:
                 headers.update(extra_headers)
-            conn = aiohttp.TCPConnector(family=socket.AF_INET, ssl=False)
+            conn = aiohttp.TCPConnector(family=socket.AF_INET)
             async with aiohttp.ClientSession(timeout=_TIMEOUT, connector=conn) as session:
                 if method == 'GET':
                     async with session.get(url, headers=headers) as resp:
@@ -126,7 +126,7 @@ class QQBotAPI:
             headers.update(extra)
             if cookie:
                 headers['Cookie'] = cookie
-            conn = aiohttp.TCPConnector(family=socket.AF_INET, ssl=False)
+            conn = aiohttp.TCPConnector(family=socket.AF_INET)
             async with aiohttp.ClientSession(timeout=_TIMEOUT, connector=conn) as session:
                 if method.upper() == 'GET':
                     async with session.get(url, headers=headers) as resp:
@@ -157,7 +157,7 @@ class QQBotAPI:
         if cookie:
             headers['Cookie'] = cookie
         try:
-            conn = aiohttp.TCPConnector(family=socket.AF_INET, ssl=False)
+            conn = aiohttp.TCPConnector(family=socket.AF_INET)
             async with (
                 aiohttp.ClientSession(timeout=_TIMEOUT, connector=conn) as session,
                 session.post(url, data={'target_developer_id': developer_id}, headers=headers) as resp,

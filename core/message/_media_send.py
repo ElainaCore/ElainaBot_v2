@@ -3,22 +3,20 @@
 import asyncio
 import hashlib
 import os
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from core.base.logger import FRAMEWORK, get_logger
+from core.base.tasks import spawn
 from core.message._http import (
     _MAX_MEDIA_DOWNLOAD,
     MessageType,
+    _msg_seq,
 )
 from core.message.media import _resolve_upload_ep, upload_media_bytes, upload_media_via_url
 from core.message.response import extract_message_id
 
 log = get_logger(FRAMEWORK, '消息发送')
-
-
-def _msg_seq():
-    import random
-
-    return random.randint(10000, 999999)
 
 
 class _MediaSendMixin:
@@ -27,11 +25,15 @@ class _MediaSendMixin:
     _MEDIA_TYPE_NAMES = {1: '图片', 2: '视频', 3: '语音', 4: '文件'}
     _MEDIA_TYPE_EXTS = {1: '.png', 2: '.mp4', 3: '.mp3', 4: '.dat'}
 
+    # 宿主类 (MessageSender) 提供的属性/方法声明
+    _appid: str
+    _ensure_client: Callable[[], Awaitable[Any]]
+
     def _maybe_auto_recall(self, event, data, delay):
         if delay and data:
             mid = extract_message_id(data)
             if mid:
-                asyncio.create_task(self._auto_recall(event, mid, delay))
+                spawn(self._auto_recall(event, mid, delay))
 
     async def download_media(self, url: str):
         try:

@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 
 from core.base.config import cfg
 from core.base.logger import FRAMEWORK, get_logger
+from core.base.tasks import spawn
 from core.storage._daily_base import DailyScanService
 
 log = get_logger(FRAMEWORK, '统计')
@@ -86,7 +87,7 @@ class StatisticsService(DailyScanService):
             return
         self._running = True
         self._task = asyncio.create_task(self._scheduler_loop())
-        asyncio.create_task(self._startup_catchup())
+        spawn(self._startup_catchup())
         log.info(f'已启动 [每日 {self._schedule_hour:02d}:{self._schedule_minute:02d}]')
 
     async def _startup_catchup(self):

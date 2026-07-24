@@ -5,6 +5,7 @@ import logging
 
 from core.base.config import cfg
 from core.base.logger import SYSTEM, report_error
+from core.base.tasks import spawn
 from core.bot.instance import BotInstance
 from core.network.websocket import WSClient
 
@@ -70,7 +71,7 @@ class BotRegistry:
                 instance.sender._web_log_cb = self._sender_log_cb
             self._bots[appid] = instance
             if instance.ws_client:
-                asyncio.create_task(instance.ws_client.connect())
+                spawn(instance.ws_client.connect())
             return instance
         except Exception as e:
             report_error(SYSTEM, '启动器', e, context={'appid': appid})
@@ -81,12 +82,12 @@ class BotRegistry:
     def on_config_change(self, data):
         """bot.yaml 变更回调"""
         try:
-            loop = asyncio.get_running_loop()
-            loop.create_task(self._sync())
+            asyncio.get_running_loop()
+            spawn(self._sync())
         except RuntimeError:
             loop = self._loop
             if loop is not None and loop.is_running():
-                loop.call_soon_threadsafe(lambda: loop.create_task(self._sync()))
+                loop.call_soon_threadsafe(lambda: spawn(self._sync()))
 
     async def _sync(self):
         """同步 bot 配置与实际运行状态"""
@@ -154,7 +155,7 @@ class BotRegistry:
                     custom_api_base=new_api_base,
                     client_name=str(identify_cfg.get('name', '') or ''),
                 )
-                asyncio.create_task(bot.ws_client.connect())
+                spawn(bot.ws_client.connect())
             elif not ws_cfg.get('enabled') and bot.ws_client:
                 await bot.ws_client.close()
                 bot.ws_client = None

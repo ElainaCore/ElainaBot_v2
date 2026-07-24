@@ -29,13 +29,7 @@ class SubscribeMixin:
         return conn, self._conn_locks.get(db_path)
 
     async def subscribe_record(self, results, group_id='', user_id='', once_template_ids=()):
-        """记录订阅事件 result 列表, 返回写入条数
-
-        - 群聊链路: group_id 非空, target_type='group'
-        - 单聊链路: 仅 user_id, target_type='user'
-        - sub_type: 模板 ID 在 once_template_ids 中为单次订阅, 否则为永久订阅
-        - result 项的 op: 1=开启订阅 (status=1), 2=关闭订阅 (status=0)
-        """
+        """记录订阅事件 result 列表并返回写入条数: group_id 非空为群聊链路否则单聊, 模板 ID 在 once_template_ids 中为单次订阅否则永久, op 1=开启(status=1) 2=关闭(status=0)"""
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
             None, self._subscribe_record_sync, results, group_id, user_id, once_template_ids)

@@ -7,6 +7,7 @@ import zipfile
 
 from aiohttp import web
 
+from core.application import get_app
 from web.tools._market.fetch import (
     _download_file,
 )
@@ -414,8 +415,6 @@ async def _auto_enable_plugin(reload_name):
     if not reload_name:
         return
     try:
-        from core.application import get_app
-
         app = get_app()
         if not app or not app.plugin_manager:
             return
@@ -519,8 +518,6 @@ async def handle_market_install(request: web.Request):
 async def _unload_plugin_runtime(plugin_name):
     """从运行时卸载插件"""
     try:
-        from core.application import get_app
-
         app = get_app()
         if app and app.plugin_manager:
             await app.plugin_manager.unload(plugin_name)
@@ -567,8 +564,6 @@ async def handle_market_uninstall(request: web.Request):
 
     if not os.path.isdir(dest_dir):
         return web.json_response({'success': False, 'message': f'{label} 不存在'})
-
-    import shutil
 
     try:
         await _unload_plugin_runtime(safe)

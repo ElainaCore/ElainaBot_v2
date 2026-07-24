@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 
+import web.ws as _ws
 from core.base.logger import FRAMEWORK, report_error, report_error_raw
 from core.message.response import extract_message_id, extract_reference_id
 
@@ -57,8 +58,6 @@ def _log_sent_message(bot, chat_type, chat_id, display, bot_appid, bot_name, bot
 
     # 推送到面板实时日志
     try:
-        import web.ws as _ws
-
         _ws.push_log(
             'message',
             {

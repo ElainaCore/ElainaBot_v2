@@ -9,6 +9,7 @@ from datetime import datetime
 from aiohttp import WSMsgType, web
 
 import web.auth as auth
+from core.base.tasks import spawn
 
 log = logging.getLogger('ElainaBot.web.ws')
 
@@ -58,10 +59,12 @@ class WSBroadcast:
         if not self.has_clients():
             return
         try:
-            asyncio.get_running_loop().create_task(self.broadcast(msg_type, data))
-            return
+            asyncio.get_running_loop()
         except RuntimeError:
             pass
+        else:
+            spawn(self.broadcast(msg_type, data))
+            return
         loop = self._loop
         if loop is None or loop.is_closed():
             return
@@ -87,9 +90,7 @@ class WSBroadcast:
         """服务器关闭时主动断开所有面板连接, 避免阻塞 runner.shutdown()"""
         for ws in list(self._clients):
             with contextlib.suppress(Exception, RuntimeError):
-                asyncio.get_running_loop().create_task(
-                    ws.close(code=1001, message=b'Server shutdown')
-                )
+                spawn(ws.close(code=1001, message=b'Server shutdown'))
         self._clients.clear()
         self._sse_queues.clear()
 

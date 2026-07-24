@@ -8,6 +8,7 @@ import os
 from datetime import datetime, timedelta
 
 from core.base.logger import SERVICE, get_logger, on_error
+from core.base.tasks import spawn
 from core.storage._base import _BaseLogService
 from core.storage._schema import (
     _QUEUE_MAXSIZE,
@@ -91,7 +92,7 @@ class LogService(_BaseLogService, ShareMixin, WakeupMixin, SubscribeMixin):
             return False
         # DAU 立即刷写 (异步后台, 不阻塞调用方)
         if log_type == 'dau':
-            asyncio.create_task(self._flush_type('dau'))
+            spawn(self._flush_type('dau'))
         return True
 
     def query_data(self, sql, params=()):

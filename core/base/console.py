@@ -92,7 +92,7 @@ def _emit(stream, line):
             del _lines[: len(_lines) - MAX_LINES]
     _tls.busy = True
     try:
-        for cb in list(_callbacks):
+        for cb in _callbacks:
             with contextlib.suppress(Exception):
                 cb(entry)
     finally:

@@ -9,6 +9,9 @@ import time
 
 from aiohttp import web
 
+from core.application import get_app
+from core.base.config import cfg
+
 _IS_WINDOWS = platform.system().lower() == 'windows'
 _base_dir = ''
 
@@ -59,7 +62,6 @@ if __name__ == "__main__":
 async def handle_restart(request: web.Request):
     # 优雅重启
     try:
-        from core.application import get_app
         app = get_app()
         if app:
             app._restart_requested = True
@@ -73,8 +75,6 @@ async def handle_restart(request: web.Request):
     main_py = os.path.join(_base_dir, 'main.py')
     if not os.path.exists(main_py):
         return web.json_response({'success': False, 'error': 'main.py 不存在'})
-
-    from core.base.config import cfg
 
     port = cfg.get('settings', 'server.port', 5001)
     data_dir = os.path.join(_base_dir, 'data')

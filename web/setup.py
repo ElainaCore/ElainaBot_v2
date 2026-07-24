@@ -1,14 +1,21 @@
 """Web 面板集成入口"""
 
+import contextlib
 import logging
 import os
 import re
 import sys
+from datetime import datetime
 
+import aiohttp.web_fileresponse as _fr
 from aiohttp import web
 
 import web.api as _panel_api
 import web.auth as _auth
+import web.ws as _ws
+from core.base import console as _console
+from core.base.logger import on_error
+from core.storage.log import SharedLogService
 
 log = logging.getLogger('ElainaBot.web')
 
@@ -18,12 +25,8 @@ def _disable_sendfile_on_windows():
     if sys.platform != 'win32':
         return
     os.environ.setdefault('AIOHTTP_NOSENDFILE', '1')
-    try:
-        import aiohttp.web_fileresponse as _fr
-
+    with contextlib.suppress(AttributeError):
         _fr.NOSENDFILE = True
-    except (ImportError, AttributeError):
-        pass
 
 
 class _WebPanelLogHandler(logging.Handler):
@@ -35,10 +38,6 @@ class _WebPanelLogHandler(logging.Handler):
 
     def emit(self, record):
         try:
-            from datetime import datetime
-
-            from core.storage.log import SharedLogService
-
             msg = record.getMessage()
             level = record.levelname
             entry = {
@@ -59,8 +58,6 @@ class _WebPanelLogHandler(logging.Handler):
 
 
 def _push_console_line(entry: dict):
-    import web.ws as _ws
-
     _ws.push_log('console', dict(entry))
 
 
@@ -82,9 +79,6 @@ def setup_web(app: web.Application, bot_manager, base_dir: str):
 
     # 注入日志推送 / 错误回调 / logging handler
     try:
-        import web.ws as _ws
-        from core.base.logger import on_error
-
         bot_manager._web_log_cb = _ws.push_log
         for _inst in bot_manager._bots.values():
             if hasattr(_inst, 'sender'):
@@ -111,8 +105,6 @@ def setup_web(app: web.Application, bot_manager, base_dir: str):
             )
 
         on_error(_push_error)
-
-        from core.base import console as _console
 
         _console.install()
         _console.on_line(_push_console_line)

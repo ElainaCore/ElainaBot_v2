@@ -14,6 +14,7 @@ from functools import wraps
 
 from aiohttp import web
 
+from core.base.config import cfg
 from web.response import error
 
 _BAN_DURATION = 43200
@@ -133,8 +134,6 @@ def _peer_ip(request: web.Request) -> str:
 
 def _trust_forwarded() -> bool:
     try:
-        from core.base.config import cfg
-
         return bool(cfg.get('settings', 'web.trust_forwarded_headers', False))
     except Exception:
         return False
@@ -282,9 +281,9 @@ def _cleanup_sessions():
 def create_session(request: web.Request) -> str:
     """创建会话并返回 bearer token"""
     _cleanup_sessions()
-    if len(valid_sessions) > _MAX_SESSIONS:
+    if len(valid_sessions) >= _MAX_SESSIONS:
         oldest = sorted(valid_sessions, key=lambda t: valid_sessions[t]['created'])
-        for t in oldest[: len(valid_sessions) - _MAX_SESSIONS]:
+        for t in oldest[: len(valid_sessions) - _MAX_SESSIONS + 1]:
             valid_sessions.pop(t)
 
     ip = get_real_ip(request)

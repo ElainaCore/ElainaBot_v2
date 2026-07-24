@@ -19,7 +19,7 @@ _start_time = datetime.now()
 _last_gc: float = 0.0
 _GC_INTERVAL = 30
 _bot_manager = None
-_info_cache = (0.0, None)
+_info_cache: tuple[float, dict | None] = (0.0, None)
 _INFO_CACHE_TTL = 5
 
 

@@ -9,6 +9,7 @@ import sqlite3
 from datetime import datetime, timedelta
 
 from core.base.logger import FRAMEWORK, get_logger
+from core.base.tasks import spawn
 from core.storage._daily_base import DailyScanService
 from core.storage._schema import DAU_TABLE_SQL
 from core.storage.lifecycle_stats import compute_lifecycle_counts
@@ -35,7 +36,7 @@ class DAUService(DailyScanService):
             return
         self._running = True
         self._task = asyncio.create_task(self._scheduler_loop())
-        asyncio.create_task(self._backfill_missing())
+        spawn(self._backfill_missing())
         log.info(f'已启动 [每日 {self._schedule_hour:02d}:{self._schedule_minute:02d}]')
 
     async def _backfill_missing(self):
@@ -47,10 +48,11 @@ class DAUService(DailyScanService):
             return
         for i in range(1, 4):
             date_str = (today - timedelta(days=i)).isoformat()
-            missing = []
-            for appid in appids:
-                if not await self.load(appid, date_str) and os.path.isfile(self._message_db_path(appid, date_str)):
-                    missing.append(appid)
+            missing = [
+                appid
+                for appid in appids
+                if not await self.load(appid, date_str) and os.path.isfile(self._message_db_path(appid, date_str))
+            ]
             if not missing:
                 continue
             log.info(f'补算 {date_str} DAU: {len(missing)} 个机器人')

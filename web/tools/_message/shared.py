@@ -6,7 +6,7 @@ from typing import Any
 
 log = logging.getLogger('ElainaBot.web.message')
 
-_nickname_cache: dict[str, tuple[float, str]] = {}
+_nickname_cache: dict[str, tuple[float, str]] = {}  # {user_id: (ts, name)}
 _CACHE_TIMEOUT = 86400
 _base_dir: str = ''
 _bot_manager: Any = None
@@ -22,8 +22,8 @@ def _get_nickname(user_id):
     if not user_id:
         return '未知用户'
     cached = _nickname_cache.get(user_id)
-    if cached and time.time() - cached['ts'] < _CACHE_TIMEOUT:
-        return cached['name']
+    if cached and time.time() - cached[0] < _CACHE_TIMEOUT:
+        return cached[1]
     # 从 data.db 查 users.name
     if _bot_manager:
         for inst in _bot_manager._bots.values():
@@ -31,7 +31,7 @@ def _get_nickname(user_id):
                 r = inst.log_service.query_data('SELECT name FROM users WHERE user_id=?', (user_id,))
                 if r and r[0].get('name'):
                     name = r[0]['name']
-                    _nickname_cache[user_id] = {'name': name, 'ts': time.time()}
+                    _nickname_cache[user_id] = (time.time(), name)
                     return name
             except Exception as e:
                 log.debug(f'查询昵称失败 {user_id}: {e}')
@@ -49,8 +49,8 @@ def _batch_get_nicknames(user_ids):
         if not uid:
             continue
         c = _nickname_cache.get(uid)
-        if c and now - c['ts'] < _CACHE_TIMEOUT:
-            out[uid] = c['name']
+        if c and now - c[0] < _CACHE_TIMEOUT:
+            out[uid] = c[1]
         else:
             pending.append(uid)
     if pending and _bot_manager:
@@ -67,7 +67,7 @@ def _batch_get_nicknames(user_ids):
                         nm = r.get('name')
                         if uid and nm and uid not in out:
                             out[uid] = nm
-                            _nickname_cache[uid] = {'name': nm, 'ts': now}
+                            _nickname_cache[uid] = (now, nm)
                 except Exception as e:
                     log.debug(f'批量查询昵称失败: {e}')
     # fallback for missing

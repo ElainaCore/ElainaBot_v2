@@ -14,7 +14,9 @@ import yaml
 from aiohttp import web
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
+from core.base.config import cfg
 from web.response import error, ok
+from web.tools._bot.api import get_bot_api
 
 log = logging.getLogger('ElainaBot.web.config')
 
@@ -74,8 +76,7 @@ def _serialize_value(key, value, indent=1):
         return [f'{pad}{key}: {_serialize_buttons(value)}']
     if isinstance(value, str) and '\n' in value:
         lines = [f'{pad}{key}: |']
-        for ln in value.rstrip('\n').split('\n'):
-            lines.append(f'{pad}  {ln}' if ln.strip() else f'{pad}')
+        lines.extend(f'{pad}  {ln}' if ln.strip() else f'{pad}' for ln in value.rstrip('\n').split('\n'))
         return lines
     return [f'{pad}{key}: {_yaml_scalar(value)}']
 
@@ -203,7 +204,6 @@ def _merge_preserving_comments(original_text: str, new_data: dict) -> str:
 
 async def handle_get_config(request: web.Request):
     """返回配置文件的原始内容（含环境变量占位符已解析）"""
-    from core.base.config import cfg
 
     cdir = _config_dir()
     result = {}
@@ -254,8 +254,6 @@ async def handle_save_config(request: web.Request):
 
         # bot 配置保存后立即触发热重载, 新增/移除的机器人无需重启即可连接
         if file_name == 'bot':
-            from core.base.config import cfg
-
             mtime = os.path.getmtime(path)
             cfg._do_reload('bot', path, mtime)
 
@@ -272,8 +270,6 @@ _bind_tasks: dict = {}  # task_id -> (创建时间戳, 解密 key)
 
 
 def _get_bind_api():
-    from web.tools._bot.api import get_bot_api
-
     return get_bot_api()
 
 
@@ -361,8 +357,6 @@ def _apply_bound_bot(appid: str, secret: str, robot_qq: str = '') -> bool:
     )
     with open(path, 'w', encoding='utf-8') as f:
         f.write(content)
-
-    from core.base.config import cfg
 
     cfg._do_reload('bot', path, os.path.getmtime(path))
     return created

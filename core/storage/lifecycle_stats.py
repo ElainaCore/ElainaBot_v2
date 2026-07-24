@@ -17,12 +17,7 @@ _COUNT_KEY = {
 
 
 def compute_lifecycle_counts(rows):
-    """按实体去重统计生命周期事件.
-
-    rows: 时间升序的 (type, user_id, group_id) 序列.
-    同一群/好友只看首末事件: 首末同为加入计 1 次加入, 同为移除计 1 次移除,
-    先加后删(或先删后加)互相抵消, 两边都不计数.
-    """
+    """按实体去重统计生命周期事件: rows 为时间升序 (type,user_id,group_id), 同一群/好友只看首末事件, 首末同为加入/移除各计 1 次, 先加后删或先删后加互相抵消不计数"""
     first = {}
     last = {}
     for etype, uid, gid in rows:

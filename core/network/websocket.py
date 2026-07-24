@@ -10,6 +10,7 @@ import ssl as _ssl_mod
 import websockets
 
 from core.base.logger import SERVICE, get_logger
+from core.base.tasks import spawn
 from core.message.event import Event
 
 log = get_logger(SERVICE, 'WebSocket')
@@ -171,11 +172,11 @@ class WSClient:
             if event_type == 'INTERACTION_CREATE':
                 # 分发插件后用其 code 发 op12 ACK (独立任务等待, 不阻塞读取循环)
                 event.start_ack_countdown()
-                task = asyncio.create_task(self._dispatch_with_backpressure(event))
+                task = spawn(self._dispatch_with_backpressure(event))
                 task.add_done_callback(lambda t, ev=event: ev.finish_dispatch())
-                asyncio.create_task(self._ack_interaction_when_ready(event, payload))
+                spawn(self._ack_interaction_when_ready(event, payload))
             else:
-                asyncio.create_task(self._dispatch_with_backpressure(event))
+                spawn(self._dispatch_with_backpressure(event))
         except Exception as e:
             log.error(f'[{self._appid}] 事件处理异常: {e}')
 

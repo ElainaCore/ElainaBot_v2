@@ -11,7 +11,9 @@ from datetime import datetime
 from pathlib import Path
 
 import aiohttp as _aiohttp
+import yaml
 
+from core.application import get_app
 from web.tools._updater.mirror import detect_environment
 from web.tools._updater.shared import (
     DEFAULT_SKIP,
@@ -167,7 +169,6 @@ class FrameworkUpdater:
                         headers=headers,
                         timeout=timeout,
                         allow_redirects=True,
-                        ssl=False,
                     ) as resp:
                         if resp.status == 200:
                             ct = resp.headers.get('content-type', '')
@@ -232,7 +233,6 @@ class FrameworkUpdater:
                     headers=headers,
                     timeout=timeout,
                     allow_redirects=True,
-                    ssl=False,
                 ) as resp,
             ):
                 resp.raise_for_status()
@@ -267,8 +267,6 @@ class FrameworkUpdater:
 
             # 读取日志目录名 (默认 'log')
             try:
-                import yaml
-
                 with open(self.base_dir / 'config' / 'settings.yaml', encoding='utf-8') as f:
                     _s = yaml.safe_load(f) or {}
                 log_dir_name = (_s.get('logging') or {}).get('dir', 'log')
@@ -448,8 +446,6 @@ class FrameworkUpdater:
     def _trigger_restart():
         """更新后重启: Windows 用外部脚本, Linux/Docker 走内部重启 + os.execv"""
         try:
-            from core.application import get_app
-
             app = get_app()
             if app:
                 log.info('更新完成, 触发重启...')

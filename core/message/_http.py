@@ -1,6 +1,7 @@
 """HTTP 请求层 — Token 自动重试、API 基础方法"""
 
 import asyncio
+import random
 
 from core.base.logger import FRAMEWORK, get_logger
 from core.message.response import loads_raw_response
@@ -34,6 +35,10 @@ _TOKEN_EXPIRED_CODE = 11244
 _MAX_MEDIA_DOWNLOAD = 100 * 1024 * 1024  # 100MB 下载上限, 防止 OOM
 _NET_MAX_RETRIES = 2
 _NET_RETRY_DELAY = 0.5  # 秒, 按次数线性递增
+
+
+def _msg_seq():
+    return random.randint(10000, 999999)
 
 
 def _is_retryable(e):

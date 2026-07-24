@@ -5,6 +5,8 @@ import logging
 import os
 import re
 
+from web.tools._updater.shared import _build_mirror_url, _load_mirror_cache
+
 log = logging.getLogger('ElainaBot.web.market')
 
 # ==================== GitHub 插件库配置 ====================
@@ -70,8 +72,6 @@ def _modules_dir():
 
 def _ranked_mirror_urls(raw_url):
     """按磁盘缓存排名生成 URL 列表, 缓存为空时用兜底镜像"""
-    from web.tools._updater.shared import _build_mirror_url, _load_mirror_cache
-
     cached = _load_mirror_cache()
     if cached:
         urls = [_build_mirror_url(raw_url, m['mirror'] if isinstance(m, dict) else m) for m in cached]

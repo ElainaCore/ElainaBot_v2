@@ -29,7 +29,6 @@ async def _test_one_mirror(mirror, timeout=3):
                 headers={'User-Agent': 'ElainaBot-Mirror-Test'},
                 timeout=_aiohttp.ClientTimeout(total=timeout),
                 allow_redirects=False,
-                ssl=False,
             ) as resp,
         ):
             latency = time.time() - start

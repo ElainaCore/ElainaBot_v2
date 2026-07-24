@@ -6,6 +6,7 @@ from aiohttp import ClientError, ClientSession, ClientTimeout, web
 from aiohttp.web_request import FileField
 
 import web.tools._openapi.handler as h
+from web.tools._bot.api import extract_login_creds, parse_login_developers
 
 _V2_ALLOWED_PREFIXES = ('/cgi-bin/v2/', '/bopen/v2/', '/api/v3/login/', '/api/v1/logout')
 
@@ -104,7 +105,6 @@ async def handle_v2_developers(request: web.Request):
     response = result.get('res') if isinstance(result, dict) else None
     if isinstance(response, dict) and response.get('ret') not in (None, 0):
         return h._err(str(response.get('msg') or '获取主体列表失败'))
-    from web.tools._bot.api import parse_login_developers
 
     return h._ok(
         developers=parse_login_developers(result),
@@ -137,7 +137,6 @@ async def handle_v2_switch_developer(request: web.Request):
     if relogin_message:
         h._remove_v2(user_id)
         return h._err(relogin_message, relogin=True)
-    from web.tools._bot.api import extract_login_creds, parse_login_developers
 
     developers = parse_login_developers(list_result)
     if developer_id not in {item['id'] for item in developers}:
@@ -263,7 +262,9 @@ async def handle_v2_upload_avatar(request: web.Request):
     payload = data if isinstance(data, dict) else result
     upload_url = result.get('upload_url') or payload.get('upload_url')
     upload_id = result.get('upload_id') or payload.get('upload_id')
-    parsed = urlparse(upload_url if isinstance(upload_url, str) else '')
+    if not isinstance(upload_url, str):
+        return h._err('获取上传地址失败')
+    parsed = urlparse(upload_url)
     if parsed.scheme != 'https' or not (parsed.hostname or '').endswith('.myqcloud.com') or not upload_id:
         return h._err('获取上传地址失败')
 

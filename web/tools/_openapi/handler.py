@@ -130,11 +130,7 @@ def _require_api_and_login(body):
 
 
 def _apply_login(user_id, creds):
-    """把一次扫码得到的凭证隔离写入新/旧两个存储。
-
-    新平台 (data/open/): b_token/qticket_lite/qticket/developer_id_lite/uin/skey
-    旧平台 (data/openapi.json): uin/developerId/ticket, 供系统插件与旧接口使用
-    """
+    """把扫码凭证隔离写入两个存储: 新平台 data/open/ (b_token/qticket/developer_id_lite/uin/skey), 旧平台 data/openapi.json (uin/developerId/ticket 供系统插件与旧接口)"""
     quid = creds.get('developer_id_lite') or creds.get('developerId') or ''
     uin = creds.get('uin') or ''
     # 新平台隔离存储
