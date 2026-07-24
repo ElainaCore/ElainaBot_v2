@@ -83,12 +83,13 @@ def main():
     if sys.platform == 'win32':
         asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
-    from core.application import Application
+    from core.application import Application, relaunch
 
+    restart = False
     with contextlib.suppress(KeyboardInterrupt):
         restart = asyncio.run(Application().start())
     if restart:
-        os.execv(sys.executable, [sys.executable] + sys.argv)
+        relaunch()
 
 
 if __name__ == '__main__':

@@ -4,6 +4,10 @@ import asyncio
 import contextlib
 import logging
 import os
+import subprocess
+import sys
+import threading
+import time
 from collections.abc import Callable
 
 from core.base.config import cfg
@@ -47,6 +51,14 @@ _app: 'Application | None' = None
 def get_app() -> 'Application | None':
     """获取当前运行的 Application 实例 (线程安全)"""
     return _app
+
+
+def relaunch():
+    """重新拉起自身进程 (Windows 下 execv 对残留线程不可靠, 改用 Popen + _exit)"""
+    if sys.platform == 'win32':
+        subprocess.Popen([sys.executable] + sys.argv, creationflags=getattr(subprocess, 'CREATE_NEW_CONSOLE', 0))
+        os._exit(0)
+    os.execv(sys.executable, [sys.executable] + sys.argv)
 
 
 class Application(EventHandlerMixin):
@@ -277,6 +289,10 @@ class Application(EventHandlerMixin):
 
     async def shutdown(self):
         log.info('正在关闭...')
+
+        if self._restart_requested:
+            # 重启时整体关闭限时 2 秒, 超时强制重新拉起
+            threading.Thread(target=lambda: (time.sleep(2), relaunch()), daemon=True).start()
 
         if self._plugin_manager:
             self._plugin_manager.stop_watcher()
