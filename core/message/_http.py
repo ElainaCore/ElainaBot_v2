@@ -32,6 +32,14 @@ _API_BASE = 'https://api.sgroup.qq.com'
 _IGNORE_ERROR_CODES = frozenset({11293, 40054002, 40054003})
 _TOKEN_EXPIRED_CODE = 11244
 _MAX_MEDIA_DOWNLOAD = 100 * 1024 * 1024  # 100MB 下载上限, 防止 OOM
+_NET_MAX_RETRIES = 2
+_NET_RETRY_DELAY = 0.5  # 秒, 按次数线性递增
+
+
+def _is_retryable(e):
+    """超时/连接类异常可安全重试 (payload 含 msg_seq, 平台会去重)"""
+    lowered = f'{type(e).__name__} {e}'.lower()
+    return 'timeout' in lowered or 'connect' in lowered or 'connection' in lowered
 
 
 def _describe_exception(e, method, endpoint):
@@ -70,7 +78,9 @@ class _HttpMixin:
     async def _request(self, method, endpoint, **kwargs):
         client = await self._ensure_client()
         extra_headers = kwargs.pop('headers', None)
-        for attempt in range(2):
+        token_retried = False
+        net_retries = 0
+        while True:
             token = await self._token_mgr.get_token()
             headers = dict(extra_headers) if extra_headers else {}
             headers['Authorization'] = f'QQBot {token}'
@@ -90,7 +100,8 @@ class _HttpMixin:
                             'code': status,
                         }
                     del body
-                    if err.get('code') == _TOKEN_EXPIRED_CODE and attempt == 0:
+                    if err.get('code') == _TOKEN_EXPIRED_CODE and not token_retried:
+                        token_retried = True
                         await self._token_mgr.refresh_token()
                         await asyncio.sleep(0.1)
                         continue
@@ -101,8 +112,15 @@ class _HttpMixin:
                     return True, result
                 return True, {}
             except Exception as e:
+                if net_retries < _NET_MAX_RETRIES and _is_retryable(e):
+                    net_retries += 1
+                    log.warning(
+                        f'[{self._appid}] 网络异常自动重试 {net_retries}/{_NET_MAX_RETRIES}: '
+                        f'{type(e).__name__} {method} {endpoint}'
+                    )
+                    await asyncio.sleep(_NET_RETRY_DELAY * net_retries)
+                    continue
                 return False, _describe_exception(e, method, endpoint)
-        return False, {'message': 'max retries', 'code': -1}
 
     async def get_json(self, endpoint, **kwargs):
         return await self._request('GET', endpoint, **kwargs)

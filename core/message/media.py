@@ -46,7 +46,9 @@ async def upload_media_bytes(sender, file_bytes, file_type, endpoint, *, file_na
         'file_type': file_type,
     }
     if isinstance(file_bytes, bytes):
-        req_data['file_data'] = base64.b64encode(file_bytes).decode()
+        req_data['file_data'] = await asyncio.get_running_loop().run_in_executor(
+            None, lambda: base64.b64encode(file_bytes).decode()
+        )
     elif isinstance(file_bytes, str):
         req_data['url'] = file_bytes  # 兼容使用url来发送
     if file_name:
