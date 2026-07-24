@@ -19,7 +19,6 @@
 - [8. Web 面板扩展](#8-web-面板扩展)
 - [9. 配置项与全量环境](#9-配置项与全量环境)
 - [10. 调试与最佳实践](#10-调试与最佳实践)
-- [11. 完整示例](#11-完整示例)
 
 ---
 
@@ -137,15 +136,9 @@ from core.plugin.decorators import handler, on_load, on_unload, interceptor
 **示例**:
 
 ```python
-@handler(r'^/?菜单$', name='主菜单', desc='显示功能列表', priority=10)
-async def menu(event, match):
-    await event.reply("📋 功能列表:\n1. 签到\n2. 抽卡")
-
-
 @handler(r'^管理\s+(\S+)$', name='管理命令', owner_only=True, group_only=True)
 async def admin(event, match):
-    target = match.group(1)
-    await event.reply(f"✅ 已处理: {target}")
+    await event.reply(f"✅ 已处理: {match.group(1)}")
 
 
 @handler(r'^签到$', name='签到', ignore_at_check=True)  # 无需@即可触发
@@ -155,7 +148,7 @@ async def check_in(event, match):
 
 #### 3.1.1 `block` 放行 / 拦截
 
-多个插件注册相同指令时, `block=False` (默认) 放行让所有命中处理器按 `priority` 顺序执行, `block=True` 命中即拦截后续低优先级处理器。
+多个插件注册相同指令时, `block=False` (默认) 放行让所有命中处理器按 `priority` 顺序执行, `block=True` 命中即拦截后续低优先级处理器:
 
 ```python
 @handler(r'^状态$', name='系统状态', priority=10, block=True)  # 命中即拦截, 只有它响应
@@ -283,13 +276,8 @@ async def filter_keywords(event):
 # 文本回复
 await event.reply("Hello!")
 
-# 带按钮回复 (完整字段参考见 5.2 节)
-buttons = [
-    [{'text': '回调', 'data': 'cb_1', 'type': 1},      # 回调按钮
-     {'text': '输入', 'data': '/帮助', 'type': 2}],    # 填充指令到输入框
-    [{'text': '链接', 'link': 'https://example.com'}],  # 链接按钮 (等同 type=0)
-]
-await event.reply("📌 选择操作", buttons=buttons)
+# 带按钮回复 (按钮字段与示例见 5.2 节)
+await event.reply("📌 选择操作", buttons=[[{'text': '回调', 'data': 'cb_1', 'type': 1}]])
 
 # 自动撤回 (秒)
 await event.reply("⏰ 5秒后撤回", auto_delete_time=5)
@@ -349,7 +337,7 @@ await event.send_to_group(event.group_id, "# 标题", msg_type=2)
 | `2` | 原生 Markdown |
 | `3` | Ark 卡片 (由 `reply_ark` 自动设置) |
 | `7` | 富媒体 (由 `reply_image` 等自动设置) |
-| `8` | 图文卡片 (由 `reply_tuwen` 自动设置) |
+| `8` | 卡片消息 (由 `reply_card` 自动设置) |
 
 > 不传 `msg_type` 时按 `message.use_markdown` 配置决定。
 
@@ -362,9 +350,7 @@ await event.send_to_group(event.group_id, "主动消息同样支持", skip_suffi
 
 ### 5.2 按钮完整字段参考
 
-按钮是二维数组 `list[list[dict]]` (行 × 列), 每个按钮是一个字典。
-
-#### 核心字段
+按钮是二维数组 `list[list[dict]]` (行 × 列), 每个按钮是一个字典。全部字段一览:
 
 | 字段 | 类型 | 默认 | 说明 |
 | --- | --- | --- | --- |
@@ -374,71 +360,40 @@ await event.send_to_group(event.group_id, "主动消息同样支持", skip_suffi
 | `link` | `str` | — | 快捷方式: 设置后自动设为 `type=0 + data=link` |
 | `show` | `str` | `text` | 点击后显示的文字 (visited_label) |
 | `style` | `int` | `1` | 样式: `0`=灰框 / `1`=蓝框蓝字 / `2`=黑框(PC 端气泡) / `3`=黑框红字 / `4`=蓝底白字 |
+| `reply` | `bool` | — | 点击后作为引用回复发送 |
+| `limit` | `int` | — | 点击次数限制 (`click_limit`)可能无效 |
+| `tips` | `str` | — | 不支持时的提示文字 (`unsupport_tips`) |
+| `modal` | `str`/`dict` | — | 点击后的二次确认弹窗; 字符串等价于 `{'content': 文本}`, dict 可额外指定 `confirm_text` / `cancel_text` |
+| `subscribe` | `str`/`list`/`dict` | — | 订阅模板 ID, 设置后自动设为 `type=4` 并生成 `subscribe_data`; 含 `_` 的 ID 转为 `custom_template_id`, 否则为 `template_id`; dict 原样透传 |
 
-#### 行为字段
-
-| 字段 | 类型 | 说明 |
-| --- | --- | --- |
-| `enter` | `bool` | 已失效，无论填写不填写，最终都会被开放平台删掉|
-| `reply` | `bool` | 点击后作为引用回复发送 |
-| `limit` | `int` | 点击次数限制 (`click_limit`)可能无效 |
-| `tips` | `str` | 不支持时的提示文字 (`unsupport_tips`) |
-| `modal` | `str`/`dict` | 点击后的二次确认弹窗; 字符串等价于 `{'content': 文本}`, dict 可额外指定 `confirm_text` / `cancel_text` |
-| `subscribe` | `str`/`list`/`dict` | 订阅模板 ID, 设置后自动设为 `type=4` 并生成 `subscribe_data`; 含 `_` 的 ID 转为 `custom_template_id`, 否则为 `template_id`; dict 原样透传 |
+**权限字段** (五者二选一, 优先级从上到下): `permission` (显式权限对象, 如 `{'type': 1}`) > `role` (身份组 ID 列表, 频道场景 → type=3) > `list` (用户 ID 列表 → type=0) > `admin` (仅管理员 → type=1) > 默认所有人可点 (type=2)。
 
 平台原生 action 字段 (`subscribe_data` / `click_limit` / `unsupport_tips` / `anchor`) 也可以直接写在按钮字典里, 原样透传到 `action`; 写了 `subscribe_data` 且未指定 `type` 时自动设为 `type=4`。
 
-#### 权限字段 (五者二选一, 优先级从上到下)
-
-| 字段 | 类型 | 说明 |
-| --- | --- | --- |
-| `permission` | `dict` | 显式权限对象, 如 `{'type': 1}` |
-| `role` | `list[str]` | 指定身份组 ID 列表 (频道场景) → `type=3` |
-| `list` | `list[str]` | 指定用户 ID 列表 → `type=0` |
-| `admin` | `bool` | 仅管理员可点 → `type=1` |
-| _默认_ | — | 所有人可点 → `type=2` |
-
-#### 按钮完整示例
+#### 按钮示例
 
 ```python
 buttons = [
-    # 第一行: 三种基础类型
-    [
-        {'text': '跳转官网', 'link': 'https://example.com'},        # 链接
-        {'text': '点我回调', 'data': 'cb_action_1', 'type': 1},     # 回调
-        {'text': '/帮助', 'type': 2},               # 输入后自动发送
-    ],
-    # 第二行: 权限与限制
-    [
-        {'text': '仅管理员', 'data': 'admin_only', 'type': 1, 'admin': True},
-        {'text': '指定用户', 'data': 'specific', 'type': 1,
-         'list': ['user_id_1', 'user_id_2']},
-        {'text': '点击一次', 'data': 'once', 'type': 1, 'limit': 1},
-    ],
-    # 第三行: 样式与提示
-    [
-        {'text': '灰框', 'data': 's0', 'type': 1, 'style': 0},
-        {'text': '黑框红字', 'data': 's3', 'type': 1, 'style': 3},
-        {'text': '蓝底白字', 'data': 's4', 'type': 1, 'style': 4},
-        {'text': '不支持提示', 'data': 'oops', 'type': 1,
-         'tips': '该功能仅 PC 端可用'},
-    ],
+    # type: 0=跳转链接 / 1=回调 / 2=输入指令 / 4=订阅 (link 等同 type=0)
+    [{'text': '跳转官网', 'link': 'https://example.com'},
+     {'text': '点我回调', 'data': 'cb_action_1', 'type': 1},
+     {'text': '/帮助', 'type': 2}],
+    # style: 0=灰框 / 1=蓝框蓝字(默认) / 2=黑框(PC 端气泡) / 3=黑框红字 / 4=蓝底白字
+    [{'text': '灰框', 'data': 's0', 'type': 1, 'style': 0},
+     {'text': '蓝框蓝字', 'data': 's1', 'type': 1, 'style': 1},
+     {'text': '黑框', 'data': 's2', 'type': 1, 'style': 2},
+     {'text': '黑框红字', 'data': 's3', 'type': 1, 'style': 3},
+     {'text': '蓝底白字', 'data': 's4', 'type': 1, 'style': 4}],
+    # 权限与限制
+    [{'text': '仅管理员', 'data': 'admin_only', 'type': 1, 'admin': True},
+     {'text': '点击一次', 'data': 'once', 'type': 1, 'limit': 1}],
+    # 订阅按钮 (type=4): 必须挂在 markdown 消息 (msg_type=2) 上发送
+    [{'text': '订阅', 'show': '已订阅',
+      'subscribe': '102134274_1749040268',  # 机器人Markdown模板 id
+      'modal': {'content': '确认订阅？', 'confirm_text': '✔️确认', 'cancel_text': '❌取消'},
+      'tips': '请升级QQ版本'}],
 ]
-await event.reply("📌 多功能按钮面板", buttons=buttons)
-```
-
-#### 订阅按钮 (type=4)
-
-订阅按钮**必须挂在 markdown 消息上发送**, 用原生 markdown (`msg_type=2`) 即可, 纯文本消息无法携带订阅按钮:
-
-```python
-buttons = [[{
-    'text': '订阅', 'show': '已订阅',
-    'subscribe': '102134274_1749040268',          # 机器人Markdown模板 id
-    'modal': {'content': '确认订阅？', 'confirm_text': '✔️确认', 'cancel_text': '❌取消'},
-    'tips': '请升级QQ版本',
-}]]
-await event.reply('🔔 订阅推送', buttons=buttons, msg_type=2)
+await event.reply("📌 多功能按钮面板", buttons=buttons, msg_type=2)
 ```
 
 > ⚠️ `subscribe` 必须传入真实存在的模板 ID: 无效模板 (如 `template_id: "0"`) 会导致部分 QQ 客户端点击按钮后闪退。
@@ -455,41 +410,26 @@ markdown_id = '102134274_1749040268'  # markdown 模板 id (订阅按钮 subscri
 subs = log_service.subscribe_get_by_target(group_id)
 t = next((x for x in subs if x['template_id'] == markdown_id), None)
 if t:
-    subscribe = t['subscribe_id']  # 订阅事件返回的 subscribe_id
     ok, data, _ = await event.send_to_group(
-        group_id, '🔔 这是一条订阅消息推送', subscribe_id=subscribe)
-    # 单次订阅 (sub_type='once') 发送后作废, 永久订阅可重复推送
+        group_id, '🔔 这是一条订阅消息推送', subscribe_id=t['subscribe_id'])
+    # 单次订阅 (sub_type='once') 发送后作废, 永久订阅可重复推送; 单群有每日推送限额
     if ok and t['sub_type'] == 'once':
         await log_service.subscribe_consume(markdown_id, group_id)
 ```
-
-> ⚠️ 订阅消息有单群每日推送限额,  按需推送。
-
-完整可运行示例见 `plugins/alone/示例插件.py` 的「订阅消息」指令 (含 `log_service` 获取方式)。
 
 #### 小按钮 (键盘级字号)
 
 通过键盘级样式 `content.style.font_size` 控制整组按钮的大小 (对应官方 botgo
 `CustomKeyboard.Style.FontSize`), 取值 `small` / `middle` / `large`, `small`
-即「小按钮」。两种用法:
+即「小按钮」, 不传则保持默认大小:
 
 ```python
-# 方式一: reply 关键字 button_font_size
+# 方式一: reply 关键字 button_font_size / button_style
 await event.reply("📌 小按钮面板", buttons=buttons, button_font_size='small')
+await event.reply("📌", buttons=buttons, button_style={'font_size': 'small'})  # 整体样式 dict, 对应平台 keyboard.content.style
 
 # 方式二: buttons 用 dict 包装 (适用于所有发送入口, 含主动推送/频道)
 await event.reply("📌 小按钮面板", buttons={'rows': buttons, 'font_size': 'small'})
-```
-
-不传则保持原默认大小。
-
-键盘级样式还可以整体传 dict (对应平台 `keyboard.content.style`):
-
-```python
-# 方式一: reply 关键字 button_style
-await event.reply("📌", buttons=buttons, button_style={'font_size': 'small'})
-
-# 方式二: buttons dict 包装的 style 字段
 await event.reply("📌", buttons={'rows': buttons, 'style': {'font_size': 'small'}})
 ```
 
@@ -520,20 +460,19 @@ await event.reply_ark(37, (
     "提示", "标题", "副标题", "图片URL", "跳转URL"))
 ```
 
-### 5.3.1 图文卡片 (tuwen)
+### 5.3.1 卡片消息 (msg_type=8)
+
+`reply_card(card_type, data)` 发送卡片消息, `card_type` 可自定义以支持平台新增卡片类型, `data` 为 dict 时原样作为 `card.content` 发送:
 
 ```python
-# 元组简写: (标题, 描述, 图片URL, 跳转URL)
-await event.reply_tuwen((
+# tuwen 图文卡片, 元组简写: (标题, 描述, 图片URL, 跳转URL)
+await event.reply_card('tuwen', (
     "QQ开放平台", "2分钟完成注册并创建QQBot",
     "https://example.com/pic.png", "https://q.qq.com/#/"))
 
-# 关键字参数写法
-await event.reply_tuwen(
-    title="QQ开放平台",
-    description="2分钟完成注册并创建QQBot",
-    pic_url="https://example.com/pic.png",
-    url="https://q.qq.com/#/")
+# 自定义类型/字段, dict 原样透传
+await event.reply_card('tuwen', {
+    'title': 'QQ开放平台', 'description': '...', 'pic_url': '...', 'url': '...'})
 ```
 
 ### 5.4 模板消息
@@ -562,44 +501,20 @@ await event.reply_file('/path/file.zip', "📦", file_name="pkg.zip", target_gro
 ### 5.6 主动消息推送
 
 ```python
-# ---- 向当前会话发送主动消息 (自动从 event 获取目标) ----
-
-# 向当前群发送主动消息
-await event.send_to_group(event.group_id, "主动群消息")
-
-# 向当前用户发送主动私聊
+await event.send_to_group(event.group_id, "主动群消息")     # 目标 ID 可为当前会话或任意指定
 await event.send_to_user(event.user_id, "主动私聊消息")
-
-# 自动判断群/私聊
-if event.is_group:
-    await event.send_to_group(event.group_id, "来自群")
-else:
-    await event.send_to_user(event.user_id, "来自私聊")
-
-# 主动发图片到当前群
-await event.reply_image("https://...", "说明", target_group_id=event.group_id)
-
-# ---- 向指定目标发送 (手动填写 ID) ----
-
-await event.send_to_group("指定群ID", "通知内容")
-await event.send_to_user("指定用户ID", "私信内容")
-await event.send_to_channel("指定频道ID", "频道消息")
+await event.send_to_channel("频道ID", "频道消息")
 ```
 
-#### `send_to_group` / `send_to_user` 完整参数
+#### `send_to_group` / `send_to_user` 参数
+
+除首参为目标 ID 外, `content` / `buttons` / `media` / `msg_type` / `skip_suffix` / `message_reference_id` / `**kwargs` 透传均与 `reply()` 一致 (见 5.1), 额外支持:
 
 ```python
 await event.send_to_group(
-    group_id,                  # 目标群 ID (send_to_user 为 user_id)
-    content=None,              # 文本内容
-    msg_id=None,               # 关联消息 ID → 变为被动回复 (不占主动推送额度)
-    event_id=None,             # 关联事件 ID (加群/加好友等事件回复)
-    buttons=None,              # 按钮 (同 reply)
-    media=None,                # media 对象 (高级用法)
-    msg_type=None,             # 强制消息类型 (见 5.1.2)
-    skip_suffix=False,         # 跳过全局 markdown 后缀
-    message_reference_id=None, # 引用回复 REFIDX
-    # **kwargs 同样透传到载荷
+    group_id,      # 目标群 ID (send_to_user 为 user_id)
+    msg_id=None,   # 关联消息 ID → 变为被动回复 (不占主动推送额度)
+    event_id=None, # 关联事件 ID (加群/加好友等事件回复)
 )
 ```
 
@@ -951,91 +866,14 @@ def test_sync(event, match):
 
 ---
 
-## 11. 完整示例
-
-一个具备 **元数据 + 配置 + 多 handler + Web 页面 + 生命周期** 的完整插件：
-
-```python
-"""签到插件 — 带积分、配置、Web 面板"""
-
-import asyncio
-import core.plugin.context as _ctx_mod
-from core.plugin.decorators import handler, on_load, on_unload
-from core.plugin.web_pages import register_page, unregister_page
-from core.base.logger import get_logger, PLUGIN
-
-__plugin_meta__ = {
-    'name': '签到插件',
-    'author': 'YourName',
-    'description': '每日签到 + 积分系统',
-    'version': '1.0.0',
-    'license': 'MIT',
-}
-
-log = get_logger(PLUGIN, '签到')
-ctx = _ctx_mod.ctx
-
-DEFAULT_CONFIG = {
-    'reward_min': 10,
-    'reward_max': 100,
-    'cooldown_hours': 24,
-}
-
-
-@on_load
-async def init():
-    config = ctx.ensure_config(DEFAULT_CONFIG)
-    log.info(f"签到插件已加载, 配置: {config}")
-    register_page(
-        key='checkin-stats',
-        label='签到统计',
-        source='plugin',
-        source_name='checkin',
-        html='<h1>签到统计</h1><p>开发中...</p>',
-    )
-
-
-@on_unload
-def cleanup():
-    unregister_page('checkin-stats')
-    log.info("签到插件已卸载")
-
-
-@handler(r'^签到$', name='每日签到', desc='获取随机积分', ignore_at_check=True)
-async def check_in(event, match):
-    import random
-    config = ctx.read_config()
-    reward = random.randint(config['reward_min'], config['reward_max'])
-    await event.reply(f"✅ {event.user_id[:8]}**** 签到成功!\n获得积分: {reward}")
-
-
-@handler(r'^签到排行$', name='签到排行', desc='查看签到排行榜', group_only=True)
-async def ranking(event, match):
-    await event.reply("🏆 签到排行榜:\n1. 用户A\n2. 用户B\n3. 用户C")
-
-
-@handler(r'^签到设置\s+(\d+)\s+(\d+)$', name='签到设置',
-         desc='设置签到奖励范围', owner_only=True)
-async def set_reward(event, match):
-    min_val, max_val = int(match.group(1)), int(match.group(2))
-    config = ctx.read_config()
-    config['reward_min'] = min_val
-    config['reward_max'] = max_val
-    ctx.save_config(config)
-    await event.reply(f"✅ 已设置奖励范围: {min_val} ~ {max_val}")
-```
-
----
-
 ## 附录: 项目示例插件
 
 | 路径 | 功能 |
 | --- | --- |
 | `plugins/alone/示例插件.py` | 媒体/ark/按钮/交互回调/引用消息/撤回/主动消息/Web 面板综合示例 |
 | `plugins/system/main.py` | 内置系统插件 (信息、管理) |
-| `plugins/game_services/main.py` | 大型插件示例 (子模块组织) |
 
-> **启用/禁用插件**: 在 Web 面板「插件」页切换即可, 状态持久化到 `data/plugins_disabled.json`。旧版以 `.py.ban` 后缀禁用的方式已废弃, 框架启动时会自动迁移为新机制。
+> **启用/禁用插件**: 在 Web 面板「插件」页切换即可, 状态持久化到 `data/plugins_disabled.json`。
 
 ---
 

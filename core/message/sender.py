@@ -13,10 +13,10 @@ from core.message import bot_openid
 from core.message._http import (
     _API_BASE,
     MSG_TYPE_ARK,
+    MSG_TYPE_CARD,
     MSG_TYPE_MARKDOWN,
     MSG_TYPE_MEDIA,
     MSG_TYPE_TEXT,
-    MSG_TYPE_TUWEN,
     _HttpMixin,
     log,
 )
@@ -198,23 +198,21 @@ class MessageSender(_HttpMixin, _MediaSendMixin, _SenderLogMixin):
             self._maybe_auto_recall(event, data, auto_delete_time)
         return data
 
-    async def reply_tuwen(self, event, title='', description='', pic_url='', url='', content='', *, auto_delete_time=None):
-        """回复图文卡片消息, title 可传 (标题, 描述, 图片URL, 跳转URL) 元组/列表简写"""
-        if isinstance(title, tuple | list):
-            title, description, pic_url, url = (list(title) + [''] * 4)[:4]
+    async def reply_card(self, event, card_type='tuwen', data=None, content='', *, auto_delete_time=None):
+        """回复卡片消息 (msg_type=8), card_type 可自定义以支持新卡片类型.
+
+        data 为 dict 时原样作为 card.content;
+        card_type='tuwen' 时也可传 (标题, 描述, 图片URL, 跳转URL) 元组/列表简写
+        """
+        if isinstance(data, tuple | list) and card_type == 'tuwen':
+            title, description, pic_url, url = (list(data) + [''] * 4)[:4]
+            data = {'title': title or '', 'description': description or '',
+                    'pic_url': pic_url or '', 'url': url or ''}
         payload = {
-            'msg_type': MSG_TYPE_TUWEN,
+            'msg_type': MSG_TYPE_CARD,
             'msg_seq': _msg_seq(),
             'content': content or '',
-            'card': {
-                'type': 'tuwen',
-                'content': {
-                    'title': title or '',
-                    'description': description or '',
-                    'pic_url': pic_url or '',
-                    'url': url or '',
-                },
-            },
+            'card': {'type': card_type, 'content': data or {}},
         }
         _set_msg_or_event_id(payload, event)
         endpoint = event.reply_endpoint

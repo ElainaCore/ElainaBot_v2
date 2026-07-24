@@ -162,7 +162,7 @@ _PROXY_METHODS = {
     'reply_video': True,
     'reply_file': True,
     'reply_ark': True,
-    'reply_tuwen': True,
+    'reply_card': True,
     'recall': True,
     'ack_interaction': True,
     'send_to_group': False,
