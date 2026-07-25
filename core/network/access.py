@@ -5,6 +5,7 @@ import asyncio
 import logging
 import time
 
+from core.base.config import cfg
 from core.network.http_compat import AsyncHttpClient
 
 logger = logging.getLogger('ElainaBot.access')
@@ -83,7 +84,14 @@ class TokenManager:
     async def get_client(self):
         """获取 HTTP 客户端 (延迟创建, Sender 共享此实例)"""
         if self._client is None or self._client.is_closed:
-            self._client = AsyncHttpClient(base_url=self._api_base, timeout=30.0)
+            net = cfg.get('settings', 'network') or {}
+            self._client = AsyncHttpClient(
+                base_url=self._api_base,
+                timeout=float(net.get('timeout', 30.0)),
+                max_connections=int(net.get('max_connections', 200)),
+                max_keepalive=int(net.get('max_keepalive', 100)),
+                pool_timeout=float(net.get('pool_timeout', 10.0)),
+            )
         return self._client
 
     _ensure_client = get_client  # 内部兼容

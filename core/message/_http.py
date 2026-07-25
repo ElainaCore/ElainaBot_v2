@@ -3,6 +3,7 @@
 import asyncio
 import random
 
+from core.base.config import cfg
 from core.base.logger import FRAMEWORK, get_logger
 from core.message.response import loads_raw_response
 from core.network.http_compat import HAS_HTTPX
@@ -35,6 +36,18 @@ _TOKEN_EXPIRED_CODE = 11244
 _MAX_MEDIA_DOWNLOAD = 100 * 1024 * 1024  # 100MB 下载上限, 防止 OOM
 _NET_MAX_RETRIES = 2
 _NET_RETRY_DELAY = 0.5  # 秒, 按次数线性递增
+_DEFAULT_MAX_CONNECTIONS = 200
+
+
+class _NullSem:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+_NULL_SEM = _NullSem()
 
 
 def _msg_seq():
@@ -44,6 +57,8 @@ def _msg_seq():
 def _is_retryable(e):
     """超时/连接类异常可安全重试 (payload 含 msg_seq, 平台会去重)"""
     lowered = f'{type(e).__name__} {e}'.lower()
+    if 'pooltimeout' in lowered:
+        return False
     return 'timeout' in lowered or 'connect' in lowered or 'connection' in lowered
 
 
@@ -80,7 +95,19 @@ class _HttpMixin:
         # 客户端由 TokenManager 统一管理生命周期
         self._client = None
 
+    def _get_send_sem(self):
+        """发送并发信号量 (每个机器人一个)"""
+        if self._send_sem is None:
+            net = cfg.get('settings', 'network') or {}
+            limit = int(net.get('max_concurrency', net.get('max_connections', _DEFAULT_MAX_CONNECTIONS)) or 0)
+            self._send_sem = asyncio.Semaphore(limit) if limit > 0 else _NULL_SEM
+        return self._send_sem
+
     async def _request(self, method, endpoint, **kwargs):
+        async with self._get_send_sem():
+            return await self._request_inner(method, endpoint, **kwargs)
+
+    async def _request_inner(self, method, endpoint, **kwargs):
         client = await self._ensure_client()
         extra_headers = kwargs.pop('headers', None)
         token_retried = False

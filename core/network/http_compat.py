@@ -37,16 +37,17 @@ class AsyncHttpClient:
         *,
         base_url='',
         timeout=30.0,
-        max_connections=100,
-        max_keepalive=50,
+        max_connections=200,
+        max_keepalive=100,
         keepalive_expiry=20.0,
+        pool_timeout=10.0,
         follow_redirects=True,
     ):
         self._is_httpx = HAS_HTTPX
         if self._is_httpx:
             self._client = httpx.AsyncClient(
                 base_url=base_url or '',
-                timeout=httpx.Timeout(timeout, connect=10.0, pool=10.0),
+                timeout=httpx.Timeout(timeout, connect=10.0, pool=pool_timeout),
                 follow_redirects=follow_redirects,
                 limits=httpx.Limits(
                     max_connections=max_connections,
