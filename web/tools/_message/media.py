@@ -66,6 +66,37 @@ async def _send_media_url(sender, url, *, file_type=1, group_id=None, user_id=No
     return ok, data, payload
 
 
+async def _send_media_bytes(sender, file_bytes, *, file_type=1, file_name='', group_id=None, user_id=None, msg_id='', event_id='', message_reference_id=''):
+    """上传文件 bytes 并发送富媒体"""
+    if not file_bytes:
+        return False, {'message': '文件数据为空'}, {}
+    upload_ep, _ = _media_endpoints(group_id, user_id)
+    upload_payload = {
+        'srv_send_msg': False,
+        'file_type': file_type,
+        'file_data': base64.b64encode(file_bytes).decode(),
+    }
+    if file_name:
+        upload_payload['file_name'] = file_name
+    ok, resp = await sender.post_json(upload_ep, upload_payload)
+    if not ok:
+        _log_upload_error(sender, upload_ep, resp, f'文件上传 file_type={file_type}')
+        return False, resp, upload_payload
+    file_info = resp.get('file_info')
+    if not file_info:
+        _log_upload_error(sender, upload_ep, resp, '文件上传返回无file_info')
+        return False, {'message': '上传失败: 无 file_info'}, upload_payload
+    return await _web_send_media(
+        sender,
+        file_info=file_info,
+        group_id=group_id,
+        user_id=user_id,
+        msg_id=msg_id,
+        event_id=event_id,
+        message_reference_id=message_reference_id,
+    )
+
+
 async def _send_text_with_image(sender, content, image_bytes, *, group_id=None, user_id=None, msg_id='', event_id='', message_reference_id=''):
     """上传图片 bytes 并发送"""
     if not image_bytes:

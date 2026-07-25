@@ -22,7 +22,7 @@ from web.tools._message.log_utils import (
     _log_send_error,
     _log_sent_message,
 )
-from web.tools._message.media import _send_ark, _send_media_url, _send_text_with_image
+from web.tools._message.media import _send_ark, _send_media_bytes, _send_media_url, _send_text_with_image
 from web.tools._message.query import (
     _aggregate_chats_sync,
     _query_chat_messages_sync,
@@ -340,6 +340,8 @@ async def handle_send_message(request: web.Request):
             reader = await request.multipart()
             fields = {}
             image_data = None
+            media_data = None
+            media_name = ''
             while True:
                 part = cast(BodyPartReader, await reader.next())
                 if part is None:
@@ -347,11 +349,16 @@ async def handle_send_message(request: web.Request):
                 name = part.name
                 if name == 'image':
                     image_data = await part.read()
+                elif name == 'media':
+                    media_data = await part.read()
+                    media_name = part.filename or ''
                 else:
                     fields[name] = (await part.read()).decode('utf-8', errors='replace')
         else:
             fields = await request.json()
             image_data = None
+            media_data = None
+            media_name = ''
 
         chat_type = fields.get('chat_type', '')
         chat_id = fields.get('chat_id', '')
@@ -368,7 +375,7 @@ async def handle_send_message(request: web.Request):
 
         if not chat_type or not chat_id:
             return web.json_response({'success': False, 'message': '缺少 chat_type/chat_id'}, status=400)
-        if not content and not image_data and msg_type != 'ark':
+        if not content and not image_data and not media_data and msg_type != 'ark':
             return web.json_response({'success': False, 'message': '消息内容为空'}, status=400)
 
         bot = _get_bot(appid)
@@ -404,7 +411,19 @@ async def handle_send_message(request: web.Request):
         # 发送 — sender.send_to_* 内部已记录日志, 其余路径需手动记录
         need_log = True
         send_payload = {}
-        if msg_type == 'media' and content:
+        if msg_type == 'media' and media_data:
+            ok, data, send_payload = await _send_media_bytes(
+                sender,
+                media_data,
+                file_type=media_file_type,
+                file_name=media_name,
+                group_id=gid,
+                user_id=uid,
+                msg_id=msg_id,
+                event_id=event_id,
+                message_reference_id=message_reference_id,
+            )
+        elif msg_type == 'media' and content:
             ok, data, send_payload = await _send_media_url(
                 sender,
                 content,
@@ -453,10 +472,14 @@ async def handle_send_message(request: web.Request):
 
         if ok:
             if need_log:
-                media_label = await sender._save_media(image_data, 1) if image_data else ''
+                media_label = ''
+                if image_data:
+                    media_label = await sender._save_media(image_data, 1)
+                elif media_data:
+                    media_label = await sender._save_media(media_data, media_file_type)
                 display = _build_display(
                     msg_type,
-                    content,
+                    content or media_label or media_name,
                     image_data,
                     media_file_type,
                     ark_template_id,
