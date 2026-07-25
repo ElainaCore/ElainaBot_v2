@@ -182,9 +182,10 @@ class DAUService(DailyScanService):
             """)
             stats['top_users'] = [{'user_id': r['user_id'], 'message_count': r['c']} for r in cur.fetchall()]
 
-            cur.execute(f"""
+            # plugin_name 仅在回复日志 (direction='send') 中写入
+            cur.execute("""
                 SELECT plugin_name, COUNT(*) AS c FROM log
-                WHERE plugin_name != '' AND direction != 'send' AND {at_ok}
+                WHERE plugin_name != '' AND direction = 'send'
                 GROUP BY plugin_name ORDER BY c DESC LIMIT 10
             """)
             stats['top_commands'] = [{'command': r['plugin_name'], 'count': r['c']} for r in cur.fetchall()]
