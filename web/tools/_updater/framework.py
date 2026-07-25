@@ -1,6 +1,7 @@
 """框架更新 — FrameworkUpdater 更新流程类"""
 
 import asyncio
+import contextlib
 import fnmatch
 import json
 import os
@@ -376,17 +377,33 @@ class FrameworkUpdater:
             source = items[0] if len(items) == 1 and items[0].is_dir() else temp
 
             self._report('updating', '正在更新文件...', 60)
-            for root, _, files in os.walk(source):
-                for fname in files:
-                    src = os.path.join(root, fname)
-                    rel = os.path.relpath(src, source)
-                    if self._should_skip(rel):
-                        result['skipped'] += 1
-                        continue
-                    dst = self.base_dir / rel
-                    dst.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(src, dst)
+            # 两阶段原子更新: 先全部写入 .update_new 暂存文件, 再逐个 os.replace 替换
+            # 避免中途失败 (断网/磁盘满/权限) 留下新旧混杂的半更新状态 (如 Docker 重启后 No module named 'core.base.tasks')
+            staged = []
+            try:
+                for root, _, files in os.walk(source):
+                    for fname in files:
+                        src = os.path.join(root, fname)
+                        rel = os.path.relpath(src, source)
+                        if self._should_skip(rel):
+                            result['skipped'] += 1
+                            continue
+                        dst = self.base_dir / rel
+                        dst.parent.mkdir(parents=True, exist_ok=True)
+                        tmp = dst.with_name(dst.name + '.update_new')
+                        shutil.copy2(src, tmp)
+                        staged.append((tmp, dst))
+                for tmp, dst in staged:
+                    # 保留原文件的可执行位 (zip 解压丢失, 否则 docker-entrypoint.sh 等覆盖后容器无法重启)
+                    with contextlib.suppress(OSError):
+                        os.chmod(tmp, os.stat(tmp).st_mode | (os.stat(dst).st_mode & 0o111))
+                    os.replace(tmp, dst)
                     result['updated'] += 1
+            except BaseException:
+                for tmp, _dst in staged:
+                    with contextlib.suppress(OSError):
+                        os.unlink(tmp)
+                raise
 
             shutil.rmtree(temp, ignore_errors=True)
             if os.path.exists(zip_file):
