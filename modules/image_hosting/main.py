@@ -1,4 +1,4 @@
-"""可选模块: 统一图床服务 (腾讯云COS / B站 / QQ频道 / ChatGLM / Ukaka / 星野 / Nature)
+"""可选模块: 统一图床服务 (腾讯云COS / B站 / QQ频道 / QQ分片文件 / ChatGLM / 星野 / Nature)
 
 各图床可在配置中独立开关, 未开启或未配置时返回明确提示。
 同步 SDK 通过 run_in_executor 包装为异步 API。
@@ -6,11 +6,12 @@
 用法 (插件中):
     hosting = bot.module_manager.get("image_hosting")
     if hosting:
+        url = await hosting.upload_any(image_bytes, "test.png")  # 自动选首个可用图床
         url = await hosting.upload_cos(image_bytes, "test.png", user_id="abc")
         url = await hosting.upload_bilibili(image_bytes)
         url = await hosting.upload_qq(image_bytes)
+        result = await hosting.upload_qq_file(file_bytes, file_type=1)  # {'url', 'ttl', ...}
         url = await hosting.upload_chatglm(image_bytes)
-        url = await hosting.upload_ukaka(image_bytes)
         url = await hosting.upload_xingye(image_bytes)
         url = await hosting.upload_nature(image_bytes)
 
@@ -32,20 +33,22 @@
     qq_channel:
         enabled: false
         channel_id: ""
+    qq_file:
+        enabled: true
+        target_type: "group"
+        target_id: ""
     chatglm:
-        enabled: false
-    ukaka:
-        enabled: false
+        enabled: true
     xingye:
-        enabled: false
+        enabled: true
     nature:
-        enabled: false
+        enabled: true
 """
 
 __module_meta__ = {
     'name': '图床服务',
-    'description': '统一图床上传 (COS / B站 / QQ频道 / ChatGLM / Ukaka / 星野 / Nature)',
-    'version': '1.2.0',
+    'description': '统一图床上传 (COS / B站 / QQ频道 / QQ分片文件 / ChatGLM / 星野 / Nature)',
+    'version': '1.3.0',
     'author': 'ElainaBot',
 }
 
@@ -97,17 +100,19 @@ _DEFAULTS = {
         'enabled': False,
         'channel_id': '',
     },
-    'chatglm': {
-        'enabled': False,
+    'qq_file': {
+        'enabled': True,
+        'target_type': 'group',
+        'target_id': '',
     },
-    'ukaka': {
+    'chatglm': {
         'enabled': False,
     },
     'xingye': {
         'enabled': False,
     },
     'nature': {
-        'enabled': False,
+        'enabled': True,
     },
 }
 
@@ -135,21 +140,23 @@ _COMMENTS = {
         'enabled': '是否启用 QQ频道图床',
         'channel_id': '用于上传图片的子频道 ID',
     },
+    'qq_file': {
+        '__desc__': 'QQ 分片文件图床 (官方分片上传, 返回 COS 预签名直链与 ttl)',
+        'enabled': '是否启用 QQ 分片文件图床 (默认开启)',
+        'target_type': '默认上传作用域类型: group(群) / user(用户)',
+        'target_id': '默认上传作用域 ID (群 openid 或用户 openid), 也可调用时传入',
+    },
     'chatglm': {
         '__desc__': '智谱 ChatGLM 图床 (免费, 无需配置)',
         'enabled': '是否启用 ChatGLM 图床',
-    },
-    'ukaka': {
-        '__desc__': 'Ukaka 图床 (免费, 无需配置)',
-        'enabled': '是否启用 Ukaka 图床',
     },
     'xingye': {
         '__desc__': '星野图床 (免费, 无需配置)',
         'enabled': '是否启用星野图床',
     },
     'nature': {
-        '__desc__': 'Nature 图床 (腾讯 COS 直传, 密钥内置, 仅图片)',
-        'enabled': '是否启用 Nature 图床',
+        '__desc__': 'Nature 图床 (腾讯 COS 直传, 密钥内置, 仅图片; 临时图片可用, 不建议持久化)',
+        'enabled': '是否启用 Nature 图床 (默认开启)',
     },
 }
 
@@ -176,7 +183,7 @@ async def teardown():
 # ==================== 统一图床服务 ====================
 
 class ImageHosting:
-    """统一图床上传 (COS / B站 / QQ频道 / ChatGLM / Ukaka / 星野 / Nature)"""
+    """统一图床上传 (COS / B站 / QQ频道 / QQ分片文件 / ChatGLM / 星野 / Nature)"""
 
     __slots__ = ('_cfg', '_ctx', '_cos_client', '_cos_available', '_sign_url', '_sign_origin', '_ua')
 
@@ -200,8 +207,8 @@ class ImageHosting:
         status.append(f"COS={'✅' if self._cos_available else '❌'}")
         status.append(f"B站={'✅' if bili_cfg.get('enabled') and bili_cfg.get('csrf_token') and bili_cfg.get('sessdata') else '❌'}")
         status.append(f"QQ频道={'✅' if qq_cfg.get('enabled') and qq_cfg.get('channel_id') else '❌'}")
+        status.append(f"QQ分片文件={'✅' if self.is_qq_file_available() else '❌'}")
         status.append(f"ChatGLM={'✅' if self._cfg.get('chatglm', {}).get('enabled') else '❌'}")
-        status.append(f"Ukaka={'✅' if self._cfg.get('ukaka', {}).get('enabled') else '❌'}")
         status.append(f"星野={'✅' if self._cfg.get('xingye', {}).get('enabled') else '❌'}")
         status.append(f"Nature={'✅' if self._cfg.get('nature', {}).get('enabled') else '❌'}")
         log.info(f"图床状态: {' | '.join(status)}")
@@ -240,11 +247,11 @@ class ImageHosting:
         qq = self._cfg.get('qq_channel', {})
         return qq.get('enabled') and qq.get('channel_id')
 
+    def is_qq_file_available(self):
+        return bool(self._cfg.get('qq_file', {}).get('enabled'))
+
     def is_chatglm_available(self):
         return self._cfg.get('chatglm', {}).get('enabled', False)
-
-    def is_ukaka_available(self):
-        return self._cfg.get('ukaka', {}).get('enabled', False)
 
     def is_xingye_available(self):
         return self._cfg.get('xingye', {}).get('enabled', False)
@@ -258,11 +265,40 @@ class ImageHosting:
             'cos': self.is_cos_available(),
             'bilibili': bool(self.is_bilibili_available()),
             'qq_channel': bool(self.is_qq_available()),
+            'qq_file': self.is_qq_file_available(),
             'chatglm': self.is_chatglm_available(),
-            'ukaka': self.is_ukaka_available(),
             'xingye': self.is_xingye_available(),
             'nature': self.is_nature_available(),
         }
+
+    # ==================== 通用上传 ====================
+
+    async def upload_any(self, image_bytes, filename='image.png', *, token_manager=None, sender=None):
+        """按开启状态依次尝试各图床上传, 返回首个成功的 URL; 全部失败返回 None
+
+        token_manager: QQ频道图床需要; sender: QQ分片文件图床可选
+        """
+        status = self.status()
+        uploaders = (
+            ('cos', lambda: self.upload_cos_url(image_bytes, filename)),
+            ('bilibili', lambda: self.upload_bilibili(image_bytes)),
+            ('qq_channel', lambda: self.upload_qq(image_bytes, token_manager)),
+            ('chatglm', lambda: self.upload_chatglm(image_bytes)),
+            ('xingye', lambda: self.upload_xingye(image_bytes)),
+            ('nature', lambda: self.upload_nature(image_bytes)),
+            ('qq_file', lambda: self.upload_qq_file_url(image_bytes, file_name=filename, sender=sender)),
+        )
+        for name, fn in uploaders:
+            if not status.get(name):
+                continue
+            try:
+                result = await fn()
+            except Exception as e:
+                log.debug(f'图床 {name} 上传失败: {e}')
+                continue
+            if isinstance(result, str) and result.startswith('http'):
+                return result
+        return None
 
     # ==================== COS 上传 ====================
 
@@ -464,6 +500,103 @@ class ImageHosting:
                     os.unlink(temp_path)
 
 
+    # ==================== QQ 分片文件图床 ====================
+
+    async def upload_qq_file(self, file_data, file_type=1, *, file_name=None, sender=None, target_id=None, target_type=None):
+        """QQ 分片文件图床: 走官方分片上传流程, 返回上传结果 dict 或 (False, 原因)
+
+        file_type: 1图片 / 2视频 / 3语音 (raw_url 仅这三类返回, 文件类型4无直链)
+        sender: MessageSender 实例; 不传时自动取第一个在线机器人
+        target_id / target_type: 上传作用域 (群/用户 openid), 不传时用配置默认值
+        返回: {'success', 'url', 'ttl', 'file_info', 'file_uuid', 'file_size'}
+        """
+        qf = self._cfg.get('qq_file', {})
+        if not qf.get('enabled'):
+            return (False, 'QQ分片文件图床未开启, 请在 image_hosting 模块配置中启用')
+        target_id = target_id or qf.get('target_id', '')
+        if not target_id:
+            return (False, 'QQ分片文件图床未配置 target_id, 请在配置中填写或调用时传入')
+        if not isinstance(file_data, bytes) or not file_data:
+            return (False, '无效的文件数据')
+        if sender is None:
+            sender = _get_any_sender()
+        if sender is None:
+            return (False, '无可用机器人实例')
+
+        kind = 'groups' if (target_type or qf.get('target_type', 'group')) == 'group' else 'users'
+        scope = f'/v2/{kind}/{target_id}'
+
+        from core.message.media import compute_file_hashes
+
+        suffix = os.path.splitext(file_name)[1] if file_name else ''
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as f:
+                f.write(file_data)
+                tmp_path = f.name
+            file_size = len(file_data)
+            loop = asyncio.get_running_loop()
+            hashes = await loop.run_in_executor(_executor, compute_file_hashes, tmp_path, file_size)
+
+            # 1. 申请上传
+            success, prep = await sender.post_json(f'{scope}/upload_prepare', {
+                'file_type': file_type,
+                'file_name': file_name or f'image{suffix or ".png"}',
+                'file_size': file_size,
+                **hashes,
+            })
+            if not success:
+                return (False, f'upload_prepare 失败: {prep}')
+
+            upload_id = prep['upload_id']
+            block_size = int(prep['block_size'])
+
+            # 2. 逐片 PUT 预签名链接 + 确认
+            for part in prep['parts']:
+                idx = part['index']
+                offset = (idx - 1) * block_size
+                chunk = file_data[offset:offset + block_size]
+                resp = await sender._client.put(
+                    part['presigned_url'], content=chunk,
+                    headers={'Content-Length': str(len(chunk))}, timeout=300.0)
+                if resp.status_code >= 400:
+                    return (False, f'第{idx}片上传失败 (HTTP {resp.status_code})')
+                await sender.post_json(f'{scope}/upload_part_finish', {
+                    'upload_id': upload_id,
+                    'part_index': idx,
+                    'block_size': len(chunk),
+                    'md5': hashlib.md5(chunk).hexdigest(),
+                })
+
+            # 3. 合并 (响应含 raw_url 下载直链, 有效期与 ttl 一致)
+            success, result = await sender.post_json(f'{scope}/files', {'upload_id': upload_id})
+            if not success:
+                return (False, f'合并失败: {result}')
+            return {
+                'success': True,
+                'url': result.get('raw_url', ''),
+                'ttl': result.get('ttl', 0),
+                'file_info': result.get('file_info', ''),
+                'file_uuid': result.get('file_uuid', ''),
+                'file_size': file_size,
+            }
+        except Exception as e:
+            log.error(f'QQ分片文件上传失败: {e}')
+            return (False, str(e))
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                with contextlib.suppress(Exception):
+                    os.unlink(tmp_path)
+
+    async def upload_qq_file_url(self, file_data, file_type=1, *, file_name=None, sender=None, target_id=None, target_type=None):
+        """只返回 raw_url 字符串, 失败返回 (False, 原因)"""
+        result = await self.upload_qq_file(
+            file_data, file_type, file_name=file_name, sender=sender,
+            target_id=target_id, target_type=target_type)
+        if isinstance(result, tuple):
+            return result
+        return result['url'] if result.get('url') else (False, '未返回 raw_url (文件类型4无直链)')
+
     # ==================== ChatGLM 图床 ====================
 
     async def upload_chatglm(self, image_data):
@@ -496,17 +629,6 @@ class ImageHosting:
         except Exception as e:
             return (False, str(e))
 
-    # ==================== Ukaka 图床 ====================
-
-    async def upload_ukaka(self, image_data):
-        """上传到Ukaka图床, 返回 URL 字符串或 (False, 原因)"""
-        if not self.is_ukaka_available():
-            return (False, 'Ukaka 图床未开启, 请在 image_hosting 模块配置中启用')
-        if not isinstance(image_data, bytes) or len(image_data) > 20 * 1024 * 1024:
-            return (False, '无效数据或超过20MB限制')
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(_executor, self._upload_signed_sync, image_data, 'ukaka')
-
     # ==================== 星野图床 ====================
 
     async def upload_xingye(self, image_data):
@@ -519,7 +641,7 @@ class ImageHosting:
         return await loop.run_in_executor(_executor, self._upload_signed_sync, image_data, 'xingye')
 
     def _upload_signed_sync(self, image_data, module):
-        """Ukaka / 星野 共用签名上传逻辑"""
+        """星野签名上传逻辑"""
         try:
             import httpx
             mime = _detect_mime(image_data)
@@ -542,22 +664,14 @@ class ImageHosting:
             if not upload_url or not resource_url:
                 return (False, f'{module} 签名返回数据不完整')
 
-            if module == 'xingye':
-                ct = (sign_data.get('header') or {}).get('Content-Type', mime)
-                resp = httpx.put(upload_url, content=image_data,
-                                 headers={'Content-Type': ct, 'User-Agent': self._ua},
-                                 timeout=30)
-            else:
-                body = sign_data.get('body', {})
-                files_dict = {}
-                data_dict = {k: str(v) for k, v in body.items()
-                             if k != 'file' and v is not None and v != ''}
-                files_dict['file'] = (filename, image_data, mime)
-                resp = httpx.post(upload_url, data=data_dict, files=files_dict,
-                                  headers={'User-Agent': self._ua}, timeout=30)
+            ct = (sign_data.get('header') or {}).get('Content-Type', mime)
+            resp = httpx.put(upload_url, content=image_data,
+                             headers={'Content-Type': ct, 'User-Agent': self._ua},
+                             timeout=30)
 
             if resp.status_code < 300:
-                return resource_url
+                # OSS 默认域名直链会强制下载, 附加图片处理参数使其内联显示
+                return f'{resource_url}?x-oss-process=image/format,jpg'
             return (False, f'{module} 上传失败 (HTTP {resp.status_code})')
         except Exception as e:
             return (False, str(e))
@@ -609,6 +723,18 @@ class ImageHosting:
 
 
 # ==================== 辅助函数 ====================
+
+
+def _get_any_sender():
+    """取第一个在线机器人的 sender"""
+    try:
+        from core.bot.manager import _bot_manager_ref
+        if _bot_manager_ref and _bot_manager_ref._bots:
+            return next(iter(_bot_manager_ref._bots.values())).sender
+    except Exception as e:
+        log.debug(f'获取 sender 失败: {e}')
+    return None
+
 
 def _guess_content_type(filename):
     ct, _ = mimetypes.guess_type(filename)

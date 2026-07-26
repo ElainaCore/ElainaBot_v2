@@ -39,27 +39,7 @@ async def _upload_dau_image(bot, image_bytes):
     hosting = _get_hosting()
     if not hosting:
         return None
-    status = hosting.status()
-    uploaders = (
-        ('cos', lambda: hosting.upload_cos_url(image_bytes, 'dau_stats.png')),
-        ('bilibili', lambda: hosting.upload_bilibili(image_bytes)),
-        ('qq_channel', lambda: hosting.upload_qq(image_bytes, bot.token_manager)),
-        ('chatglm', lambda: hosting.upload_chatglm(image_bytes)),
-        ('ukaka', lambda: hosting.upload_ukaka(image_bytes)),
-        ('xingye', lambda: hosting.upload_xingye(image_bytes)),
-        ('nature', lambda: hosting.upload_nature(image_bytes)),
-    )
-    for name, fn in uploaders:
-        if not status.get(name):
-            continue
-        try:
-            result = await fn()
-        except Exception as e:
-            log.debug(f'图床 {name} 上传失败: {e}')
-            continue
-        if isinstance(result, str) and result.startswith('http'):
-            return result
-    return None
+    return await hosting.upload_any(image_bytes, 'dau_stats.png', token_manager=bot.token_manager)
 
 
 async def _reply_dau(event, bot, stats, date, elapsed_ms, y_stats=None, is_today=False):
