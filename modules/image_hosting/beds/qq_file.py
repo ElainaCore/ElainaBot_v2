@@ -95,9 +95,13 @@ class Bed(BaseBed):
             success, result = await sender.post_json(f'{scope}/files', {'upload_id': upload_id})
             if not success:
                 return (False, f'合并失败: {result}')
+            raw_url = result.get('raw_url', '')
+            if raw_url and file_type == 1:
+                # 追加 response-content-type 使直链内联显示为图片而非下载
+                raw_url += ('&' if '?' in raw_url else '?') + 'response-content-type=image%2Fjpeg'
             return {
                 'success': True,
-                'url': result.get('raw_url', ''),
+                'url': raw_url,
                 'ttl': result.get('ttl', 0),
                 'file_info': result.get('file_info', ''),
                 'file_uuid': result.get('file_uuid', ''),
