@@ -6,7 +6,7 @@ import contextvars
 import json
 
 from core.base.logger import FRAMEWORK, report_error_raw
-from core.message._http import _IGNORE_ERROR_CODES, MSG_TYPE_MEDIA
+from core.message._http import _IGNORE_ERROR_CODES, MSG_TYPE_MEDIA, _is_rate_limited, _is_violation
 from core.message.response import extract_message_id, extract_reference_id
 from core.message.template import tpl
 from core.module.hook import get_hook_manager as _get_hooks
@@ -134,16 +134,18 @@ class _SenderLogMixin:
             code = data.get('code') if isinstance(data, dict) else None
             if code in _IGNORE_ERROR_CODES:
                 return False, None
-            raw_event = getattr(event, 'raw', None)
-            report_error_raw(
-                FRAMEWORK,
-                '消息发送',
-                content=json.dumps(raw_event, ensure_ascii=False, default=str) if raw_event else (getattr(event, 'content', '') or ''),
-                tb=json.dumps(data, ensure_ascii=False, default=str) if data else '',
-                context=json.dumps(payload, ensure_ascii=False, default=str),
-                appid=self._appid,
-            )
-            await self._handle_send_failure(endpoint, data, event)
+            # 违规拦截: 先给插件机会重发其他内容, 补救成功则不写报错日志
+            remedied = await self._handle_send_failure(endpoint, data, event)
+            if not (_is_violation(data) and remedied):
+                raw_event = getattr(event, 'raw', None)
+                report_error_raw(
+                    FRAMEWORK,
+                    '消息发送',
+                    content=json.dumps(raw_event, ensure_ascii=False, default=str) if raw_event else (getattr(event, 'content', '') or ''),
+                    tb=json.dumps(data, ensure_ascii=False, default=str) if data else '',
+                    context=json.dumps(payload, ensure_ascii=False, default=str),
+                    appid=self._appid,
+                )
             return False, data
 
         self._log_sent(payload, event, content, media_label, data)
@@ -163,11 +165,11 @@ class _SenderLogMixin:
         return True, data
 
     async def _handle_send_failure(self, endpoint, data, event=None):
-        """发送失败处理: 先回传 send_failed 钩子补救, 未处理或补救也失败时回发 api_error 模板"""
+        """发送失败处理: 先回传 send_failed 钩子补救, 未处理或补救也失败时回发 api_error 模板; 返回插件补救是否成功"""
         ctx = _failure_ctx.get()
         if ctx is not None:
             ctx['failed'] = True
-            return
+            return False
         code = data.get('code', '') if isinstance(data, dict) else ''
         message = data.get('message', '') if isinstance(data, dict) else str(data)
         ctx = {'failed': False}
@@ -180,19 +182,22 @@ class _SenderLogMixin:
                     'appid': self._appid, 'code': code, 'message': message,
                 }) is None
                 if handled and not ctx['failed']:
-                    return  # 插件已处理且补救成功, 不发模板
+                    return True  # 插件已处理且补救成功, 不发模板
+            if _is_rate_limited(data):
+                return False  # 限频错误不回发报错模板 (重发已节流, 再发模板只会加剧限频)
             if tpl.get_raw('api_error', self._appid) is None:
-                return
+                return False
             content, buttons = tpl.render_error(
                 error_code=code, error_message=message, appid=self._appid,
                 user_id=getattr(event, 'user_id', '') or '',
                 group_id=getattr(event, 'group_id', '') or '',
             )
             if not content:
-                return
+                return False
             payload = self._build_payload(event, content, buttons, None, None) if event is not None else self._build_core_payload(content, buttons, None, None)
             with contextlib.suppress(Exception):
                 await self.post_json(endpoint, payload)
+            return False  # api_error 模板只是提示, 不算补救成功
         finally:
             _failure_ctx.reset(token)
 

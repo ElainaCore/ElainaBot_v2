@@ -17,6 +17,7 @@ from core.message._http import (
     MSG_TYPE_MEDIA,
     MSG_TYPE_TEXT,
     _HttpMixin,
+    _is_violation,
     _msg_seq,
     log,
 )
@@ -282,16 +283,18 @@ class MessageSender(_HttpMixin, _MediaSendMixin, _SenderLogMixin):
         if ok:
             self._log_push(endpoint, payload, content, data)
         else:
-            err_code = data.get('code', '') if isinstance(data, dict) else ''
-            err_msg = data.get('message', str(data)) if isinstance(data, dict) else str(data)
-            report_error_raw(
-                FRAMEWORK,
-                '主动消息',
-                content=f'主动消息发送失败 [{err_code}] {err_msg}',
-                tb=f'endpoint: {endpoint}\npayload: {json.dumps(payload, ensure_ascii=False, default=str)[:500]}',
-                appid=self._appid,
-            )
-            await self._handle_send_failure(endpoint, data)
+            # 违规拦截: 先给插件机会重发其他内容, 补救成功则不写报错日志
+            remedied = await self._handle_send_failure(endpoint, data)
+            if not (_is_violation(data) and remedied):
+                err_code = data.get('code', '') if isinstance(data, dict) else ''
+                err_msg = data.get('message', str(data)) if isinstance(data, dict) else str(data)
+                report_error_raw(
+                    FRAMEWORK,
+                    '主动消息',
+                    content=f'主动消息发送失败 [{err_code}] {err_msg}',
+                    tb=f'endpoint: {endpoint}\npayload: {json.dumps(payload, ensure_ascii=False, default=str)[:500]}',
+                    appid=self._appid,
+                )
         return ok, data, payload
 
     async def send_to_channel(self, channel_id, content=None, *, msg_id=None, buttons=None, **kwargs):

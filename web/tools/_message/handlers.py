@@ -34,6 +34,7 @@ from web.tools._message.shared import (
     _batch_get_nicknames,
     _get_bot,
     _get_full_access_group_ids,
+    _get_full_access_group_rows,
     _get_nickname,
 )
 
@@ -94,21 +95,43 @@ async def _build_chat_list(chat_type, appid_filter):
     """构建聊天列表 (阻塞聚合在专用线程池执行)"""
     loop = asyncio.get_running_loop()
     if chat_type in ('full_access', 'remark'):
-        # 全量群/备注群直接从 data.db 获取
-        fa_ids = _get_full_access_group_ids()
-        bot = next(iter(_shared._bot_manager._bots.values()), None) if _shared._bot_manager else None
-        appid_default = next(iter(_shared._bot_manager._bots), '') if _shared._bot_manager and _shared._bot_manager._bots else ''
+        # 全量群/备注群直接从各 bot 的 data.db 获取
+        bots = _shared._bot_manager._bots if _shared._bot_manager else {}
         remarks = _load_remarks()
-        source_ids = set(remarks.keys()) if chat_type == 'remark' else fa_ids
-        return [{
-            'chat_id': gid,
-            'appid': appid_filter or appid_default,
-            'bot_name': getattr(bot, 'name', appid_default) if bot else '',
-            'nickname': _remark_name(remarks.get(gid)) or f'群{gid[-6:]}',
-            'remark': _remark_name(remarks.get(gid)),
-            'group_qq': _remark_qq(remarks.get(gid)),
-            'is_full_access': gid in fa_ids,
-        } for gid in source_ids]
+        if chat_type == 'remark':
+            fa_ids = _get_full_access_group_ids()
+            bot = next(iter(bots.values()), None)
+            appid_default = next(iter(bots), '')
+            return [{
+                'chat_id': gid,
+                'appid': appid_filter or appid_default,
+                'bot_name': getattr(bot, 'name', appid_default) if bot else '',
+                'nickname': _remark_name(remarks.get(gid)) or f'群{gid[-6:]}',
+                'remark': _remark_name(remarks.get(gid)),
+                'group_qq': _remark_qq(remarks.get(gid)),
+                'is_full_access': gid in fa_ids,
+            } for gid in remarks]
+        rows = _get_full_access_group_rows()
+        if appid_filter:
+            rows = [r for r in rows if r.get('appid') == appid_filter]
+        result = []
+        seen_gids: set[str] = set()
+        for r in rows:
+            gid = r.get('group_id', '')
+            if not gid or gid in seen_gids:
+                continue
+            seen_gids.add(gid)
+            appid = r.get('appid', '')
+            result.append({
+                'chat_id': gid,
+                'appid': appid,
+                'bot_name': getattr(bots.get(appid), 'name', '') or appid,
+                'nickname': _remark_name(remarks.get(gid)) or f'群{gid[-6:]}',
+                'remark': _remark_name(remarks.get(gid)),
+                'group_qq': _remark_qq(remarks.get(gid)),
+                'is_full_access': True,
+            })
+        return result
     chats = await loop.run_in_executor(_chat_executor, _aggregate_chats_sync, chat_type, appid_filter)
     if chat_type == 'user':
         ids = [c['chat_id'] for c in chats]

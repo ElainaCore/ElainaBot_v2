@@ -5,6 +5,8 @@
 由 datastore 主模块统一管理生命周期, 不单独作为模块使用。
 """
 
+import asyncio
+
 _DEFAULTS = {
     'host': '127.0.0.1',
     'port': 3306,
@@ -15,6 +17,7 @@ _DEFAULTS = {
     'minsize': 2,
     'maxsize': 20,
     'connect_timeout': 10,
+    'acquire_timeout': 10,
     'autocommit': True,
 }
 
@@ -28,8 +31,40 @@ _COMMENTS = {
     'minsize': '连接池最小连接数',
     'maxsize': '连接池最大连接数',
     'connect_timeout': '连接超时 (秒)',
+    'acquire_timeout': '获取连接超时 (秒), 连接池占满时快速报错而非无限等待',
     'autocommit': '是否自动提交事务',
 }
+
+
+class _AcquireContext:
+    """带超时的连接获取上下文: 池占满时快速失败并报告池占用情况"""
+
+    __slots__ = ('_pool', '_timeout', '_log', '_conn')
+
+    def __init__(self, pool, timeout, log):
+        self._pool = pool
+        self._timeout = timeout
+        self._log = log
+        self._conn = None
+
+    async def __aenter__(self):
+        try:
+            self._conn = await asyncio.wait_for(self._pool.acquire(), self._timeout)
+        except TimeoutError:
+            pool = self._pool
+            self._log.error(
+                f'获取 MySQL 连接超时 ({self._timeout}s), 连接池占用: '
+                f'used={pool.size - pool.freesize}/{pool.maxsize} free={pool.freesize} '
+                f'— 可能存在慢查询/锁等待占住连接'
+            )
+            raise RuntimeError(f'MySQL 连接池获取超时 ({self._timeout}s)') from None
+        return self._conn
+
+    async def __aexit__(self, *exc):
+        if self._conn is not None:
+            self._pool.release(self._conn)
+            self._conn = None
+        return False
 
 
 class MySQLPool:
@@ -83,10 +118,10 @@ class MySQLPool:
     # ---------- 连接 ----------
 
     def acquire(self):
-        """获取连接 (用作 async with pool.acquire() as conn)"""
+        """获取连接 (用作 async with pool.acquire() as conn), 带超时快速失败"""
         if not self.is_available():
             raise RuntimeError('MySQL 连接池不可用')
-        return self._pool.acquire()
+        return _AcquireContext(self._pool, int(self._cfg.get('acquire_timeout', 10)), self._log)
 
     # ---------- 便捷方法 ----------
 
@@ -94,7 +129,7 @@ class MySQLPool:
         """执行写操作, 返回受影响行数"""
         if not self.is_available():
             return 0
-        async with self._pool.acquire() as conn, conn.cursor() as cur:
+        async with self.acquire() as conn, conn.cursor() as cur:
             is_ddl = sql.lstrip()[:6].upper() in ('CREATE', 'ALTER ', 'DROP T')
             if is_ddl:
                 await cur.execute('SET sql_notes=0')
@@ -109,7 +144,7 @@ class MySQLPool:
         """批量执行"""
         if not self.is_available() or not params_list:
             return 0
-        async with self._pool.acquire() as conn, conn.cursor() as cur:
+        async with self.acquire() as conn, conn.cursor() as cur:
             rows = await cur.executemany(sql, params_list)
             if not conn.get_autocommit():
                 await conn.commit()
@@ -122,7 +157,7 @@ class MySQLPool:
         import aiomysql
 
         async with (
-            self._pool.acquire() as conn,
+            self.acquire() as conn,
             conn.cursor(aiomysql.DictCursor) as cur,
         ):
             await cur.execute(sql, params)
@@ -135,7 +170,7 @@ class MySQLPool:
         import aiomysql
 
         async with (
-            self._pool.acquire() as conn,
+            self.acquire() as conn,
             conn.cursor(aiomysql.DictCursor) as cur,
         ):
             await cur.execute(sql, params)
@@ -145,7 +180,7 @@ class MySQLPool:
         """查询单个值"""
         if not self.is_available():
             return default
-        async with self._pool.acquire() as conn, conn.cursor() as cur:
+        async with self.acquire() as conn, conn.cursor() as cur:
             await cur.execute(sql, params)
             row = await cur.fetchone()
             return row[0] if row else default
@@ -175,7 +210,7 @@ class MySQLPool:
         """执行事务 (列表中每项为 {'sql': ..., 'params': ...})"""
         if not self.is_available():
             return False
-        async with self._pool.acquire() as conn:
+        async with self.acquire() as conn:
             await conn.begin()
             try:
                 async with conn.cursor() as cur:
@@ -192,7 +227,7 @@ class MySQLPool:
     async def ping(self):
         """连通性测试"""
         try:
-            async with self._pool.acquire() as conn:
+            async with self.acquire() as conn:
                 await conn.ping()
             return True
         except Exception:

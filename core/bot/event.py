@@ -301,11 +301,20 @@ class EventHandlerMixin:
         )
 
     def get_full_access_groups(self):
-        """从 data.db 拉取所有全量群记录"""
-        bot = next(iter(self._bots.values()), None)
-        if not bot:
-            return []
-        rows = bot.log_service.query_data('SELECT group_id FROM full_access_groups ORDER BY first_seen DESC')
+        """从所有 bot 的 data.db 拉取全量群记录 (含所属 appid)"""
+        rows = []
+        for appid, bot in self._bots.items():
+            try:
+                bot_rows = bot.log_service.query_data('SELECT group_id, first_seen FROM full_access_groups')
+            except Exception as e:
+                log.debug(f'读取全量群记录失败 {appid}: {e}')
+                continue
+            rows.extend(
+                {'group_id': r['group_id'], 'first_seen': r.get('first_seen') or '', 'appid': appid}
+                for r in bot_rows
+                if r.get('group_id')
+            )
+        rows.sort(key=lambda r: r['first_seen'], reverse=True)
         return rows
 
     # ==================== 生命周期 ====================

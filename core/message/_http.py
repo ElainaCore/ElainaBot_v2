@@ -2,6 +2,7 @@
 
 import asyncio
 import random
+import time
 
 from core.base.config import cfg
 from core.base.logger import FRAMEWORK, get_logger
@@ -36,6 +37,9 @@ _TOKEN_EXPIRED_CODE = 11244
 _MAX_MEDIA_DOWNLOAD = 100 * 1024 * 1024  # 100MB 下载上限, 防止 OOM
 _NET_MAX_RETRIES = 2
 _NET_RETRY_DELAY = 0.5  # 秒, 按次数线性递增
+_RATE_LIMIT_ERR_CODE = 40023001
+_RATE_LIMIT_RESEND_PER_SEC = 40  # 限频补发速率 (全局每秒条数)
+_VIOLATION_CODE = 40034006  # 消息内容违规
 _DEFAULT_MAX_CONNECTIONS = 200
 
 
@@ -50,8 +54,38 @@ class _NullSem:
 _NULL_SEM = _NullSem()
 
 
+class _ResendLimiter:
+    """限频补发节流器: 按固定速率分配补发时隙"""
+
+    def __init__(self, per_sec):
+        self._interval = 1.0 / per_sec
+        self._next = 0.0
+        self._lock = asyncio.Lock()
+
+    async def acquire(self):
+        async with self._lock:
+            now = time.monotonic()
+            slot = max(now, self._next)
+            self._next = slot + self._interval
+        if slot > now:
+            await asyncio.sleep(slot - now)
+
+
+_RESEND_LIMITER = _ResendLimiter(_RATE_LIMIT_RESEND_PER_SEC)
+
+
 def _msg_seq():
-    return random.randint(10000, 999999)
+    return random.randint(1000000, 9999999)
+
+
+def _is_rate_limited(data):
+    """判断是否接口频率限制错误"""
+    return isinstance(data, dict) and data.get('err_code') == _RATE_LIMIT_ERR_CODE
+
+
+def _is_violation(data):
+    """判断是否消息内容违规被拦截"""
+    return isinstance(data, dict) and data.get('err_code') == _VIOLATION_CODE
 
 
 def _is_retryable(e):
@@ -158,7 +192,19 @@ class _HttpMixin:
         return await self._request('GET', endpoint, **kwargs)
 
     async def post_json(self, endpoint, payload):
-        return await self._request('POST', endpoint, json=payload)
+        ok, data = await self._request('POST', endpoint, json=payload)
+        # 频率限制: 仅被动消息 (带 msg_id/event_id) 重发一次, 全局按每秒 40 条节流, 同 msg_seq 平台会去重
+        if (
+            not ok
+            and _is_rate_limited(data)
+            and isinstance(payload, dict)
+            and payload.get('msg_seq')
+            and (payload.get('msg_id') or payload.get('event_id'))
+        ):
+            log.warning(f'[{self._appid}] 接口频率限制, 排队重发被动消息: POST {endpoint}')
+            await _RESEND_LIMITER.acquire()
+            ok, data = await self._request('POST', endpoint, json=payload)
+        return ok, data
 
     async def put(self, endpoint, **kwargs):
         return await self._request('PUT', endpoint, **kwargs)

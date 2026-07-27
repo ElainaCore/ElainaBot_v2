@@ -15,6 +15,7 @@ from core.message._http import (
 )
 from core.message.media import _resolve_upload_ep, upload_media_bytes, upload_media_via_url
 from core.message.response import extract_message_id
+from core.message.silk import convert_to_silk
 
 log = get_logger(FRAMEWORK, '消息发送')
 
@@ -23,7 +24,7 @@ class _MediaSendMixin:
     """媒体发送 Mixin"""
 
     _MEDIA_TYPE_NAMES = {1: '图片', 2: '视频', 3: '语音', 4: '文件'}
-    _MEDIA_TYPE_EXTS = {1: '.png', 2: '.mp4', 3: '.mp3', 4: '.dat'}
+    _MEDIA_TYPE_EXTS = {1: '.png', 2: '.mp4', 3: '.silk', 4: '.dat'}
 
     # 宿主类 (MessageSender) 提供的属性/方法声明
     _appid: str
@@ -92,6 +93,10 @@ class _MediaSendMixin:
                     break
             if not file_info:
                 data = await self.download_media(data)
+
+        # 本地发送语音: 默认先转 silk v3 再上传 (已是 silk / 转换失败则原样发送)
+        if file_type == 3 and not file_info and isinstance(data, bytes):
+            data = await convert_to_silk(data)
 
         if not file_info and not isinstance(data, bytes):
             if original_url:

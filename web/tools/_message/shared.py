@@ -84,23 +84,27 @@ def _get_bot(appid=''):
     return next(iter(_bot_manager._bots.values()))
 
 
-_fa_cache: set | None = None
+_fa_rows_cache: list | None = None
 _fa_cache_ts: float = 0
 _FA_CACHE_TTL = 120
 
 
-def _get_full_access_group_ids():
-    """返回所有全量群 group_id 集合 (带 120s 内存缓存)"""
-    global _fa_cache, _fa_cache_ts
+def _get_full_access_group_rows():
+    """返回所有全量群记录 [{group_id, appid, first_seen}] (带 120s 内存缓存)"""
+    global _fa_rows_cache, _fa_cache_ts
     now = time.time()
-    if _fa_cache is not None and now - _fa_cache_ts < _FA_CACHE_TTL:
-        return _fa_cache
+    if _fa_rows_cache is not None and now - _fa_cache_ts < _FA_CACHE_TTL:
+        return _fa_rows_cache
     if not _bot_manager:
-        return set()
+        return []
     try:
-        rows = _bot_manager.get_full_access_groups()
-        _fa_cache = {r['group_id'] for r in rows if r.get('group_id')}
+        _fa_rows_cache = _bot_manager.get_full_access_groups()
     except Exception:
-        _fa_cache = set()
+        _fa_rows_cache = []
     _fa_cache_ts = now
-    return _fa_cache
+    return _fa_rows_cache
+
+
+def _get_full_access_group_ids():
+    """返回所有全量群 group_id 集合"""
+    return {r['group_id'] for r in _get_full_access_group_rows() if r.get('group_id')}
