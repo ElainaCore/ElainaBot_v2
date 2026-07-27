@@ -289,6 +289,26 @@ class RedisPool:
     async def zcard(self, name):
         return await self._safe('ZCARD', self._client.zcard(name), default=0, key=name)
 
+    # ==================== Lua 脚本 ====================
+
+    async def eval(self, script, numkeys, *keys_and_args):
+        """执行 Lua 脚本 (异常向调用方抛出, 便于降级处理)"""
+        if not self.is_available():
+            return None
+        return await self._client.eval(script, numkeys, *keys_and_args)
+
+    async def evalsha(self, sha, numkeys, *keys_and_args):
+        """按 SHA1 执行已缓存的 Lua 脚本"""
+        if not self.is_available():
+            return None
+        return await self._client.evalsha(sha, numkeys, *keys_and_args)
+
+    async def script_load(self, script):
+        """缓存 Lua 脚本, 返回 SHA1"""
+        if not self.is_available():
+            return None
+        return await self._client.script_load(script)
+
     # ==================== Pipeline / 管理 ====================
 
     def pipeline(self, transaction=True):
