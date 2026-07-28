@@ -19,6 +19,7 @@ _DEFAULTS = {
     'socket_timeout': 5,
     'socket_connect_timeout': 5,
     'health_check_interval': 30,
+    'retry_attempts': 2,
     'decode_responses': True,
 }
 
@@ -32,6 +33,7 @@ _COMMENTS = {
     'socket_timeout': '读写超时 (秒)',
     'socket_connect_timeout': '连接超时 (秒)',
     'health_check_interval': '健康检查间隔 (秒)',
+    'retry_attempts': '超时/断连自动重试次数 (指数退避), 0 为不重试',
     'decode_responses': '是否自动解码响应为字符串',
 }
 
@@ -50,11 +52,16 @@ class RedisPool:
     async def initialize(self):
         try:
             from redis.asyncio import BlockingConnectionPool, Redis
+            from redis.asyncio.retry import Retry
+            from redis.backoff import ExponentialBackoff
+            from redis.exceptions import ConnectionError as RedisConnectionError
+            from redis.exceptions import TimeoutError as RedisTimeoutError
         except ImportError:
             self._log.error('redis 未安装 (pip install redis>=5.0)')
             return
         try:
             password = self._cfg.get('password') or None
+            retries = int(self._cfg.get('retry_attempts', 2))
             pool = BlockingConnectionPool(
                 host=self._cfg.get('host', '127.0.0.1'),
                 port=int(self._cfg.get('port', 6379)),
@@ -65,6 +72,8 @@ class RedisPool:
                 socket_timeout=int(self._cfg.get('socket_timeout', 5)),
                 socket_connect_timeout=int(self._cfg.get('socket_connect_timeout', 5)),
                 health_check_interval=int(self._cfg.get('health_check_interval', 30)),
+                retry=Retry(ExponentialBackoff(cap=1, base=0.05), retries),
+                retry_on_error=[RedisConnectionError, RedisTimeoutError],
                 decode_responses=bool(self._cfg.get('decode_responses', True)),
             )
             self._client = Redis(connection_pool=pool)

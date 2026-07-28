@@ -102,21 +102,22 @@ async def send_dm(event, match):
 # ==================== 重启 ====================
 
 
-@handler(r'^重启$', name='重启', desc='重启机器人进程', owner_only=True)
-async def restart_bot(event, match):
-    restart_data = {
-        'restart_time': datetime.datetime.now().isoformat(),
-        'completed': False,
-        'message_id': event.message_id,
-        'user_id': event.user_id,
-        'group_id': event.group_id if event.is_group else 'c2c',
-    }
-    _save_json(_RESTART_STATUS_FILE, restart_data)
+def _save_restart_status(event):
+    _save_json(
+        _RESTART_STATUS_FILE,
+        {
+            'restart_time': datetime.datetime.now().isoformat(),
+            'completed': False,
+            'message_id': event.message_id,
+            'appid': event.appid,
+            'user_id': event.user_id,
+            'group_id': event.group_id if event.is_group else 'c2c',
+        },
+    )
 
-    await reply(event, '🔄 正在重启...')
-    await asyncio.sleep(0.5)
 
-    # 优雅重启: 走 Application 流程, 刷写 SQLite 缓冲再 os.execv
+def _do_restart():
+    """优雅重启: 走 Application 流程, 刷写 SQLite 缓冲再 os.execv"""
     try:
         from core.application import get_app
 
@@ -133,7 +134,122 @@ async def restart_bot(event, match):
     os.execv(python, [python] + sys.argv)
 
 
+@handler(r'^重启$', name='重启', desc='重启机器人进程', owner_only=True)
+async def restart_bot(event, match):
+    _save_restart_status(event)
+    await reply(event, '🔄 正在重启...')
+    await asyncio.sleep(0.5)
+    _do_restart()
+
+
+# ==================== 框架更新 ====================
+
+
+def _get_framework_updater():
+    from web.tools._updater import handlers as _update_handlers
+
+    if _update_handlers._updater:
+        return _update_handlers._updater
+    from core.application import get_app
+    from web.tools._updater.framework import FrameworkUpdater
+
+    app = get_app()
+    base_dir = app._base_dir if app else os.getcwd()
+    return FrameworkUpdater(base_dir)
+
+
+def _format_changelog(commits, limit=10):
+    lines = []
+    for i, c in enumerate(commits[:limit], 1):
+        commit = c.get('commit') or {}
+        msg = (commit.get('message') or '').split('\n')[0].strip()
+        date = ((commit.get('author') or {}).get('date') or '')[:10]
+        sha = (c.get('sha') or '')[:8]
+        lines.append(f'{i}. [{sha}] {msg}' + (f' ({date})' if date else ''))
+    return lines
+
+
+@handler(r'^框架更新$', name='框架更新', desc='更新框架到最新版本并自动重启', owner_only=True)
+async def update_framework(event, match):
+    try:
+        updater = _get_framework_updater()
+    except Exception as e:
+        return await reply(event, f'❌ 更新器不可用: {e}')
+
+    if updater.get_progress().get('is_updating'):
+        return await reply(event, '⏳ 已有更新任务在进行中，请稍后再试')
+
+    await reply(event, '🔍 正在检查更新...')
+    check = await updater.check_for_updates()
+    if check.get('error'):
+        return await reply(event, f'❌ 检查更新失败: {check["error"]}')
+    if not check.get('has_update'):
+        return await reply(event, f'✅ 已是最新版本 ({updater.current_version})')
+
+    lines = [
+        f'🆕 发现新版本 {check.get("latest_version", "")} (当前 {updater.current_version})',
+        '',
+        '📋 最近更新内容:',
+        *_format_changelog(check.get('changelog') or []),
+        '',
+        '⬇️ 开始下载更新...',
+    ]
+    await reply(event, '\n'.join(lines))
+
+    result = await updater.update_to_version(check['latest_version'])
+    if not result.get('success'):
+        return await reply(event, f'❌ 更新失败: {result.get("message", "未知错误")}')
+
+    _save_restart_status(event)
+    await reply(event, f'✅ {result.get("message", "更新成功")}\n🔄 正在重启...')
+    await asyncio.sleep(0.5)
+    _do_restart()
+
+
 # ==================== 重启完成检测 ====================
+
+
+async def _send_restart_notice(data):
+    """等待机器人就绪后, 用重启前保存的 msg_id 被动回复重启完成提示 (群聊/私聊)"""
+    try:
+        import random
+
+        from core.application import get_app
+
+        app = get_app()
+        if not app:
+            return
+        # 插件加载早于机器人启动, 需等待 bot 实例就绪
+        bots = []
+        for _ in range(60):
+            bots = list(app._bots.values()) if hasattr(app, '_bots') else []
+            if bots:
+                break
+            await asyncio.sleep(1)
+        if not bots:
+            log.warning('发送重启完成消息失败: 机器人未就绪')
+            return
+
+        user_id = data.get('user_id')
+        group_id = data.get('group_id')
+        msg_id = data.get('message_id')
+        if not (user_id and msg_id):
+            return
+
+        start_time = datetime.datetime.fromisoformat(data['restart_time'])
+        duration_ms = int((datetime.datetime.now() - start_time).total_seconds() * 1000)
+
+        endpoint = f'/v2/groups/{group_id}/messages' if group_id != 'c2c' else f'/v2/users/{user_id}/messages'
+        payload = {
+            'msg_type': 0,
+            'msg_seq': random.randint(10000, 999999),
+            'content': f'✅ 重启完成！\n🕒 耗时: {duration_ms}ms',
+            'msg_id': msg_id,
+        }
+        bot = (app._bots.get(data.get('appid')) if hasattr(app, '_bots') else None) or bots[0]
+        await bot.sender.post_json(endpoint, payload)
+    except Exception as e:
+        log.warning(f'发送重启完成消息失败: {e}')
 
 
 @on_load
@@ -146,39 +262,11 @@ def _check_restart_status():
         if data.get('completed', True):
             return
 
-        start_time = datetime.datetime.fromisoformat(data['restart_time'])
-        duration_ms = int((datetime.datetime.now() - start_time).total_seconds() * 1000)
-
         # 标记完成
         data['completed'] = True
         _save_json(_RESTART_STATUS_FILE, data)
 
-        # 发送重启完成消息 (通过底层 API)
-        try:
-            from core.application import get_app
-
-            app = get_app()
-            if app:
-                import random
-
-                bots = list(app._bots.values()) if hasattr(app, '_bots') else []
-                for bot in bots:
-                    user_id = data.get('user_id')
-                    group_id = data.get('group_id')
-                    msg_id = data.get('message_id')
-                    if not (user_id and msg_id):
-                        continue
-                    endpoint = f'/v2/groups/{group_id}/messages' if group_id != 'c2c' else f'/v2/users/{user_id}/messages'
-                    payload = {
-                        'msg_type': 0,
-                        'msg_seq': random.randint(10000, 999999),
-                        'content': f'✅ 重启完成！\n🕒 耗时: {duration_ms}ms',
-                        'msg_id': msg_id,
-                    }
-                    asyncio.create_task(bot.sender.post_json(endpoint, payload))
-                    break
-        except Exception as e:
-            log.warning(f'发送重启完成消息失败: {e}')
+        asyncio.create_task(_send_restart_notice(data))
     except Exception as e:
         log.warning(f'检查重启状态失败: {e}')
 

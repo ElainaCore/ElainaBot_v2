@@ -3,7 +3,6 @@
 
 import asyncio
 import contextlib
-import json
 import os
 from datetime import datetime, timedelta
 
@@ -138,13 +137,12 @@ class LogService(_BaseLogService, ShareMixin, WakeupMixin, SubscribeMixin):
                 _json_field(data, 'command_stats_detail'),
             )
         if log_type == 'lifecycle':
-            extra = {k: v for k, v in data.items() if k not in ('timestamp', 'type', 'user_id', 'group_id')}
             return (
                 ts,
                 data.get('type', ''),
                 data.get('user_id', ''),
                 data.get('group_id', ''),
-                json.dumps(extra, ensure_ascii=False) if extra else '',
+                data.get('extra', ''),
             )
         return None
 
