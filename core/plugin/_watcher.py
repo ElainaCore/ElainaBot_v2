@@ -12,13 +12,23 @@ log = get_logger(FRAMEWORK, '插件管理')
 class _WatcherMixin:
     """文件变更监视 + 自动热重载"""
 
+    def _iter_py_mtimes(self, pdir):
+        """单次 scandir 遍历, 直接复用目录项的 stat, 减少磁盘系统调用"""
+        try:
+            with os.scandir(pdir) as it:
+                entries = list(it)
+        except OSError:
+            return
+        for e in entries:
+            with contextlib.suppress(OSError):
+                if e.is_dir(follow_symlinks=False):
+                    yield from self._iter_py_mtimes(e.path)
+                elif e.name.endswith('.py') and not e.name.startswith('_'):
+                    yield e.path, e.stat().st_mtime
+
     def _scan_plugin_mtimes(self, pdir):
-        for root, _, files in os.walk(pdir):
-            for f in files:
-                if f.endswith('.py') and not f.startswith('_'):
-                    fp = os.path.join(root, f)
-                    with contextlib.suppress(OSError):
-                        self._file_mtimes[fp] = os.path.getmtime(fp)
+        for fp, mt in self._iter_py_mtimes(pdir):
+            self._file_mtimes[fp] = mt
 
     def _snapshot_all_mtimes(self):
         self._file_mtimes.clear()
@@ -31,22 +41,19 @@ class _WatcherMixin:
         return os.path.relpath(filepath, self._dir).split(os.sep)[0]
 
     def _detect_changed_plugins(self):
+        """单次遍历同时检测新增/修改/删除, 避免逐文件 getmtime + 二次 os.walk"""
         changed = set()
-        for fp, old_mt in list(self._file_mtimes.items()):
-            try:
-                if os.path.getmtime(fp) != old_mt:
-                    changed.add(self._plugin_of(fp))
-            except OSError:
-                changed.add(self._plugin_of(fp))
-                self._file_mtimes.pop(fp, None)
+        current = {}
         for name in self._plugins:
             pdir = os.path.join(self._dir, name)
-            if not os.path.isdir(pdir):
-                continue
-            for root, _, files in os.walk(pdir):
-                for f in files:
-                    if f.endswith('.py') and not f.startswith('_') and os.path.join(root, f) not in self._file_mtimes:
-                        changed.add(name)
+            if os.path.isdir(pdir):
+                current.update(self._iter_py_mtimes(pdir))
+        for fp, mt in current.items():
+            if self._file_mtimes.get(fp) != mt:
+                changed.add(self._plugin_of(fp))
+        for fp in self._file_mtimes.keys() - current.keys():
+            changed.add(self._plugin_of(fp))
+            self._file_mtimes.pop(fp, None)
         return changed
 
     async def _watcher_loop(self):
