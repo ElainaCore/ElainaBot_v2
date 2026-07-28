@@ -6,6 +6,7 @@
 """
 
 import asyncio
+import time
 
 _DEFAULTS = {
     'host': '127.0.0.1',
@@ -20,6 +21,7 @@ _DEFAULTS = {
     'acquire_timeout': 10,
     'pool_recycle': 3600,
     'autocommit': True,
+    'slow_query_seconds': 3,
 }
 
 _COMMENTS = {
@@ -35,6 +37,7 @@ _COMMENTS = {
     'acquire_timeout': '获取连接超时 (秒), 连接池占满时快速报错而非无限等待',
     'pool_recycle': '连接回收周期 (秒), 超过该时长的空闲连接会被重建, 避免被服务器断开的死连接占坑',
     'autocommit': '是否自动提交事务',
+    'slow_query_seconds': '慢查询告警阈值 (秒), 超过该耗时的 SQL 会记录告警日志, 0 为关闭',
 }
 
 
@@ -138,6 +141,17 @@ class MySQLPool:
 
     # ---------- 便捷方法 ----------
 
+    async def _timed_execute(self, cur, sql, params=None):
+        """执行 SQL 并记录慢查询 (长时间占用连接会拖垄整个连接池)"""
+        threshold = float(self._cfg.get('slow_query_seconds', 3) or 0)
+        start = time.monotonic()
+        try:
+            return await cur.execute(sql, params)
+        finally:
+            elapsed = time.monotonic() - start
+            if threshold and elapsed >= threshold:
+                self._log.warning(f'慢查询 {elapsed:.1f}s: {" ".join(str(sql).split())[:300]}')
+
     async def execute(self, sql, params=None):
         """执行写操作, 返回受影响行数"""
         if not self.is_available():
@@ -146,7 +160,7 @@ class MySQLPool:
             is_ddl = sql.lstrip()[:6].upper() in ('CREATE', 'ALTER ', 'DROP T')
             if is_ddl:
                 await cur.execute('SET sql_notes=0')
-            rows = await cur.execute(sql, params)
+            rows = await self._timed_execute(cur, sql, params)
             if is_ddl:
                 await cur.execute('SET sql_notes=1')
             if not conn.get_autocommit():
@@ -173,7 +187,7 @@ class MySQLPool:
             self.acquire() as conn,
             conn.cursor(aiomysql.DictCursor) as cur,
         ):
-            await cur.execute(sql, params)
+            await self._timed_execute(cur, sql, params)
             return await cur.fetchone()
 
     async def fetch_all(self, sql, params=None):
@@ -186,7 +200,7 @@ class MySQLPool:
             self.acquire() as conn,
             conn.cursor(aiomysql.DictCursor) as cur,
         ):
-            await cur.execute(sql, params)
+            await self._timed_execute(cur, sql, params)
             return list(await cur.fetchall())
 
     async def fetch_value(self, sql, params=None, default=None):
@@ -194,7 +208,7 @@ class MySQLPool:
         if not self.is_available():
             return default
         async with self.acquire() as conn, conn.cursor() as cur:
-            await cur.execute(sql, params)
+            await self._timed_execute(cur, sql, params)
             row = await cur.fetchone()
             return row[0] if row else default
 

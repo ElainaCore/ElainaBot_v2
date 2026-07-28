@@ -103,7 +103,11 @@ def audio_to_silk(data: bytes, rate: int = DEFAULT_RATE) -> bytes:
     try:
         with os.fdopen(src_fd, 'wb') as f:
             f.write(data)
-        pcm = _to_pcm(src_path, rate)
+        try:
+            pcm = _to_pcm(src_path, rate)
+        except BaseException:
+            os.close(pcm_fd)
+            raise
         with os.fdopen(pcm_fd, 'wb') as f:
             f.write(pcm)
         pilk.encode(pcm_path, silk_path, pcm_rate=rate, tencent=True)

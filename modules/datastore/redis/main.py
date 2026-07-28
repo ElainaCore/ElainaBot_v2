@@ -51,6 +51,7 @@ class RedisPool:
 
     async def initialize(self):
         try:
+            import redis as _redis_pkg
             from redis.asyncio import BlockingConnectionPool, Redis
             from redis.asyncio.retry import Retry
             from redis.backoff import ExponentialBackoff
@@ -75,6 +76,10 @@ class RedisPool:
                 retry=Retry(ExponentialBackoff(cap=1, base=0.05), retries),
                 retry_on_error=[RedisConnectionError, RedisTimeoutError],
                 decode_responses=bool(self._cfg.get('decode_responses', True)),
+                # 显式传入版本: 避免每次新建连接时 importlib.metadata 读盘 METADATA
+                # (该同步磁盘读在事件循环上执行, 内存紧张/磁盘慢时会卡住循环数秒)
+                lib_name='redis-py',
+                lib_version=getattr(_redis_pkg, '__version__', 'unknown'),
             )
             self._client = Redis(connection_pool=pool)
             await self._client.ping()

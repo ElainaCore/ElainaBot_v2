@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import gc
 import logging
 import os
 import subprocess
@@ -29,6 +30,27 @@ from core.storage.statistics import StatisticsService
 log = get_logger(SYSTEM, '启动器')
 
 
+def _tune_gc():
+    """调优循环 GC: 启动完成后冻结存量对象 + 提高阈值, 避免 gen2 全量回收秒级冻结事件循环"""
+    gc.collect()
+    gc.freeze()  # 启动期对象 (模块/类/插件) 移出 GC 扫描集, 大幅缩短每次回收耗时
+    gc.set_threshold(50000, 25, 25)  # 默认 (2000,10,10) 在高分配速率下触发过于频繁
+    log.info(f'GC 已调优: freeze {gc.get_freeze_count()} 个启动期对象, 阈值 {gc.get_threshold()}')
+
+
+def _tune_rlimit():
+    """提升 fd 软上限至硬上限: 默认 1024 在消息高峰 (连接池+临时文件) 下极易耗尽, 触发 Errno 24"""
+    try:
+        import resource
+
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        if soft < hard:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (hard, hard))
+            log.info(f'fd 上限已提升: {soft} -> {hard}')
+    except (ImportError, ValueError, OSError):
+        pass  # Windows / 无权限
+
+
 def _tune_malloc():
     """调优 glibc malloc: 限制 arena, 降低碎片 (进程级)"""
     try:
@@ -43,6 +65,7 @@ def _tune_malloc():
 
 
 _tune_malloc()
+_tune_rlimit()
 
 # 全局应用实例 (由 start() 设置)
 _app: 'Application | None' = None
@@ -250,6 +273,8 @@ class Application(EventHandlerMixin):
 
         for svc in (self._config_watcher, self._media_cleanup, self._restart_scheduler):
             svc.start()
+
+        _tune_gc()
 
         msg = f'✅ 启动完成: {len(self._bot_registry)} 个机器人, {self._plugin_manager.handler_count} 个命令处理器'
         log.info(msg)
