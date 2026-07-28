@@ -18,6 +18,7 @@ _DEFAULTS = {
     'maxsize': 20,
     'connect_timeout': 10,
     'acquire_timeout': 10,
+    'pool_recycle': 3600,
     'autocommit': True,
 }
 
@@ -32,6 +33,7 @@ _COMMENTS = {
     'maxsize': '连接池最大连接数',
     'connect_timeout': '连接超时 (秒)',
     'acquire_timeout': '获取连接超时 (秒), 连接池占满时快速报错而非无限等待',
+    'pool_recycle': '连接回收周期 (秒), 超过该时长的空闲连接会被重建, 避免被服务器断开的死连接占坑',
     'autocommit': '是否自动提交事务',
 }
 
@@ -48,9 +50,15 @@ class _AcquireContext:
         self._conn = None
 
     async def __aenter__(self):
+        # 不能直接 wait_for(pool.acquire()): 超时会取消 acquire, 而 aiomysql 的
+        # acquire 在 asyncio.Condition 上等待, 取消会吞掉唤醒通知并可能泄漏连接,
+        # 导致池中明明有空闲连接却所有等待者永久超时。用 shield 让 acquire
+        # 继续完成, 超时后拿到的连接归还池中。
+        acquire_task = asyncio.ensure_future(self._pool.acquire())
         try:
-            self._conn = await asyncio.wait_for(self._pool.acquire(), self._timeout)
+            self._conn = await asyncio.wait_for(asyncio.shield(acquire_task), self._timeout)
         except TimeoutError:
+            acquire_task.add_done_callback(self._release_late)
             pool = self._pool
             self._log.error(
                 f'获取 MySQL 连接超时 ({self._timeout}s), 连接池占用: '
@@ -59,6 +67,10 @@ class _AcquireContext:
             )
             raise RuntimeError(f'MySQL 连接池获取超时 ({self._timeout}s)') from None
         return self._conn
+
+    def _release_late(self, task):
+        if not task.cancelled() and task.exception() is None:
+            self._pool.release(task.result())
 
     async def __aexit__(self, *exc):
         if self._conn is not None:
@@ -98,6 +110,7 @@ class MySQLPool:
                 minsize=int(self._cfg.get('minsize', 2)),
                 maxsize=int(self._cfg.get('maxsize', 20)),
                 connect_timeout=int(self._cfg.get('connect_timeout', 10)),
+                pool_recycle=int(self._cfg.get('pool_recycle', 3600)),
                 autocommit=bool(self._cfg.get('autocommit', True)),
             )
             self._available = True
