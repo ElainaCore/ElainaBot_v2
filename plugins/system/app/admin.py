@@ -253,7 +253,7 @@ async def _send_restart_notice(data):
 
 
 @on_load
-def _check_restart_status():
+async def _check_restart_status():
     """启动时检查是否有未完成的重启状态"""
     if not os.path.isfile(_RESTART_STATUS_FILE):
         return
