@@ -158,6 +158,19 @@ def _get_framework_updater():
     return FrameworkUpdater(base_dir)
 
 
+def _slice_changelog(commits, current_version):
+    """只保留当前版本之后的提交 (不含当前版本)"""
+    cur = (current_version or '')[:8]
+    if not cur or cur == 'unknown':
+        return commits
+    out = []
+    for c in commits:
+        if (c.get('sha') or '').startswith(cur):
+            return out
+        out.append(c)
+    return commits
+
+
 def _format_changelog(commits, limit=10):
     lines = []
     for i, c in enumerate(commits[:limit], 1):
@@ -186,14 +199,18 @@ async def update_framework(event, match):
     if not check.get('has_update'):
         return await reply(event, f'✅ 已是最新版本 ({updater.current_version})')
 
+    commits = await updater.fetch_changelog() or check.get('changelog') or []
+    new_commits = _slice_changelog(commits, updater.current_version)
+    total = len(new_commits)
     lines = [
         f'🆕 发现新版本 {check.get("latest_version", "")} (当前 {updater.current_version})',
         '',
-        '📋 最近更新内容:',
-        *_format_changelog(check.get('changelog') or []),
-        '',
-        '⬇️ 开始下载更新...',
+        f'📋 本次更新内容 ({total} 条):',
+        *_format_changelog(new_commits),
     ]
+    if total > 10:
+        lines.append('……仅显示最新 10 条')
+    lines += ['', '⬇️ 开始下载更新...']
     await reply(event, '\n'.join(lines))
 
     result = await updater.update_to_version(check['latest_version'])
