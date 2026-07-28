@@ -126,7 +126,7 @@ async def _send_text_with_image(sender, content, image_bytes, *, group_id=None, 
     return ok, data, payload
 
 
-# ==================== 辅助: ARK ====================
+# ==================== 辅助: ARK / 卡片 ====================
 
 
 async def _send_ark(sender, template_id, kv_json_str, *, group_id=None, user_id=None, msg_id='', event_id='', message_reference_id=''):
@@ -144,6 +144,33 @@ async def _send_ark(sender, template_id, kv_json_str, *, group_id=None, user_id=
         'msg_seq': random.randint(10000, 999999),
         'content': '',
         'ark': {'template_id': template_id, 'kv': kv_data},
+    }
+    if msg_id:
+        payload['msg_id'] = msg_id
+    if event_id:
+        payload['event_id'] = event_id
+    _apply_reference(payload, message_reference_id)
+
+    _, send_ep = _media_endpoints(group_id, user_id)
+    ok, data = await sender.post_json(send_ep, payload)
+    return ok, data, payload
+
+
+async def _send_card(sender, card_type, content_json_str, *, group_id=None, user_id=None, msg_id='', event_id='', message_reference_id=''):
+    """发送卡片消息 (msg_type=8, card_type='tuwen' 等, content_json_str=card.content JSON 对象)"""
+    try:
+        card_content = json.loads(content_json_str)
+    except json.JSONDecodeError as e:
+        return False, {'message': f'卡片 content JSON 解析失败: {e}'}, {}
+
+    if not isinstance(card_content, dict):
+        return False, {'message': '卡片 content 必须是 JSON 对象'}, {}
+
+    payload = {
+        'msg_type': 8,
+        'msg_seq': random.randint(10000, 999999),
+        'content': '',
+        'card': {'type': card_type, 'content': card_content},
     }
     if msg_id:
         payload['msg_id'] = msg_id

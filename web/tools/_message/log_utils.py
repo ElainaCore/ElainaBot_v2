@@ -11,13 +11,15 @@ from core.message.response import extract_message_id, extract_reference_id
 log = logging.getLogger('ElainaBot.web.message')
 
 
-def _build_display(msg_type, content, image_data, media_file_type, ark_template_id, media_label=''):
+def _build_display(msg_type, content, image_data, media_file_type, ark_template_id, media_label='', card_type='tuwen'):
     """构建日志显示内容"""
     if msg_type == 'media':
         type_names = {1: '图片', 2: '视频', 3: '语音', 4: '文件'}
         return f'[富媒体:{type_names.get(media_file_type, "?")}] {content[:200]}'
     if msg_type == 'ark':
         return f'[ARK:{ark_template_id}] {content[:200]}'
+    if msg_type == 'card':
+        return f'[卡片:{card_type}] {content[:200]}'
     if msg_type == 'markdown':
         return f'[Markdown] {content[:200]}'
     if image_data and media_label:

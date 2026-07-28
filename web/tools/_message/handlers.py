@@ -22,7 +22,7 @@ from web.tools._message.log_utils import (
     _log_send_error,
     _log_sent_message,
 )
-from web.tools._message.media import _send_ark, _send_media_bytes, _send_media_url, _send_text_with_image
+from web.tools._message.media import _send_ark, _send_card, _send_media_bytes, _send_media_url, _send_text_with_image
 from web.tools._message.query import (
     _aggregate_chats_sync,
     _query_chat_messages_sync,
@@ -395,6 +395,7 @@ async def handle_send_message(request: web.Request):
         quote_message_id = (fields.get('quote_message_id') or fields.get('message_reference_message_id') or '').strip()
         media_file_type = int(fields.get('media_file_type', '1'))
         ark_template_id = int(fields.get('ark_template_id', '23'))
+        card_type = fields.get('card_type', 'tuwen') or 'tuwen'
 
         if not chat_type or not chat_id:
             return web.json_response({'success': False, 'message': '缺少 chat_type/chat_id'}, status=400)
@@ -468,6 +469,17 @@ async def handle_send_message(request: web.Request):
                 event_id=event_id,
                 message_reference_id=message_reference_id,
             )
+        elif msg_type == 'card' and content:
+            ok, data, send_payload = await _send_card(
+                sender,
+                card_type,
+                content,
+                group_id=gid,
+                user_id=uid,
+                msg_id=msg_id,
+                event_id=event_id,
+                message_reference_id=message_reference_id,
+            )
         elif msg_type == 'text' and image_data:
             ok, data, send_payload = await _send_text_with_image(
                 sender,
@@ -507,6 +519,7 @@ async def handle_send_message(request: web.Request):
                     media_file_type,
                     ark_template_id,
                     media_label,
+                    card_type,
                 )
                 _log_sent_message(bot, chat_type, chat_id, display, bot_appid, bot_name, bot_qq, send_payload, data)
             return web.json_response({'success': True, 'message': '发送成功'})
