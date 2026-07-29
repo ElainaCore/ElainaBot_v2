@@ -327,6 +327,11 @@ class Application(EventHandlerMixin):
             if svc:
                 svc.stop()
 
+        # 优先关 HTTP 服务器释放端口, 缩短重启时新进程撞端口的窗口
+        if self._http_server:
+            with contextlib.suppress(Exception):
+                await self._http_server.stop(timeout=5)
+
         # 按依赖顺序关闭
         cleanup = [
             self._dau_service and self._dau_service.stop(),
@@ -341,9 +346,6 @@ class Application(EventHandlerMixin):
                     await asyncio.wait_for(coro, timeout=10)
                 except TimeoutError:
                     log.warning(f'关闭超时(10s), 跳过: {coro}')
-
-        if self._http_server:
-            await self._http_server.stop(timeout=5)
 
         log.info('已关闭')
 

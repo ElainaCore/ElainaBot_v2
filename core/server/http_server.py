@@ -1,5 +1,6 @@
 """HTTP 服务器管理 — aiohttp 启动/关闭/Web面板挂载"""
 
+import asyncio
 import logging
 from typing import cast
 
@@ -42,23 +43,34 @@ class HttpServer:
         except Exception as e:
             log.warning(f'Web 面板加载失败: {e}')
 
-    async def start(self):
-        """启动 HTTP 服务器 (支持 IPv4/IPv6, host 可为字符串或列表)"""
+    async def start(self, bind_timeout: float = 15):
+        """启动 HTTP 服务器 (支持 IPv4/IPv6, host 可为字符串或列表);
+        端口被占时每秒重试直到 bind_timeout, 覆盖重启时旧进程尚未释放端口的窗口"""
         host = cfg.get('settings', 'server.host', '0.0.0.0')
         port = cfg.get('settings', 'server.port', 5200)
 
-        self._runner = AppRunner(self._app)
+        self._runner = AppRunner(self.app)
         await self._runner.setup()
 
         hosts = host if isinstance(host, list) else [host]
-        for h in hosts:
-            try:
-                site = TCPSite(self._runner, h, port)
-                await site.start()
-                self._sites.append(site)
-                log.info(f'HTTP 服务器已启动: http://{"[" + h + "]" if ":" in str(h) else h}:{port}')
-            except OSError as e:
-                log.warning(f'绑定 {h}:{port} 失败: {e}')
+        pending = list(hosts)
+        deadline = asyncio.get_running_loop().time() + bind_timeout
+        while True:
+            failed = []
+            for h in pending:
+                try:
+                    site = TCPSite(self._runner, h, port)
+                    await site.start()
+                    self._sites.append(site)
+                    log.info(f'HTTP 服务器已启动: http://{"[" + h + "]" if ":" in str(h) else h}:{port}')
+                except OSError as e:
+                    log.warning(f'绑定 {h}:{port} 失败: {e}')
+                    failed.append(h)
+            pending = failed
+            if not pending or asyncio.get_running_loop().time() >= deadline:
+                break
+            log.warning(f'端口 {port} 被占用, 1 秒后重试…')
+            await asyncio.sleep(1)
 
         if not self._sites:
             raise RuntimeError(f'无法绑定任何地址 ({hosts}:{port})')

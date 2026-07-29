@@ -16,6 +16,23 @@ def _calc_stage(days):
     return 0
 
 
+# 可唤醒用户筛选下推 SQL, 阶段判定与 _calc_stage 一致, 不把全表搬回 Python
+_GET_USERS_SQL = """
+    SELECT openid, days,
+           CASE WHEN days <= 0 THEN 1 WHEN days <= 3 THEN 2
+                WHEN days <= 7 THEN 3 ELSE 4 END AS stage
+    FROM (
+        SELECT openid, wakeup_stage,
+               CAST(julianday(?1) - julianday(last_msg_date) AS INTEGER) AS days
+        FROM log
+        WHERE last_wakeup_date IS NULL OR last_wakeup_date != ?1
+    )
+    WHERE days <= 30
+      AND wakeup_stage < CASE WHEN days <= 0 THEN 1 WHEN days <= 3 THEN 2
+                              WHEN days <= 7 THEN 3 ELSE 4 END
+"""
+
+
 class WakeupMixin:
     """唤醒系统 (wakeup.db) 方法集"""
 
@@ -97,21 +114,13 @@ class WakeupMixin:
 
     def _wakeup_get_users_sync(self, target_stage=None):
         conn, lock = self._wakeup_locked()
+        sql = _GET_USERS_SQL
+        params = [datetime.now().strftime('%Y-%m-%d')]
+        if target_stage is not None:
+            sql += ' AND stage = ?2'
+            params.append(target_stage)
         with lock:
             conn.row_factory = sqlite3.Row
-            rows = conn.execute('SELECT openid, last_msg_date, wakeup_stage, last_wakeup_date FROM log').fetchall()
+            rows = conn.execute(sql, params).fetchall()
             conn.row_factory = None
-        today = datetime.now().date()
-        today_str = today.strftime('%Y-%m-%d')
-        results = []
-        for row in rows:
-            if row['last_wakeup_date'] == today_str:
-                continue
-            days = (today - datetime.strptime(row['last_msg_date'], '%Y-%m-%d').date()).days
-            stage = _calc_stage(days)
-            if not stage or row['wakeup_stage'] >= stage:
-                continue
-            if target_stage is not None and stage != target_stage:
-                continue
-            results.append({'openid': row['openid'], 'days': days, 'stage': stage})
-        return results
+        return [{'openid': r['openid'], 'days': r['days'], 'stage': r['stage']} for r in rows]

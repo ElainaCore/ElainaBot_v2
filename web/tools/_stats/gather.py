@@ -4,7 +4,11 @@ import contextlib
 import logging
 from datetime import datetime, timedelta
 
-from core.storage.lifecycle_stats import compute_lifecycle_counts
+from core.storage.lifecycle_stats import (
+    LIFECYCLE_COUNTS_SQL,
+    compute_lifecycle_counts,
+    lifecycle_counts_from_rows,
+)
 from web.tools._bots import iter_bots
 from web.tools._stats import context
 from web.tools._stats.hourly import _aggregate_hourly
@@ -13,18 +17,20 @@ log = logging.getLogger('ElainaBot.web.stats')
 
 
 def _count_lifecycle_today(appid_filter, date_str):
-    """从 lifecycle.db 实时统计今日进群/退群/加好友/删好友事件 (同一群/好友去重)"""
+    """从 lifecycle.db 实时统计今日进群/退群/加好友/删好友事件 (同一群/好友去重)
+    优先 SQL 单次扫描, 失败时回退到搬行的 Python 统计"""
     ev = {'group_join_count': 0, 'group_leave_count': 0, 'friend_add_count': 0, 'friend_remove_count': 0}
     for _, inst in iter_bots(context.bot_manager, appid_filter):
         with contextlib.suppress(Exception):
-            rows = inst.log_service.query(
-                'lifecycle',
-                'SELECT type, user_id, group_id FROM log ORDER BY id',
-                date=date_str,
-            )
-            counts = compute_lifecycle_counts(
-                (r.get('type', ''), r.get('user_id', ''), r.get('group_id', '')) for r in rows
-            )
+            try:
+                counts = lifecycle_counts_from_rows(inst.log_service.query('lifecycle', LIFECYCLE_COUNTS_SQL, date=date_str))
+            except Exception:
+                rows = inst.log_service.query(
+                    'lifecycle',
+                    'SELECT type, user_id, group_id FROM log ORDER BY id',
+                    date=date_str,
+                )
+                counts = compute_lifecycle_counts((r.get('type', ''), r.get('user_id', ''), r.get('group_id', '')) for r in rows)
             for key in ev:
                 ev[key] += counts[key]
     return ev
@@ -98,33 +104,28 @@ def _gather_chart_sync(days, appid_filter):
         is_today = d == today_date
         for _appid, inst in iter_bots(context.bot_manager, appid_filter):
             if is_today:
-                # 今日: 实时读 message.db (合并查询, 一次扫表得到全部聚合)
+                # 今日: 实时读 message.db (全部聚合合并为单次扫表)
                 try:
                     rows = inst.log_service.query(
                         'message',
-                        'SELECT COUNT(*) as cnt, '
-                        "COUNT(CASE WHEN group_id = '' OR group_id = 'c2c' THEN 1 END) as priv, "
+                        "SELECT COUNT(CASE WHEN user_id != '' THEN 1 END) as cnt, "
+                        "COUNT(CASE WHEN user_id != '' AND (group_id = '' OR group_id = 'c2c') THEN 1 END) as priv, "
                         "COUNT(DISTINCT CASE WHEN user_id != '' AND direction != 'send' AND COALESCE(at_bot, 1) != 0 THEN user_id END) as users, "
-                        "COUNT(DISTINCT CASE WHEN group_id != '' AND group_id != 'c2c' AND direction != 'send' AND COALESCE(at_bot, 1) != 0 THEN group_id END) as groups_ "
-                        "FROM log WHERE user_id != ''",
+                        "COUNT(DISTINCT CASE WHEN group_id != '' AND group_id != 'c2c' AND user_id != '' AND direction != 'send' AND COALESCE(at_bot, 1) != 0 THEN group_id END) as groups_, "
+                        "COUNT(CASE WHEN direction = 'receive' THEN 1 END) as received, "
+                        "COUNT(CASE WHEN direction = 'send' THEN 1 END) as sent "
+                        'FROM log',
                         date=date_str,
                     )
                     if rows:
                         r0 = rows[0]
                         day_total += r0.get('cnt', 0)
                         day_private += r0.get('priv', 0)
+                        day_received += r0.get('received', 0)
+                        day_sent += r0.get('sent', 0)
                         # 用 range 作为占位 — set 只用于 len(), 不在意元素本身
                         day_users.update(range(len(day_users), len(day_users) + r0.get('users', 0)))
                         day_groups.update(range(len(day_groups), len(day_groups) + r0.get('groups_', 0)))
-                    rows = inst.log_service.query(
-                        'message',
-                        "SELECT COUNT(CASE WHEN direction = 'receive' THEN 1 END) as received, "
-                        "COUNT(CASE WHEN direction = 'send' THEN 1 END) as sent FROM log",
-                        date=date_str,
-                    )
-                    if rows:
-                        day_received += rows[0].get('received', 0)
-                        day_sent += rows[0].get('sent', 0)
                 except Exception as e:
                     log.debug(f'统计收发消息失败 {date_str}: {e}')
             if not is_today:
@@ -198,8 +199,7 @@ def _gather_stats(selected_date='', appid_filter=''):
     now = datetime.now()
     date = selected_date or now.strftime('%Y-%m-%d')
 
-    summary = _gather_summary(date, appid_filter)
-    active = _gather_active(date, appid_filter)
+    summary, active = _gather_summary_active(date, appid_filter)
     top = _gather_top(date, appid_filter)
     events = _gather_events(date, appid_filter)
     totals = _gather_totals(appid_filter)

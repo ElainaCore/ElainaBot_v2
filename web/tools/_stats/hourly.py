@@ -99,15 +99,15 @@ def _aggregate_hourly(appid_filter, date):
         hourly = dict(cached)
         hourly.pop('_final', None)
         if date == today:
-            # 补充当前小时实时数据
+            # 补充当前小时实时数据 (范围比较走 timestamp 索引)
             cur_h = f'{now.hour:02d}'
             cnt = 0
             for _, inst in iter_bots(context.bot_manager):
                 with contextlib.suppress(Exception):
                     rows = inst.log_service.query(
                         'message',
-                        'SELECT COUNT(*) AS c FROM log WHERE substr(timestamp,12,2)=?',
-                        (cur_h,),
+                        'SELECT COUNT(*) AS c FROM log WHERE timestamp >= ?',
+                        (f'{today} {cur_h}:00:00',),
                         date=date,
                     )
                     if rows:

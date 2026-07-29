@@ -17,6 +17,9 @@ import os
 import shutil
 import subprocess
 import tempfile
+import threading
+from concurrent.futures import ProcessPoolExecutor
+from functools import partial
 
 from core.base.logger import FRAMEWORK, get_logger
 
@@ -119,12 +122,24 @@ def audio_to_silk(data: bytes, rate: int = DEFAULT_RATE) -> bytes:
                 os.remove(path)
 
 
+_pool: ProcessPoolExecutor | None = None
+_pool_lock = threading.Lock()
+
+
+def _get_pool() -> ProcessPoolExecutor:
+    global _pool
+    with _pool_lock:
+        if _pool is None:
+            _pool = ProcessPoolExecutor(max_workers=1)
+        return _pool
+
+
 async def convert_to_silk(data: bytes, rate: int = DEFAULT_RATE) -> bytes:
-    """异步转换 (线程池执行); 转换失败时回退原数据, 不阻断发送"""
+    """异步转换 (进程池执行, pilk.encode 编码期间不释放 GIL); 转换失败时回退原数据, 不阻断发送"""
     if is_silk(data):
         return data
     try:
-        return await asyncio.to_thread(audio_to_silk, data, rate)
+        return await asyncio.get_running_loop().run_in_executor(_get_pool(), partial(audio_to_silk, data, rate))
     except ImportError:
         log.warning('未安装 pilk, 语音不转 silk 原样发送 (可选: pip install pilk)')
         return data

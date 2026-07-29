@@ -112,53 +112,39 @@ def _query_lifecycle_events_sync(chat_type, chat_id, appid_filter, dates, limit=
     return results[-limit:]
 
 
-def _iter_distinct_chat_ids(inst, chat_type, d):
-    """松散索引扫描取当日全部会话 id — 每个会话两次点查, 不做全表 GROUP BY"""
-    if chat_type == 'group':
-        next_sql = (
-            "SELECT group_id AS cid FROM log WHERE group_id > ? AND group_id != 'c2c' "
-            'ORDER BY group_id LIMIT 1'
-        )
-        last_sql = 'SELECT id, timestamp FROM log WHERE group_id = ? ORDER BY id DESC LIMIT 1'
-    else:
-        # group_id 等值分支拆开, 每个分支都可用 (group_id, user_id, id) 索引直接定位
-        branch = '(SELECT user_id AS cid FROM log WHERE group_id = ? AND user_id > ? ORDER BY user_id LIMIT 1)'
-        next_sql = f'SELECT MIN(cid) AS cid FROM (SELECT * FROM {branch} UNION ALL SELECT * FROM {branch})'
-        branch_last = '(SELECT id, timestamp FROM log WHERE group_id = ? AND user_id = ? ORDER BY id DESC LIMIT 1)'
-        last_sql = f'SELECT id, timestamp FROM (SELECT * FROM {branch_last} UNION ALL SELECT * FROM {branch_last}) ORDER BY id DESC LIMIT 1'
-    is_group = chat_type == 'group'
-    cur = ''
-    while True:
-        params = (cur,) if is_group else ('', cur, 'c2c', cur)
-        rows = inst.log_service.query('message', next_sql, params, date=d)
-        if not rows or not rows[0].get('cid'):
-            return
-        cid = rows[0]['cid']
-        cur = cid
-        lp = (cid,) if is_group else ('', cid, 'c2c', cid)
-        last = inst.log_service.query('message', last_sql, lp, date=d)
-        if last:
-            yield cid, last[0].get('id', 0) or 0, last[0].get('timestamp', '') or ''
+# 单次覆盖索引扫描得到全部会话的最后消息 id/时间与条数, 取代逐会话点查
+_GROUP_CHATS_SQL = (
+    'SELECT group_id AS cid, MAX(id) AS last_id, MAX(timestamp) AS last_time, COUNT(*) AS n '
+    "FROM log WHERE group_id != '' AND group_id != 'c2c' GROUP BY group_id"
+)
+# group_id 等值分支拆开, 每个分支都可走 (group_id, user_id, id, timestamp) 索引
+_PRIVATE_CHATS_SQL = (
+    'SELECT cid, MAX(last_id) AS last_id, MAX(last_time) AS last_time, SUM(n) AS n FROM ('
+    'SELECT user_id AS cid, MAX(id) AS last_id, MAX(timestamp) AS last_time, COUNT(*) AS n '
+    "FROM log WHERE group_id = '' AND user_id != '' GROUP BY user_id "
+    'UNION ALL '
+    'SELECT user_id, MAX(id), MAX(timestamp), COUNT(*) '
+    "FROM log WHERE group_id = 'c2c' AND user_id != '' GROUP BY user_id"
+    ') GROUP BY cid'
+)
 
 
 def _aggregate_chats_sync(chat_type, appid_filter):
-    """聚合聊天列表 (仅今日) — 松散扫描会话 id, 仅前 200 个会话统计条数/取最后消息"""
+    """聚合聊天列表 (仅今日) — 每 bot 单次 GROUP BY 扫描, 仅前 200 个会话取最后消息内容"""
     if not _shared._bot_manager:
         return []
     dates = _recent_dates(1)
-    if chat_type == 'group':
-        count_sql = 'SELECT COUNT(*) AS n FROM log WHERE group_id = ?'
-    else:
-        count_sql = (
-            "SELECT (SELECT COUNT(*) FROM log WHERE group_id = '' AND user_id = ?) "
-            "+ (SELECT COUNT(*) FROM log WHERE group_id = 'c2c' AND user_id = ?) AS n"
-        )
+    sql = _GROUP_CHATS_SQL if chat_type == 'group' else _PRIVATE_CHATS_SQL
     merged = {}
     for appid, inst in iter_bots(_shared._bot_manager, appid_filter):
         bot_name = getattr(inst, 'name', appid)
         for d in dates:
             try:
-                for cid, last_id, last_time in _iter_distinct_chat_ids(inst, chat_type, d):
+                for r in inst.log_service.query('message', sql, date=d):
+                    cid = r.get('cid') or ''
+                    if not cid:
+                        continue
+                    last_id = r.get('last_id', 0) or 0
                     key = (appid, cid)
                     item = merged.get(key)
                     if not item:
@@ -172,28 +158,19 @@ def _aggregate_chats_sync(chat_type, appid_filter):
                             'msg_count': 0,
                         }
                         merged[key] = item
+                    item['msg_count'] += r.get('n', 0) or 0
                     if last_id and (last_id > item['last_id'] or d > item['last_date']):
                         item['last_id'] = last_id
-                        item['last_time'] = last_time
+                        item['last_time'] = r.get('last_time', '') or ''
                         item['last_date'] = d
             except Exception as e:
                 log.debug(f'聊天列表聚合失败 {appid} {d}: {e}')
                 continue
     if not merged:
         return []
-    # 按 last_time 排序, 仅前 200 个聊天统计消息条数和 last_content
+    # 按 last_time 排序, 仅前 200 个聊天取 last_content
     chats = sorted(merged.values(), key=lambda c: c.get('last_time', ''), reverse=True)
     top = chats[:200]
-    for item in top:
-        inst = _shared._bot_manager._bots.get(item['appid'])
-        if not inst:
-            continue
-        cp = (item['chat_id'],) if chat_type == 'group' else (item['chat_id'], item['chat_id'])
-        try:
-            rows = inst.log_service.query('message', count_sql, cp, date=item['last_date'])
-            item['msg_count'] = (rows[0].get('n', 0) or 0) if rows else 0
-        except Exception as e:
-            log.debug(f'统计消息数失败: {e}')
     by_path = {}
     for item in top:
         if item['last_id']:

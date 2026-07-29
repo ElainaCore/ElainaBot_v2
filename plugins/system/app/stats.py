@@ -9,7 +9,11 @@ from datetime import datetime, timedelta
 from core.base.config import cfg
 from core.base.logger import PLUGIN, get_logger
 from core.plugin.decorators import handler
-from core.storage.lifecycle_stats import compute_lifecycle_counts
+from core.storage.lifecycle_stats import (
+    LIFECYCLE_COUNTS_SQL,
+    compute_lifecycle_counts,
+    lifecycle_counts_from_rows,
+)
 
 from ._dau_image import render_dau_image
 from ._reply import reply
@@ -91,6 +95,44 @@ def _count_json_array(raw):
         return 0
 
 
+def _count_group_users(all_groups):
+    """逐群解析 users JSON 数人数并排序 (纯 CPU, 在线程池执行)"""
+    counts = [(g['group_id'], _count_json_array(g.get('users'))) for g in (all_groups or [])]
+    counts.sort(key=lambda x: x[1], reverse=True)
+    return counts
+
+
+# 单次扫描内完成当前群人数/最大群/排名, 不将全部 users JSON 搬回 Python
+_GROUP_STATS_SQL = """
+    WITH c AS MATERIALIZED (
+        SELECT group_id,
+               CASE WHEN users IS NULL OR users = '' OR users = '[]' THEN 0
+                    ELSE json_array_length(users) END AS cnt
+        FROM groups_users
+    )
+    SELECT (SELECT cnt FROM c WHERE group_id = ?1) AS cur,
+           (SELECT group_id FROM c ORDER BY cnt DESC LIMIT 1) AS top_gid,
+           (SELECT MAX(cnt) FROM c) AS top_cnt,
+           (SELECT COUNT(*) + 1 FROM c
+            WHERE cnt > (SELECT cnt FROM c WHERE group_id = ?1)) AS rank
+"""
+
+
+async def _query_group_stats(ls, cur_gid):
+    """返回 (当前群人数, 最大群id, 最大群人数, 当前群排名); SQLite 无 JSON 函数时回退 Python 统计"""
+    try:
+        rows = await ls.db_fetch_all(_GROUP_STATS_SQL, (cur_gid or '',))
+        r = rows[0] if rows else {}
+        return r.get('cur'), r.get('top_gid'), r.get('top_cnt'), r.get('rank')
+    except Exception:
+        all_groups = await ls.db_fetch_all('SELECT group_id, users FROM groups_users')
+        counts = await asyncio.to_thread(_count_group_users, all_groups)
+        cur = next((c for gid, c in counts if gid == cur_gid), None)
+        rank = next((i for i, (gid, _) in enumerate(counts, 1) if gid == cur_gid), None)
+        top_gid, top_cnt = counts[0] if counts else (None, None)
+        return cur, top_gid, top_cnt, rank
+
+
 def _fmt_diff(label, val, y_val, emoji):
     if y_val is not None:
         diff = val - y_val
@@ -148,14 +190,17 @@ def _query_today_stats_sync(bot):
         date=today,
     )
 
-    lifecycle = q(
-        'lifecycle',
-        'SELECT type, user_id, group_id FROM log ORDER BY id',
-        date=today,
-    )
-    counts = compute_lifecycle_counts(
-        (r.get('type', ''), r.get('user_id', ''), r.get('group_id', '')) for r in lifecycle
-    )
+    try:
+        counts = lifecycle_counts_from_rows(q('lifecycle', LIFECYCLE_COUNTS_SQL, date=today))
+    except Exception:
+        lifecycle = q(
+            'lifecycle',
+            'SELECT type, user_id, group_id FROM log ORDER BY id',
+            date=today,
+        )
+        counts = compute_lifecycle_counts(
+            (r.get('type', ''), r.get('user_id', ''), r.get('group_id', '')) for r in lifecycle
+        )
     stats['group_join'] = counts['group_join_count']
     stats['group_leave'] = counts['group_leave_count']
     return stats
@@ -263,39 +308,30 @@ async def get_stats(event, match):
     users_q = ls.db_fetch_value('SELECT COUNT(*) FROM users', default=0)
     groups_q = ls.db_fetch_value('SELECT COUNT(*) FROM groups_users', default=0)
     members_q = ls.db_fetch_value('SELECT COUNT(*) FROM members', default=0)
-    all_groups_q = ls.db_fetch_all('SELECT group_id, users FROM groups_users')
+    cur_gid = event.group_id if event.is_group else None
+    group_stats_q = _query_group_stats(ls, cur_gid)
 
-    user_count, group_count, member_count, all_groups = await asyncio.gather(users_q, groups_q, members_q, all_groups_q)
-
-    # Python 端统计各群人数 (不依赖 SQLite JSON 扩展)
-    group_counts = [(g['group_id'], _count_json_array(g.get('users'))) for g in (all_groups or [])]
-    group_counts.sort(key=lambda x: x[1], reverse=True)
+    user_count, group_count, member_count, (cur, top_gid, top_cnt, rank) = await asyncio.gather(
+        users_q, groups_q, members_q, group_stats_q
+    )
 
     info = [
         f'<@{event.user_id}>',
         f'📊 [{bot.name}] 统计信息',
     ]
 
-    # 当前群成员数
-    if event.is_group and event.group_id:
-        cur = next((c for gid, c in group_counts if gid == event.group_id), None)
-        if cur is not None:
-            info.append(f'👥 当前群成员: {cur}')
+    if cur_gid and cur is not None:
+        info.append(f'👥 当前群成员: {cur}')
 
     info.append(f'👤 好友总数: {member_count}')
     info.append(f'👥 群组总数: {group_count}')
     info.append(f'👥 所有用户数: {user_count}')
 
-    if group_counts:
-        gid, cnt = group_counts[0]
-        info.append(f'🔝 最大群: {_mask_id(gid)} ({cnt}人)')
+    if top_gid is not None:
+        info.append(f'🔝 最大群: {_mask_id(top_gid)} ({top_cnt}人)')
 
-    # 当前群排名
-    if event.is_group and event.group_id:
-        for i, (gid, _) in enumerate(group_counts, 1):
-            if gid == event.group_id:
-                info.append(f'📈 当前群排名: 第{i}名')
-                break
+    if cur_gid and cur is not None and rank is not None:
+        info.append(f'📈 当前群排名: 第{rank}名')
 
     elapsed = round((time.time() - t0) * 1000)
     info.append(f'🕒 查询耗时: {elapsed}ms')
