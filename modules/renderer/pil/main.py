@@ -14,6 +14,7 @@ CPU 密集的 PIL 渲染放到独立子进程执行 (独立 GIL, 不卡主进程
 
 import asyncio
 import contextlib
+import ctypes
 import multiprocessing
 import os
 import pickle
@@ -27,12 +28,27 @@ from modules.renderer.base import IdleEngine
 
 log = get_logger(EXTENSION, 'PIL渲染池')
 
+try:
+    _libc = ctypes.CDLL('libc.so.6')
+except OSError:
+    _libc = None
+
+
+def _trim_memory():
+    """把 glibc 空闲堆内存归还系统: PIL 大图渲染后 free 的内存默认留在 arena 里不还,
+    长命子进程 RSS 会居高不下, malloc_trim(0) 主动收缩。非 glibc 平台静默跳过。"""
+    if _libc is not None:
+        with contextlib.suppress(Exception):
+            _libc.malloc_trim(0)
+
+
 _DEFAULTS = {
     'min_workers': 1,
     'max_workers': 2,
     'max_concurrent': 4,
     'idle_timeout': 300,
     'task_timeout': 60,
+    'max_tasks_per_worker': 300,
 }
 
 _COMMENTS = {
@@ -41,23 +57,28 @@ _COMMENTS = {
     'max_concurrent': '最大并发渲染任务数 (超出排队)',
     'idle_timeout': '弹性子进程空闲回收 (秒)',
     'task_timeout': '单次渲染超时 (秒)',
+    'max_tasks_per_worker': '常驻池累计渲染多少次后重建以释放内存 (PIL/字体缓存等常驻累积), 0=不重建',
 }
 
 
 def _invoke(fn, args, kwargs):
-    """子进程侧执行入口"""
-    return fn(*args, **kwargs)
+    """子进程侧执行入口: 渲染后归还空闲堆内存, 避免子进程 RSS 随大图渲染累积"""
+    try:
+        return fn(*args, **kwargs)
+    finally:
+        _trim_memory()
 
 
 class PILRenderPool(IdleEngine):
     """PIL 子进程渲染池 — 常驻池 + 弹性池 (空闲回收, 崩溃重建)"""
 
-    __slots__ = ('_resident', '_burst')
+    __slots__ = ('_resident', '_burst', '_resident_tasks')
 
     def __init__(self, cfg):
         super().__init__(cfg, cfg.get('max_concurrent', 4))
         self._resident = None
         self._burst = None
+        self._resident_tasks = 0
 
     async def render(self, fn, *args, **kwargs):
         """在子进程池执行同步渲染函数并返回结果"""
@@ -75,6 +96,7 @@ class PILRenderPool(IdleEngine):
             finally:
                 self._active -= 1
                 self._mark_released()
+                await self._maybe_recycle_resident()
 
     async def _run_in_pool(self, fn, args, kwargs, retried):
         pool = await self._pick_pool()
@@ -82,7 +104,10 @@ class PILRenderPool(IdleEngine):
         timeout = self._cfg.get('task_timeout', 60)
         try:
             fut = loop.run_in_executor(pool, _invoke, fn, args, kwargs)
-            return await asyncio.wait_for(fut, timeout=timeout)
+            result = await asyncio.wait_for(fut, timeout=timeout)
+            if pool is self._resident:
+                self._resident_tasks += 1
+            return result
         except TimeoutError:
             # 卡住的 worker 不会随 future 取消, 回收整个池避免后续任务排队在死进程后面
             fut.cancel()
@@ -139,6 +164,17 @@ class PILRenderPool(IdleEngine):
         for pid in procs:
             with contextlib.suppress(Exception):
                 os.kill(pid, signal.SIGKILL)
+
+    async def _maybe_recycle_resident(self):
+        """常驻池累计任务达阈值且当前空闲时重建, 释放子进程内累积的内存"""
+        limit = self._cfg.get('max_tasks_per_worker', 300)
+        if not limit or self._active != 0:
+            return
+        if self._resident is not None and self._resident_tasks >= limit:
+            pool = self._resident
+            self._resident_tasks = 0
+            await self._discard(pool)
+            log.info(f'PIL 常驻渲染进程池已达 {limit} 次任务, 重建以释放内存')
 
     async def _release_idle(self):
         """空闲超时只回收弹性池, 常驻池保留"""
