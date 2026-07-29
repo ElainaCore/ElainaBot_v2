@@ -15,7 +15,9 @@ CPU 密集的 PIL 渲染放到独立子进程执行 (独立 GIL, 不卡主进程
 import asyncio
 import contextlib
 import multiprocessing
+import os
 import pickle
+import signal
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 
@@ -77,9 +79,16 @@ class PILRenderPool(IdleEngine):
     async def _run_in_pool(self, fn, args, kwargs, retried):
         pool = await self._pick_pool()
         loop = asyncio.get_running_loop()
+        timeout = self._cfg.get('task_timeout', 60)
         try:
             fut = loop.run_in_executor(pool, _invoke, fn, args, kwargs)
-            return await asyncio.wait_for(fut, timeout=self._cfg.get('task_timeout', 60))
+            return await asyncio.wait_for(fut, timeout=timeout)
+        except TimeoutError:
+            # 卡住的 worker 不会随 future 取消, 回收整个池避免后续任务排队在死进程后面
+            fut.cancel()
+            await self._discard(pool)
+            log.warning(f'渲染任务 {getattr(fn, "__name__", fn)} 超时({timeout}s), 已回收渲染进程池')
+            raise
         except BrokenProcessPool as e:
             await self._discard(pool)
             if retried:
@@ -124,8 +133,12 @@ class PILRenderPool(IdleEngine):
                 self._resident = None
             elif pool is self._burst:
                 self._burst = None
+        procs = list(getattr(pool, '_processes', None) or {})
         with contextlib.suppress(Exception):
             pool.shutdown(wait=False, cancel_futures=True)
+        for pid in procs:
+            with contextlib.suppress(Exception):
+                os.kill(pid, signal.SIGKILL)
 
     async def _release_idle(self):
         """空闲超时只回收弹性池, 常驻池保留"""

@@ -177,7 +177,7 @@ def get_routes() -> list:
         web.post('/api/openapi/webhook/check', _(openapi_handler.handle_check_webhook)),
         web.post('/api/openapi/webhook/auth-qr', _(openapi_handler.handle_get_webhook_auth_qr)),
         web.post('/api/openapi/webhook/set', _(openapi_handler.handle_set_webhook)),
-        # ── 新版开放平台 (v2, 内测) ──
+        # ── 新版开放平台 (v2) ──
         web.post('/api/openapi/v2/start-login', _(openapi_handler.handle_v2_start_login)),
         web.post('/api/openapi/v2/check-login', _(openapi_handler.handle_v2_check_login)),
         web.post('/api/openapi/v2/status', _(openapi_handler.handle_v2_status)),
@@ -185,6 +185,7 @@ def get_routes() -> list:
         web.post('/api/openapi/v2/switch-developer', _(openapi_handler.handle_v2_switch_developer)),
         web.post('/api/openapi/v2/proxy', _(openapi_handler.handle_v2_proxy)),
         web.post('/api/openapi/v2/upload-avatar', _(openapi_handler.handle_v2_upload_avatar)),
+        web.post('/api/openapi/v2/webhook-suggest', _(openapi_handler.handle_v2_webhook_suggest)),
         # ── 自定义页面 ──
         web.get('/api/web-pages', _(handle_get_web_pages)),
         web.get('/api/web-pages/{key}', _(handle_get_web_page_html)),

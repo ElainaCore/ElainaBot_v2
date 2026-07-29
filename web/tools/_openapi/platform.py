@@ -9,8 +9,6 @@ import web.tools._openapi.handler as h
 
 log = logging.getLogger('ElainaBot.web.openapi')
 
-_WEBHOOK_ALLOWED_PORTS = {'80', '8080', '443', '8443'}
-
 
 # ==================== 机器人数据 ====================
 
@@ -344,18 +342,7 @@ async def handle_webhook_suggest(request: web.Request):
     appid = body.get('appid') or ud.get('appId')
     if not appid:
         return h._err('缺少 AppID')
-    has_bot = bool(h._bot_manager and str(appid) in h._bot_manager._bots)
-    scheme = request.headers.get('X-Forwarded-Proto', request.scheme)
-    host = request.headers.get('X-Forwarded-Host', request.host)
-    port = host.split(':')[1] if ':' in host else ('443' if scheme == 'https' else '80')
-    port_allowed = port in _WEBHOOK_ALLOWED_PORTS
-    url = f'{scheme}://{host}/?appid={appid}'
-    return h._ok(
-        available=has_bot and port_allowed,
-        url=url,
-        has_bot=has_bot,
-        port_allowed=port_allowed,
-    )
+    return h._ok(**h._webhook_suggestion(request, appid))
 
 
 async def handle_check_webhook(request: web.Request):

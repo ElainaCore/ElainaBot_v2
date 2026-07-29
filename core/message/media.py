@@ -33,6 +33,7 @@ async def upload_media_bytes(sender, file_bytes, file_type, endpoint, *, file_na
                 result = await _chunked_upload_from_bytes(sender, file_bytes, file_type, endpoint, file_name=file_name)
                 if result:
                     return result
+                last_err = '分片上传返回空结果 (无 file_info)'
             except Exception as e:
                 last_err = e
                 log.warning(f'[{sender._appid}] 分片上传第{retry + 1}次失败: {e}')

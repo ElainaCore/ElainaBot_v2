@@ -8,7 +8,13 @@ from aiohttp.web_request import FileField
 import web.tools._openapi.handler as h
 from web.tools._bot.api import extract_login_creds, parse_login_developers
 
-_V2_ALLOWED_PREFIXES = ('/cgi-bin/v2/', '/bopen/v2/', '/api/v3/login/', '/api/v1/logout')
+_V2_ALLOWED_PREFIXES = (
+    '/cgi-bin/v2/',
+    '/bopen/v2/',
+    '/api/v3/login/',
+    '/api/v1/logout',
+    '/cgi-bin/callback/check_webhook',
+)
 
 _AVATAR_MAX_SIZE = 2 * 1024 * 1024
 
@@ -215,6 +221,17 @@ async def handle_v2_proxy(request: web.Request):
         h._remove_v2(user_id)
         return h._err(relogin_message, relogin=True)
     return web.json_response(result)
+
+
+async def handle_v2_webhook_suggest(request: web.Request):
+    body = await request.json()
+    ud = h._v2_get(body.get('user_id', 'web_user'))
+    if not ud:
+        return h._err('未登录')
+    appid = body.get('appid') or body.get('bot_appid')
+    if not appid:
+        return h._err('缺少 AppID')
+    return h._ok(**h._webhook_suggestion(request, appid))
 
 
 async def handle_v2_upload_avatar(request: web.Request):
