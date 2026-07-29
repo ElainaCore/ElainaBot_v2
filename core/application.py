@@ -315,9 +315,9 @@ class Application(EventHandlerMixin):
     async def shutdown(self):
         log.info('正在关闭...')
 
-        if self._restart_requested:
-            # 重启时整体关闭限时 2 秒, 超时强制重新拉起
-            threading.Thread(target=lambda: (time.sleep(2), relaunch()), daemon=True).start()
+        # 整体关闭限时 10 秒, 超时强制退出 (重启时强制重新拉起)
+        force = relaunch if self._restart_requested else lambda: os._exit(0)
+        threading.Thread(target=lambda: (time.sleep(10), force()), daemon=True).start()
 
         if self._plugin_manager:
             self._plugin_manager.stop_watcher()
@@ -326,6 +326,10 @@ class Application(EventHandlerMixin):
         for svc in (self._config_watcher, self._media_cleanup, self._restart_scheduler):
             if svc:
                 svc.stop()
+
+        # 先关 HTTP 服务器尽早释放监听端口, 避免重启后新进程绑定失败
+        if self._http_server:
+            await self._http_server.stop(timeout=5)
 
         # 按依赖顺序关闭
         cleanup = [
@@ -338,12 +342,9 @@ class Application(EventHandlerMixin):
         for coro in cleanup:
             if coro:
                 try:
-                    await asyncio.wait_for(coro, timeout=10)
+                    await asyncio.wait_for(coro, timeout=3)
                 except TimeoutError:
-                    log.warning(f'关闭超时(10s), 跳过: {coro}')
-
-        if self._http_server:
-            await self._http_server.stop(timeout=5)
+                    log.warning(f'关闭超时(3s), 跳过: {coro}')
 
         log.info('已关闭')
 

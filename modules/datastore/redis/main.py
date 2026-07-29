@@ -7,6 +7,7 @@
 完整操作: 基础 Key / Hash / List / Set / Sorted Set / Pipeline / 管理命令
 """
 
+import asyncio
 import contextlib
 
 _DEFAULTS = {
@@ -354,3 +355,64 @@ class RedisPool:
     async def ping(self):
         """连通性测试"""
         return bool(await self._safe('PING', self._client.ping(), default=False))
+
+
+# ==================== 跨模块重载存活的连接池持有器 ====================
+# reload 仅 pop `modules.datastore` 主模块, 本子模块留在 sys.modules 中,
+# 因此这里的全局持有器可跨 datastore 重载存活, 实现客户端平滑热更 (无重连空窗)。
+
+_holder = {'sig': None, 'pool': None, 'pending_close': None}
+
+_SIG_KEYS = (
+    'host', 'port', 'password', 'db', 'max_connections', 'pool_timeout',
+    'socket_timeout', 'socket_connect_timeout', 'health_check_interval',
+    'retry_attempts', 'decode_responses',
+)
+
+
+def _sig(cfg):
+    return tuple(str(cfg.get(k)) for k in _SIG_KEYS)
+
+
+async def get_pool(cfg, log):
+    """获取 Redis 客户端: 配置未变复用已连接客户端, 变则新建并关旧 (平滑热更)"""
+    pc = _holder['pending_close']
+    if pc is not None and not pc.done():
+        pc.cancel()
+    _holder['pending_close'] = None
+
+    sig = _sig(cfg)
+    if _holder['pool'] is not None and _holder['sig'] == sig and _holder['pool'].is_available():
+        return _holder['pool']
+
+    old = _holder['pool']
+    pool = RedisPool(cfg, log)
+    await pool.initialize()
+    _holder['sig'] = sig
+    _holder['pool'] = pool
+    if old is not None:
+        with contextlib.suppress(Exception):
+            await old.close()
+    return pool
+
+
+def schedule_close(delay=3):
+    """teardown 调用: 延迟关闭当前客户端; delay 内若再次 get_pool 则被取消"""
+    if _holder['pool'] is None:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+
+    async def _close():
+        await asyncio.sleep(delay)
+        pool = _holder['pool']
+        _holder['sig'] = None
+        _holder['pool'] = None
+        _holder['pending_close'] = None
+        if pool is not None:
+            with contextlib.suppress(Exception):
+                await pool.close()
+
+    _holder['pending_close'] = loop.create_task(_close())

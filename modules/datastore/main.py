@@ -53,26 +53,25 @@ async def setup(ctx):
     global _instance
     cfg = ctx.ensure_config(_DEFAULTS, comments=_COMMENTS)
 
-    from modules.datastore.mysql.main import _COMMENTS as MYSQL_COMMENTS
-    from modules.datastore.mysql.main import _DEFAULTS as MYSQL_DEFAULTS
-    from modules.datastore.mysql.main import MySQLPool
-    from modules.datastore.redis.main import _COMMENTS as REDIS_COMMENTS
-    from modules.datastore.redis.main import _DEFAULTS as REDIS_DEFAULTS
-    from modules.datastore.redis.main import RedisPool
+    from modules.datastore.mysql import main as mysql_mod
+    from modules.datastore.redis import main as redis_mod
 
     mysql_inst = None
     redis_inst = None
 
-    mysql_cfg = ctx.ensure_config(MYSQL_DEFAULTS, filename='mysql.yaml', comments=MYSQL_COMMENTS)
-    redis_cfg = ctx.ensure_config(REDIS_DEFAULTS, filename='redis.yaml', comments=REDIS_COMMENTS)
+    mysql_cfg = ctx.ensure_config(mysql_mod._DEFAULTS, filename='mysql.yaml', comments=mysql_mod._COMMENTS)
+    redis_cfg = ctx.ensure_config(redis_mod._DEFAULTS, filename='redis.yaml', comments=redis_mod._COMMENTS)
 
+    # 复用跨重载存活的连接池: 配置未变则零重连, 变了才平滑切换, 重载期间服务不中断
     if cfg.get('mysql_enabled', True):
-        mysql_inst = MySQLPool(mysql_cfg, log)
-        await mysql_inst.initialize()
+        mysql_inst = await mysql_mod.get_pool(mysql_cfg, log)
+    else:
+        mysql_mod.schedule_close()
 
     if cfg.get('redis_enabled', False):
-        redis_inst = RedisPool(redis_cfg, log)
-        await redis_inst.initialize()
+        redis_inst = await redis_mod.get_pool(redis_cfg, log)
+    else:
+        redis_mod.schedule_close()
 
     _instance = DataStore(mysql_inst, redis_inst)
 
@@ -96,10 +95,15 @@ async def setup(ctx):
 
 
 async def teardown():
+    """延迟关闭连接池: 若是配置重载, setup 会在延迟内接管现有池实现平滑热更;
+    若是真正 disable, 延迟到期后连接池自动关闭。
+    """
     global _instance
-    if _instance:
-        await _instance.close()
-        _instance = None
+    from modules.datastore.mysql import main as mysql_mod
+    from modules.datastore.redis import main as redis_mod
+    mysql_mod.schedule_close()
+    redis_mod.schedule_close()
+    _instance = None
 
 
 # ==================== DataStore ====================

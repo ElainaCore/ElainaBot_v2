@@ -6,6 +6,7 @@
 """
 
 import asyncio
+import contextlib
 import time
 
 _DEFAULTS = {
@@ -259,3 +260,63 @@ class MySQLPool:
             return True
         except Exception:
             return False
+
+
+# ==================== 跨模块重载存活的连接池持有器 ====================
+# reload 仅 pop `modules.datastore` 主模块, 本子模块留在 sys.modules 中,
+# 因此这里的全局持有器可跨 datastore 重载存活, 实现连接池平滑热更 (无重连空窗)。
+
+_holder = {'sig': None, 'pool': None, 'pending_close': None}
+
+_SIG_KEYS = (
+    'host', 'port', 'user', 'password', 'database', 'charset', 'minsize', 'maxsize',
+    'connect_timeout', 'acquire_timeout', 'pool_recycle', 'autocommit',
+)
+
+
+def _sig(cfg):
+    return tuple(str(cfg.get(k)) for k in _SIG_KEYS)
+
+
+async def get_pool(cfg, log):
+    """获取 MySQL 连接池: 配置未变复用已连接池, 变则新建并关旧池 (平滑热更)"""
+    pc = _holder['pending_close']
+    if pc is not None and not pc.done():
+        pc.cancel()  # 取消 teardown 安排的延迟关闭, 本次 setup 接管现有池
+    _holder['pending_close'] = None
+
+    sig = _sig(cfg)
+    if _holder['pool'] is not None and _holder['sig'] == sig and _holder['pool'].is_available():
+        return _holder['pool']
+
+    old = _holder['pool']
+    pool = MySQLPool(cfg, log)
+    await pool.initialize()
+    _holder['sig'] = sig
+    _holder['pool'] = pool
+    if old is not None:
+        with contextlib.suppress(Exception):
+            await old.close()
+    return pool
+
+
+def schedule_close(delay=3):
+    """teardown 调用: 延迟关闭当前池; delay 内若再次 get_pool 则被取消 (区分 reload 与真正 disable)"""
+    if _holder['pool'] is None:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+
+    async def _close():
+        await asyncio.sleep(delay)
+        pool = _holder['pool']
+        _holder['sig'] = None
+        _holder['pool'] = None
+        _holder['pending_close'] = None
+        if pool is not None:
+            with contextlib.suppress(Exception):
+                await pool.close()
+
+    _holder['pending_close'] = loop.create_task(_close())
