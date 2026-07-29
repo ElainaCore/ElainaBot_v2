@@ -19,6 +19,7 @@ import pickle
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 
+from core.base.fork_utils import close_inherited_listen_sockets
 from core.base.logger import EXTENSION, get_logger
 from modules.renderer.base import IdleEngine
 
@@ -108,7 +109,7 @@ class PILRenderPool(IdleEngine):
             except ValueError as e:
                 raise RuntimeError('当前平台不支持 fork, PIL 子进程渲染池不可用') from e
             # fork 继承已加载的插件模块, 子进程可直接执行插件的渲染函数
-            pool = ProcessPoolExecutor(max_workers=workers, mp_context=mp_ctx)
+            pool = ProcessPoolExecutor(max_workers=workers, mp_context=mp_ctx, initializer=close_inherited_listen_sockets)
             if resident:
                 self._resident = pool
             else:

@@ -21,6 +21,7 @@ import threading
 from concurrent.futures import ProcessPoolExecutor
 from functools import partial
 
+from core.base.fork_utils import close_inherited_listen_sockets
 from core.base.logger import FRAMEWORK, get_logger
 
 log = get_logger(FRAMEWORK, 'silk转换')
@@ -130,7 +131,7 @@ def _get_pool() -> ProcessPoolExecutor:
     global _pool
     with _pool_lock:
         if _pool is None:
-            _pool = ProcessPoolExecutor(max_workers=1)
+            _pool = ProcessPoolExecutor(max_workers=1, initializer=close_inherited_listen_sockets)
         return _pool
 
 
