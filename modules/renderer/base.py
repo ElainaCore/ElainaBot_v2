@@ -29,11 +29,15 @@ class IdleEngine:
         if self._cleanup_task is None or self._cleanup_task.done():
             self._cleanup_task = asyncio.create_task(self._idle_loop(interval))
 
+    def _idle_threshold(self):
+        """触发 _release_idle 的最小空闲秒数, 0 表示不回收"""
+        return self._cfg.get('idle_timeout', 300)
+
     async def _idle_loop(self, interval):
-        timeout = self._cfg.get('idle_timeout', 300)
         while True:
             await asyncio.sleep(interval)
-            if self._active == 0 and self._last_release and time.monotonic() - self._last_release >= timeout:
+            timeout = self._idle_threshold()
+            if timeout and self._active == 0 and self._last_release and time.monotonic() - self._last_release >= timeout:
                 with contextlib.suppress(Exception):
                     await self._release_idle()
 

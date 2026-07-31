@@ -19,6 +19,7 @@ import multiprocessing
 import os
 import pickle
 import signal
+import time
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 
@@ -47,15 +48,17 @@ _DEFAULTS = {
     'max_workers': 2,
     'max_concurrent': 4,
     'idle_timeout': 300,
+    'resident_idle_timeout': 0,
     'task_timeout': 60,
     'max_tasks_per_worker': 300,
 }
 
 _COMMENTS = {
-    'min_workers': '常驻渲染子进程数 (首次使用时创建, 不随空闲回收; 0=不常驻)',
+    'min_workers': '常驻渲染子进程数 (首次使用时创建; 0=不常驻)',
     'max_workers': '最大渲染子进程数 (超出常驻的弹性部分按需创建, 空闲自动回收)',
     'max_concurrent': '最大并发渲染任务数 (超出排队)',
     'idle_timeout': '弹性子进程空闲回收 (秒)',
+    'resident_idle_timeout': '常驻子进程空闲回收 (秒), 0=不回收, 回收后下次使用时重新创建',
     'task_timeout': '单次渲染超时 (秒)',
     'max_tasks_per_worker': '常驻池累计渲染多少次后重建以释放内存 (PIL/字体缓存等常驻累积), 0=不重建',
 }
@@ -146,6 +149,8 @@ class PILRenderPool(IdleEngine):
             pool = ProcessPoolExecutor(max_workers=workers, mp_context=mp_ctx, initializer=close_inherited_listen_sockets)
             if resident:
                 self._resident = pool
+                if self._cfg.get('resident_idle_timeout', 0):
+                    self._start_idle_cleanup(60)
             else:
                 self._burst = pool
                 self._start_idle_cleanup(60)
@@ -176,11 +181,27 @@ class PILRenderPool(IdleEngine):
             await self._discard(pool)
             log.info(f'PIL 常驻渲染进程池已达 {limit} 次任务, 重建以释放内存')
 
+    def _idle_threshold(self):
+        timeouts = [
+            t for t, pool in (
+                (self._cfg.get('idle_timeout', 300), self._burst),
+                (self._cfg.get('resident_idle_timeout', 0), self._resident),
+            ) if t and pool is not None
+        ]
+        return min(timeouts) if timeouts else 0
+
     async def _release_idle(self):
-        """空闲超时只回收弹性池, 常驻池保留"""
-        if self._burst is not None:
+        """空闲超时按各自阈值回收弹性池与常驻池"""
+        elapsed = time.monotonic() - self._last_release
+        if self._burst is not None and elapsed >= self._cfg.get('idle_timeout', 300):
             await self._discard(self._burst)
             log.info('PIL 弹性渲染进程池空闲回收')
+        resident_timeout = self._cfg.get('resident_idle_timeout', 0)
+        if resident_timeout and self._resident is not None and elapsed >= resident_timeout:
+            pool = self._resident
+            self._resident_tasks = 0
+            await self._discard(pool)
+            log.info('PIL 常驻渲染进程池空闲回收')
 
     async def close(self):
         self._closed = True
