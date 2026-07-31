@@ -2,7 +2,6 @@
 """WebSocket 客户端 — 异步, 每个机器人独立 WS 连接接收事件"""
 
 import asyncio
-import contextlib
 import json
 import platform as _platform
 import ssl as _ssl_mod
@@ -25,7 +24,6 @@ _OP_RECONNECT = 7
 _OP_INVALID_SESSION = 9
 _OP_HELLO = 10
 _OP_HEARTBEAT_ACK = 11
-_OP_EVENT_ACK = 12
 
 # 事件并发上限, 避免高频事件下 create_task 堆积致 OOM
 _MAX_INFLIGHT_EVENTS = 256
@@ -54,6 +52,7 @@ class WSClient:
         token_manager,
         on_event,
         *,
+        ack_interaction,
         reconnect_interval=5,
         max_reconnects=-1,
         custom_url='',
@@ -63,6 +62,7 @@ class WSClient:
         self._appid = str(appid)
         self._tm = token_manager
         self._on_event = on_event
+        self._ack_interaction = ack_interaction
         self._reconnect_interval = reconnect_interval
         self._max_reconnects = max_reconnects
         self._custom_url = custom_url.strip() if custom_url else ''
@@ -170,23 +170,23 @@ class WSClient:
             event = Event.from_websocket(self._appid, payload)
             log.debug(f'[{self._appid}] WS事件: {event}')
             if event_type == 'INTERACTION_CREATE':
-                # 分发插件后用其 code 发 op12 ACK (独立任务等待, 不阻塞读取循环)
+                # 分发插件后用其 code 回复交互回调 (独立任务等待, 不阻塞读取循环)
                 event.start_ack_countdown()
                 task = spawn(self._dispatch_with_backpressure(event))
                 task.add_done_callback(lambda t, ev=event: ev.finish_dispatch())
-                spawn(self._ack_interaction_when_ready(event, payload))
+                spawn(self._ack_interaction_when_ready(event))
             else:
                 spawn(self._dispatch_with_backpressure(event))
         except Exception as e:
             log.error(f'[{self._appid}] 事件处理异常: {e}')
 
-    async def _ack_interaction_when_ready(self, event, payload):
-        """等待插件设置 code (或分发结束/超时) 后发送 op12 ACK。"""
+    async def _ack_interaction_when_ready(self, event):
+        """等待插件设置 code (或分发结束/超时) 后通过 HTTP PUT /interactions 回复 (与 WH 链路一致)。"""
+        code = await event.wait_ack_code()
         try:
-            code = await event.wait_ack_code()
-        except Exception:
-            code = 0
-        await self._send_event_ack(payload, code)
+            await self._ack_interaction(event, code)
+        except Exception as e:
+            log.warning(f'[{self._appid}] 交互回调 ACK 异常: {e}')
 
     async def _dispatch_with_backpressure(self, event):
         """背压包装: Semaphore 控制并发, 满载时新事件等待空闲槽位"""
@@ -195,11 +195,6 @@ class WSClient:
                 await self._on_event(event)
             except Exception as e:
                 log.error(f'[{self._appid}] 事件回调异常: {e}')
-
-    async def _send_event_ack(self, payload, code=0):
-        """回复事件确认 (op 12)"""
-        with contextlib.suppress(Exception):
-            await self._ws.send(json.dumps({'op': _OP_EVENT_ACK, 'code': code}))
 
     async def _send_op(self, op, data, label=''):
         """发送 WS 操作帧"""

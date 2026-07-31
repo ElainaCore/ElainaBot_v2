@@ -149,6 +149,7 @@ class BotRegistry:
                     appid=appid,
                     token_manager=bot.token_manager,
                     on_event=self._on_event,
+                    ack_interaction=bot.sender.ack_interaction,
                     reconnect_interval=ws_cfg.get('reconnect_interval', 5),
                     max_reconnects=ws_cfg.get('max_reconnects', -1),
                     custom_url=ws_cfg.get('custom_url', ''),

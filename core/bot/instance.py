@@ -78,6 +78,7 @@ class BotInstance:
                 appid=self.appid,
                 token_manager=self.token_manager,
                 on_event=on_event,
+                ack_interaction=self.sender.ack_interaction,
                 reconnect_interval=ws_cfg.get('reconnect_interval', 5),
                 max_reconnects=ws_cfg.get('max_reconnects', -1),
                 custom_url=ws_cfg.get('custom_url', ''),
