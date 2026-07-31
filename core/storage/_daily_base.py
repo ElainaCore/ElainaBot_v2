@@ -3,8 +3,10 @@
 
 import asyncio
 import contextlib
+import json
 import os
 import re
+import sqlite3
 from datetime import datetime, timedelta
 
 
@@ -74,3 +76,39 @@ class DailyScanService:
 
     def _message_db_path(self, appid, date_str):
         return os.path.join(self._log_dir, appid, date_str, 'message.db')
+
+    @staticmethod
+    def _open_ro(path):
+        """只读打开 SQLite, 返回 conn 或 None"""
+        if not os.path.isfile(path):
+            return None
+        try:
+            conn = sqlite3.connect(f'file:{path}?mode=ro', uri=True, timeout=10)
+            conn.row_factory = sqlite3.Row
+            return conn
+        except sqlite3.Error:
+            return None
+
+    @staticmethod
+    def _decode_json_fields(d, keys):
+        """就地解码 dict 中的 JSON 字符串字段, 返回原 dict"""
+        for k in keys:
+            v = d.get(k)
+            if isinstance(v, str) and v:
+                with contextlib.suppress(Exception):
+                    d[k] = json.loads(v)
+        return d
+
+    async def _run_date_all(self, date_str, per_appid):
+        """对所有 appid 执行指定日期的统计任务, 返回 {appid: bool}"""
+        results = {}
+        appids = self.list_appids()
+        self._logger.info(f'开始统计 [{date_str}], {len(appids)} 个机器人')
+        for appid in appids:
+            try:
+                results[appid] = bool(await per_appid(appid, date_str))
+            except Exception as e:
+                self._logger.warning(f'[{appid}] 统计失败: {e}')
+                results[appid] = False
+        self._logger.info(f'统计完成 [{date_str}]: {sum(results.values())}/{len(results)} 成功')
+        return results

@@ -184,6 +184,10 @@ class _HttpMixin:
                         f'[{self._appid}] 网络异常自动重试 {net_retries}/{_NET_MAX_RETRIES}: '
                         f'{type(e).__name__} {method} {endpoint}'
                     )
+                    self._report_send_error(
+                        f'网络异常自动重试 {net_retries}/{_NET_MAX_RETRIES}: {method} {endpoint}',
+                        _describe_exception(e, method, endpoint),
+                    )
                     await asyncio.sleep(_NET_RETRY_DELAY * net_retries)
                     continue
                 return False, _describe_exception(e, method, endpoint)
@@ -202,6 +206,7 @@ class _HttpMixin:
             and (payload.get('msg_id') or payload.get('event_id'))
         ):
             log.warning(f'[{self._appid}] 接口频率限制, 排队重发被动消息: POST {endpoint}')
+            self._report_send_error(f'接口频率限制, 排队重发被动消息: POST {endpoint}', data, payload)
             await _RESEND_LIMITER.acquire()
             ok, data = await self._request('POST', endpoint, json=payload)
         return ok, data

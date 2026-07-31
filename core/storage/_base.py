@@ -11,7 +11,7 @@ import time
 from collections import defaultdict
 from datetime import datetime, timedelta
 
-from core.base.logger import SERVICE, get_logger
+from core.base.logger import SERVICE, get_logger, now_str
 from core.storage._schema import (
     _INSERTS,
     _QUEUE_MAXSIZE,
@@ -257,7 +257,7 @@ class _BaseLogService:
             if log_type in DAILY_TYPES:
                 groups = defaultdict(list)
                 for item in batch:
-                    ts = item.get('timestamp', datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+                    ts = item.get('timestamp', now_str())
                     row = self._extract_row(log_type, item)
                     if row:
                         groups[ts[:10]].append(row)
@@ -303,6 +303,16 @@ class _BaseLogService:
                 self._last_checkpoint = time.monotonic()
                 await asyncio.get_running_loop().run_in_executor(None, self._checkpoint_wal_sync)
 
+    def _drop_conns(self, db_path):
+        """关闭并移除指定库的读/写连接与锁"""
+        for conns, locks in ((self._conns, self._conn_locks), (self._read_conns, self._read_locks)):
+            conn = conns.pop(db_path, None)
+            locks.pop(db_path, None)
+            if conn:
+                with contextlib.suppress(Exception):
+                    conn.close()
+        self._initialized.discard(db_path)
+
     async def _cleanup_expired(self):
         if self._retention_days <= 0:
             return
@@ -315,18 +325,7 @@ class _BaseLogService:
                 if not (os.path.isdir(path) and _DATE_DIR_RE.fullmatch(name) and name < cutoff):
                     continue
                 for db_file in os.listdir(path):
-                    db_path = os.path.join(path, db_file)
-                    conn = self._conns.pop(db_path, None)
-                    self._conn_locks.pop(db_path, None)
-                    if conn:
-                        with contextlib.suppress(Exception):
-                            conn.close()
-                    rconn = self._read_conns.pop(db_path, None)
-                    self._read_locks.pop(db_path, None)
-                    if rconn:
-                        with contextlib.suppress(Exception):
-                            rconn.close()
-                    self._initialized.discard(db_path)
+                    self._drop_conns(os.path.join(path, db_file))
                 await loop.run_in_executor(None, shutil.rmtree, path, True)
                 removed += 1
         except Exception as e:
@@ -344,18 +343,7 @@ class _BaseLogService:
                 if parent != today and _DATE_DIR_RE.fullmatch(parent):
                     to_close.append(db_path)
             for db_path in to_close:
-                conn = self._conns.pop(db_path, None)
-                self._conn_locks.pop(db_path, None)
-                self._initialized.discard(db_path)
-                if conn:
-                    with contextlib.suppress(Exception):
-                        conn.close()
-                # 同时关闭对应的读连接
-                rconn = self._read_conns.pop(db_path, None)
-                self._read_locks.pop(db_path, None)
-                if rconn:
-                    with contextlib.suppress(Exception):
-                        rconn.close()
+                self._drop_conns(db_path)
         if to_close:
             log.debug(f'[{self._log_tag}] 已关闭 {len(to_close)} 个过期 daily 连接')
 

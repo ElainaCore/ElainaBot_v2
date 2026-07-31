@@ -10,7 +10,7 @@ import sqlite3
 from datetime import datetime, timedelta
 
 from core.base.config import cfg
-from core.base.logger import FRAMEWORK, get_logger
+from core.base.logger import FRAMEWORK, get_logger, now_str
 from core.base.tasks import spawn
 from core.storage._daily_base import DailyScanService
 
@@ -137,17 +137,7 @@ class StatisticsService(DailyScanService):
 
     async def aggregate_date(self, date_str):
         """聚合指定日期所有机器人统计, 返回 {appid: bool}"""
-        results = {}
-        appids = self.list_appids()
-        log.info(f'开始统计 [{date_str}], {len(appids)} 个机器人')
-        for appid in appids:
-            try:
-                results[appid] = await self.aggregate(appid, date_str)
-            except Exception as e:
-                log.warning(f'[{appid}] 统计失败: {e}')
-                results[appid] = False
-        log.info(f'统计完成 [{date_str}]: {sum(results.values())}/{len(results)} 成功')
-        return results
+        return await self._run_date_all(date_str, self.aggregate)
 
     async def aggregate(self, appid, date_str):
         """聚合指定机器人 + 日期的统计 (累加到 statistics.db)"""
@@ -212,7 +202,7 @@ class StatisticsService(DailyScanService):
             # 再次确认幂等 (并发/重入保护)
             if dst.execute('SELECT 1 FROM processed WHERE date=?', (date_str,)).fetchone():
                 return False
-            now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            now = now_str()
 
             users = {}
             groups = {}
@@ -364,17 +354,6 @@ class StatisticsService(DailyScanService):
 
     # ===== 读取 (供 Web / 调试) =====
 
-    @staticmethod
-    def _open_ro(path):
-        if not os.path.isfile(path):
-            return None
-        try:
-            conn = sqlite3.connect(f'file:{path}?mode=ro', uri=True, timeout=10)
-            conn.row_factory = sqlite3.Row
-            return conn
-        except sqlite3.Error:
-            return None
-
     _USER_JSON_KEYS = ('group_messages', 'command_stats', 'daily_messages')
     _GROUP_JSON_KEYS = ('user_messages', 'command_stats', 'daily_messages')
 
@@ -394,13 +373,7 @@ class StatisticsService(DailyScanService):
             row = conn.execute(f"SELECT * FROM {table} WHERE {pk_col}=?", (pk_val,)).fetchone()
             if not row:
                 return None
-            d = dict(row)
-            for k in json_keys:
-                v = d.get(k)
-                if isinstance(v, str) and v:
-                    with contextlib.suppress(Exception):
-                        d[k] = json.loads(v)
-            return d
+            return self._decode_json_fields(dict(row), json_keys)
         except sqlite3.Error:
             return None
         finally:

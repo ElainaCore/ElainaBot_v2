@@ -70,18 +70,7 @@ class DAUService(DailyScanService):
 
     async def regenerate_date(self, date_str):
         """重算指定日期所有机器人 DAU, 返回 {appid: bool}"""
-        results = {}
-        appids = self.list_appids()
-        log.info(f'开始统计 [{date_str}], {len(appids)} 个机器人')
-        for appid in appids:
-            try:
-                ok = await self.regenerate(appid, date_str)
-                results[appid] = ok
-            except Exception as e:
-                log.warning(f'[{appid}] 统计失败: {e}')
-                results[appid] = False
-        log.info(f'统计完成 [{date_str}]: {sum(results.values())}/{len(results)} 成功')
-        return results
+        return await self._run_date_all(date_str, self.regenerate)
 
     async def regenerate(self, appid, date_str):
         """重算指定机器人 + 日期的 DAU"""
@@ -277,18 +266,6 @@ class DAUService(DailyScanService):
         finally:
             conn.close()
 
-    @staticmethod
-    def _open_ro(path):
-        """只读打开 SQLite, 返回 conn 或 None"""
-        if not os.path.isfile(path):
-            return None
-        try:
-            conn = sqlite3.connect(f'file:{path}?mode=ro', uri=True, timeout=10)
-            conn.row_factory = sqlite3.Row
-            return conn
-        except sqlite3.Error:
-            return None
-
     def _load_sync(self, appid, date_str):
         conn = self._open_ro(self._dau_db_path(appid))
         if not conn:
@@ -311,13 +288,5 @@ class DAUService(DailyScanService):
 
     _JSON_KEYS = ('message_stats_detail', 'user_stats_detail', 'command_stats_detail')
 
-    @staticmethod
-    def _row_to_dict(row):
-        d = dict(row)
-        for k in DAUService._JSON_KEYS:
-            v = d.get(k)
-            if not isinstance(v, str) or not v:
-                continue
-            with contextlib.suppress(Exception):
-                d[k] = json.loads(v)
-        return d
+    def _row_to_dict(self, row):
+        return self._decode_json_fields(dict(row), self._JSON_KEYS)

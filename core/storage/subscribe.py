@@ -1,7 +1,8 @@
 """订阅消息服务 (SubscribeMixin) — 模板ID ↔ 群/用户 映射 (subscribe.db)"""
 
 import asyncio
-from datetime import datetime
+
+from core.base.logger import now_str
 
 SUB_TYPE_ONCE = 'once'
 SUB_TYPE_PERMANENT = 'permanent'
@@ -40,7 +41,7 @@ class SubscribeMixin:
             return 0
         target_type = 'group' if group_id else 'user'
         once = {str(t) for t in once_template_ids}
-        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        now = now_str()
         rows = []
         for item in results or []:
             if not isinstance(item, dict):
@@ -114,6 +115,6 @@ class SubscribeMixin:
         with lock:
             conn.execute(
                 'UPDATE log SET status=0, updated_at=? WHERE template_id=? AND target_id=?',
-                (datetime.now().strftime('%Y-%m-%d %H:%M:%S'), str(template_id), str(target_id)),
+                (now_str(), str(template_id), str(target_id)),
             )
             conn.commit()

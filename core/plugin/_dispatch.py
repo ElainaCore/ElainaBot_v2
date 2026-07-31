@@ -313,6 +313,13 @@ class _DispatchMixin:
         content: str,
     ) -> None:
         timeout_ctx = None
+        ctx: dict[str, str] = {
+            'handler': h['name'],
+            'user_id': user_id,
+            'group_id': event.group_id or '',
+            'event_type': et,
+            'content': content[:200],
+        }
         try:
             fn = h['func']
             coro = fn(event, match) if h['is_coro'] else asyncio.get_running_loop().run_in_executor(None, fn, event, match)
@@ -321,44 +328,10 @@ class _DispatchMixin:
                 await coro
         except TimeoutError as e:
             # 区分处理器整体超时与 handler 内部抛出的 TimeoutError (如渲染/网络超时)
-            if timeout_ctx is not None and timeout_ctx.expired():
-                report_error(
-                    PLUGIN,
-                    plugin_name or '?',
-                    f'处理器 [{h["name"]}] 超时(300s)',
-                    context={
-                        'handler': h['name'],
-                        'user_id': user_id,
-                        'event_type': et,
-                        'content': content[:200],
-                    },
-                )
-            else:
-                report_error(
-                    PLUGIN,
-                    plugin_name or '?',
-                    e,
-                    context={
-                        'handler': h['name'],
-                        'user_id': user_id,
-                        'group_id': event.group_id or '',
-                        'event_type': et,
-                        'content': content[:200],
-                    },
-                )
+            err = f'处理器 [{h["name"]}] 超时(300s)' if timeout_ctx is not None and timeout_ctx.expired() else e
+            report_error(PLUGIN, plugin_name or '?', err, context=ctx)
         except Exception as e:
-            report_error(
-                PLUGIN,
-                plugin_name or '?',
-                e,
-                context={
-                    'handler': h['name'],
-                    'user_id': user_id,
-                    'group_id': event.group_id or '',
-                    'event_type': et,
-                    'content': content[:200],
-                },
-            )
+            report_error(PLUGIN, plugin_name or '?', e, context=ctx)
         finally:
             event.raw = event._reply_log_cb = None
 

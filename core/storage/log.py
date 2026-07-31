@@ -6,7 +6,7 @@ import contextlib
 import os
 from datetime import datetime, timedelta
 
-from core.base.logger import SERVICE, get_logger, on_error
+from core.base.logger import SERVICE, get_logger, now_str, on_error
 from core.base.tasks import spawn
 from core.storage._base import _BaseLogService
 from core.storage._schema import (
@@ -100,7 +100,7 @@ class LogService(_BaseLogService, ShareMixin, WakeupMixin, SubscribeMixin):
 
     def _extract_row(self, log_type, data):
         """dict → INSERT 参数元组"""
-        ts = data.get('timestamp', datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+        ts = data.get('timestamp', now_str())
         if log_type == 'message':
             def _s(v): return str(v) if not isinstance(v, str) else v
             return (
@@ -308,5 +308,5 @@ class SharedLogService(_BaseLogService):
         log.info('[通用日志] 已关闭')
 
     def _extract_row(self, log_type, data):
-        ts = data.get('timestamp', datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+        ts = data.get('timestamp', now_str())
         return self._extract_common_row(log_type, data, ts)

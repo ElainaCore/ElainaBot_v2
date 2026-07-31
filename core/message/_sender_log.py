@@ -20,6 +20,17 @@ class _SenderLogMixin:
 
     __slots__ = ()
 
+    def _report_send_error(self, content, data=None, payload=None):
+        """发送链路统一错误写入入口 (错误数据库): 发送失败/限频补发/网络重试共用"""
+        report_error_raw(
+            FRAMEWORK,
+            '消息发送',
+            content=content,
+            tb=json.dumps(data, ensure_ascii=False, default=str) if data else '',
+            context=json.dumps(payload, ensure_ascii=False, default=str) if payload is not None else '',
+            appid=self._appid,
+        )
+
     def _log_push(self, endpoint, payload, content, resp_data=None):
         """主动推送成功后的日志记录"""
         parts = endpoint.strip('/').split('/')
@@ -138,13 +149,10 @@ class _SenderLogMixin:
             remedied = await self._handle_send_failure(endpoint, data, event)
             if not (_is_violation(data) and remedied):
                 raw_event = getattr(event, 'raw', None)
-                report_error_raw(
-                    FRAMEWORK,
-                    '消息发送',
-                    content=json.dumps(raw_event, ensure_ascii=False, default=str) if raw_event else (getattr(event, 'content', '') or ''),
-                    tb=json.dumps(data, ensure_ascii=False, default=str) if data else '',
-                    context=json.dumps(payload, ensure_ascii=False, default=str),
-                    appid=self._appid,
+                self._report_send_error(
+                    json.dumps(raw_event, ensure_ascii=False, default=str) if raw_event else (getattr(event, 'content', '') or ''),
+                    data,
+                    payload,
                 )
             return False, data
 

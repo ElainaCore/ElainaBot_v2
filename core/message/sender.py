@@ -134,7 +134,10 @@ class MessageSender(_HttpMixin, _MediaSendMixin, _SenderLogMixin):
             prompt_buttons=prompt_buttons,
             **kwargs,
         )
+        return await self._reply_send(endpoint, event, payload, content, auto_delete_time)
 
+    async def _reply_send(self, endpoint, event, payload, content, auto_delete_time):
+        """回复发送公共尾部: 发送 + 成功后自动撤回 (reply/reply_ark/reply_card 共用)"""
         success, data = await self._send_with_error_handling(endpoint, payload, event, content)
         if success:
             self._maybe_auto_recall(event, data, auto_delete_time)
@@ -191,10 +194,7 @@ class MessageSender(_HttpMixin, _MediaSendMixin, _SenderLogMixin):
         endpoint = event.reply_endpoint
         if not endpoint:
             return None
-        success, data = await self._send_with_error_handling(endpoint, payload, event, content)
-        if success:
-            self._maybe_auto_recall(event, data, auto_delete_time)
-        return data
+        return await self._reply_send(endpoint, event, payload, content, auto_delete_time)
 
     async def reply_card(self, event, card_type='tuwen', data=None, content='', *, auto_delete_time=None):
         """回复卡片消息 (msg_type=8); data 为 dict 时原样作为 card.content, card_type='tuwen' 时也可传 (标题,描述,图片URL,跳转URL) 元组简写"""
@@ -212,10 +212,7 @@ class MessageSender(_HttpMixin, _MediaSendMixin, _SenderLogMixin):
         endpoint = event.reply_endpoint
         if not endpoint:
             return None
-        success, data = await self._send_with_error_handling(endpoint, payload, event, content)
-        if success:
-            self._maybe_auto_recall(event, data, auto_delete_time)
-        return data
+        return await self._reply_send(endpoint, event, payload, content, auto_delete_time)
 
     # ==================== 主动推送 ====================
 
