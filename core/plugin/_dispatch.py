@@ -109,6 +109,7 @@ class _DispatchMixin:
         if et not in _FULL_CHECK_TYPES:
             handlers = self._handlers_for(et)
             if not handlers:
+                event.finish_dispatch()
                 return False
             scene: int = _event_scene(event)
             matched: list[tuple[dict[str, Any], re.Match[str]]] = []
@@ -125,6 +126,7 @@ class _DispatchMixin:
                 if h.get('block', False):  # 默认放行, block=True 时拦截后续
                     break
             if not matched:
+                event.finish_dispatch()
                 return False
             spawn(self._run_chain(matched, event, user_id, et, content))
             return True
