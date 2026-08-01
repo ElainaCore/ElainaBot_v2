@@ -3,35 +3,38 @@
 import asyncio
 import hashlib
 import os
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from core.base.logger import FRAMEWORK, get_logger
+from core.base.tasks import spawn
 from core.message._http import (
     _MAX_MEDIA_DOWNLOAD,
     MessageType,
+    _msg_seq,
 )
 from core.message.media import _resolve_upload_ep, upload_media_bytes, upload_media_via_url
 from core.message.response import extract_message_id
+from core.message.silk import convert_to_silk
 
 log = get_logger(FRAMEWORK, '消息发送')
-
-
-def _msg_seq():
-    import random
-
-    return random.randint(10000, 999999)
 
 
 class _MediaSendMixin:
     """媒体发送 Mixin"""
 
     _MEDIA_TYPE_NAMES = {1: '图片', 2: '视频', 3: '语音', 4: '文件'}
-    _MEDIA_TYPE_EXTS = {1: '.png', 2: '.mp4', 3: '.mp3', 4: '.dat'}
+    _MEDIA_TYPE_EXTS = {1: '.png', 2: '.mp4', 3: '.silk', 4: '.dat'}
+
+    # 宿主类 (MessageSender) 提供的属性/方法声明
+    _appid: str
+    _ensure_client: Callable[[], Awaitable[Any]]
 
     def _maybe_auto_recall(self, event, data, delay):
         if delay and data:
             mid = extract_message_id(data)
             if mid:
-                asyncio.create_task(self._auto_recall(event, mid, delay))
+                spawn(self._auto_recall(event, mid, delay))
 
     async def download_media(self, url: str):
         try:
@@ -63,7 +66,7 @@ class _MediaSendMixin:
         target_user_id=None,
         target_group_id=None,
         msg_id=None,
-        max_try: int = 3,
+        max_try: int = 1,
     ):
         upload_ep = _resolve_upload_ep(target_group_id, target_user_id, event)
         if not upload_ep:
@@ -89,10 +92,15 @@ class _MediaSendMixin:
                 if file_info:
                     break
             if not file_info:
-                log.debug(f'[{self._appid}] URL直传失败, 回退下载上传: {data}')
                 data = await self.download_media(data)
 
+        # 本地发送语音: 默认先转 silk v3 再上传 (已是 silk / 转换失败则原样发送)
+        if file_type == 3 and not file_info and isinstance(data, bytes):
+            data = await convert_to_silk(data)
+
         if not file_info and not isinstance(data, bytes):
+            if original_url:
+                log.warning(f'[{self._appid}] {type_name}发送失败: URL直传与本地下载均失败 (url={original_url}, resp={event.error if event else None})')
             return None
 
         if original_url:
@@ -101,8 +109,13 @@ class _MediaSendMixin:
             media_label = await self._save_media(data, file_type)
 
         if not file_info:
-            file_info = await upload_media_bytes(self, data, file_type, upload_ep, file_name=file_name)
+            file_info = await upload_media_bytes(self, data, file_type, upload_ep, file_name=file_name, event=event)
         if not file_info:
+            if original_url:
+                log.warning(
+                    f'[{self._appid}] {type_name}发送失败: URL直传与本地上传均失败 '
+                    f'(url={original_url}, resp={event.error if event else None})'
+                )
             return None
         return await self._send_media_payload(
             event,
@@ -186,8 +199,8 @@ class _MediaSendMixin:
         try:
             await asyncio.sleep(delay)
             await self.recall(event, message_id)
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug(f'自动撤回失败: {e}')
 
 
 # ==================== 模块级辅助 ====================

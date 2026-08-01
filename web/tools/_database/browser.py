@@ -1,5 +1,6 @@
 """数据库浏览器 — 查询/浏览/删除/搜索/挂载"""
 
+import contextlib
 import json
 import logging
 import os
@@ -8,6 +9,7 @@ import sqlite3
 
 from aiohttp import web
 
+from core.base.config import cfg
 from web.response import error, ok
 
 log = logging.getLogger('ElainaBot.web.database')
@@ -50,8 +52,6 @@ def _save_mounted(paths):
 
 def _log_base_dir():
     """日志根目录"""
-    from core.base.config import cfg
-
     log_dir = cfg.get('settings', 'logging.dir', 'log')
     return os.path.join(_base_dir, 'data', log_dir)
 
@@ -134,7 +134,7 @@ def _validate_db_path(db_path):
     if not os.path.isfile(abs_path):
         return False, ''
     log_base = os.path.abspath(_log_base_dir())
-    if abs_path.startswith(log_base):
+    if abs_path == log_base or abs_path.startswith(log_base + os.sep):
         return True, abs_path
     mounted = {os.path.abspath(p) for p in _load_mounted()}
     if abs_path in mounted:
@@ -180,33 +180,31 @@ async def handle_list_tables(request: web.Request):
         return error('无效路径', status=403)
 
     try:
-        conn = _open_readonly(abs_path)
-        tables = []
-        for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"):
-            tname = row['name']
-            count_row = conn.execute(f'SELECT COUNT(*) as c FROM "{tname}"').fetchone()
-            count = count_row['c'] if count_row else 0
+        with contextlib.closing(_open_readonly(abs_path)) as conn:
+            tables = []
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"):
+                tname = row['name']
+                count_row = conn.execute(f'SELECT COUNT(*) as c FROM "{tname}"').fetchone()
+                count = count_row['c'] if count_row else 0
 
-            # 获取列信息
-            columns = []
-            for col in conn.execute(f'PRAGMA table_info("{tname}")'):
-                columns.append(
+                # 获取列信息
+                columns = [
                     {
                         'name': col['name'],
                         'type': col['type'],
                         'notnull': bool(col['notnull']),
                         'pk': bool(col['pk']),
                     }
-                )
+                    for col in conn.execute(f'PRAGMA table_info("{tname}")')
+                ]
 
-            tables.append(
-                {
-                    'name': tname,
-                    'count': count,
-                    'columns': columns,
-                }
-            )
-        conn.close()
+                tables.append(
+                    {
+                        'name': tname,
+                        'count': count,
+                        'columns': columns,
+                    }
+                )
         return ok({'tables': tables})
     except Exception as e:
         log.warning(f'列出表失败: {e}')
@@ -238,28 +236,24 @@ async def handle_query_table(request: web.Request):
         order_dir = 'DESC'
 
     try:
-        conn = _open_readonly(abs_path)
+        with contextlib.closing(_open_readonly(abs_path)) as conn:
+            # 总数
+            total = conn.execute(f'SELECT COUNT(*) as c FROM "{table}"').fetchone()['c']
 
-        # 总数
-        total = conn.execute(f'SELECT COUNT(*) as c FROM "{table}"').fetchone()['c']
+            # 排序 (默认按 rowid 倒序)
+            order_clause = f'ORDER BY "{order_by}" {order_dir}' if order_by and re.match(r'^[\w]+$', order_by) else 'ORDER BY rowid DESC'
 
-        # 排序 (默认按 rowid 倒序)
-        order_clause = f'ORDER BY "{order_by}" {order_dir}' if order_by and re.match(r'^[\w]+$', order_by) else 'ORDER BY rowid DESC'
+            offset = (page - 1) * page_size
+            rows = conn.execute(
+                f'SELECT rowid AS _rowid, * FROM "{table}" {order_clause} LIMIT ? OFFSET ?',
+                (page_size, offset),
+            ).fetchall()
 
-        offset = (page - 1) * page_size
-        rows = conn.execute(
-            f'SELECT rowid AS _rowid, * FROM "{table}" {order_clause} LIMIT ? OFFSET ?',
-            (page_size, offset),
-        ).fetchall()
+            data = [dict(r) for r in rows]
 
-        data = [dict(r) for r in rows]
+            # 列信息
+            columns = [{'name': col['name'], 'type': col['type']} for col in conn.execute(f'PRAGMA table_info("{table}")')]
 
-        # 列信息
-        columns = []
-        for col in conn.execute(f'PRAGMA table_info("{table}")'):
-            columns.append({'name': col['name'], 'type': col['type']})
-
-        conn.close()
         return ok(
             {
                 'rows': data,
@@ -294,29 +288,25 @@ async def handle_execute_sql(request: web.Request):
         sql = sql.rstrip(';') + ' LIMIT 1000'
 
     try:
-        conn = _open_readwrite(abs_path)
+        with contextlib.closing(_open_readwrite(abs_path)) as conn:
+            # 多语句 (含分号分割) 用 executescript (无结果集)
+            statements = [s.strip() for s in sql.split(';') if s.strip()]
+            if len(statements) > 1 and not is_read:
+                conn.executescript(sql)
+                return ok({'affected': -1}, message=f'已执行 {len(statements)} 条语句')
 
-        # 多语句 (含分号分割) 用 executescript (无结果集)
-        statements = [s.strip() for s in sql.split(';') if s.strip()]
-        if len(statements) > 1 and not is_read:
-            conn.executescript(sql)
-            conn.close()
-            return ok({'affected': -1}, message=f'已执行 {len(statements)} 条语句')
+            cursor = conn.execute(sql)
 
-        cursor = conn.execute(sql)
+            if is_read:
+                rows = cursor.fetchall()
+                columns = [{'name': desc[0], 'type': ''} for desc in cursor.description] if cursor.description else []
+                data = [dict(r) for r in rows]
+                return ok({'rows': data, 'columns': columns, 'total': len(data)})
 
-        if is_read:
-            rows = cursor.fetchall()
-            columns = [{'name': desc[0], 'type': ''} for desc in cursor.description] if cursor.description else []
-            data = [dict(r) for r in rows]
-            conn.close()
-            return ok({'rows': data, 'columns': columns, 'total': len(data)})
-
-        # 写操作: 返回影响行数
-        affected = cursor.rowcount
-        conn.commit()
-        conn.close()
-        return ok({'affected': affected}, message=f'执行成功, 影响 {affected} 行')
+            # 写操作: 返回影响行数
+            affected = cursor.rowcount
+            conn.commit()
+            return ok({'affected': affected}, message=f'执行成功, 影响 {affected} 行')
     except Exception as e:
         return error(str(e), status=400)
 
@@ -339,35 +329,34 @@ async def handle_search_database(request: web.Request):
     pattern = f'%{escaped}%'
 
     try:
-        conn = _open_readonly(abs_path)
-        results = []
-        table_rows = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").fetchall()
-        for trow in table_rows:
-            tname = trow['name']
-            columns = [{'name': col['name'], 'type': col['type']} for col in conn.execute(f'PRAGMA table_info("{tname}")')]
-            if not columns:
-                continue
-            conds = ' OR '.join('CAST("{}" AS TEXT) LIKE ? ESCAPE \'\\\''.format(c['name']) for c in columns)
-            params = [pattern] * len(columns)
-            try:
-                total = conn.execute(f'SELECT COUNT(*) as c FROM "{tname}" WHERE {conds}', params).fetchone()['c']
-                if not total:
+        with contextlib.closing(_open_readonly(abs_path)) as conn:
+            results = []
+            table_rows = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").fetchall()
+            for trow in table_rows:
+                tname = trow['name']
+                columns = [{'name': col['name'], 'type': col['type']} for col in conn.execute(f'PRAGMA table_info("{tname}")')]
+                if not columns:
                     continue
-                rows = conn.execute(
-                    f'SELECT rowid AS _rowid, * FROM "{tname}" WHERE {conds} ORDER BY rowid DESC LIMIT ?',
-                    params + [limit],
-                ).fetchall()
-            except sqlite3.Error:
-                continue
-            results.append(
-                {
-                    'table': tname,
-                    'columns': columns,
-                    'data': [dict(r) for r in rows],
-                    'total': total,
-                }
-            )
-        conn.close()
+                conds = ' OR '.join('CAST("{}" AS TEXT) LIKE ? ESCAPE \'\\\''.format(c['name']) for c in columns)
+                params = [pattern] * len(columns)
+                try:
+                    total = conn.execute(f'SELECT COUNT(*) as c FROM "{tname}" WHERE {conds}', params).fetchone()['c']
+                    if not total:
+                        continue
+                    rows = conn.execute(
+                        f'SELECT rowid AS _rowid, * FROM "{tname}" WHERE {conds} ORDER BY rowid DESC LIMIT ?',
+                        params + [limit],
+                    ).fetchall()
+                except sqlite3.Error:
+                    continue
+                results.append(
+                    {
+                        'table': tname,
+                        'columns': columns,
+                        'data': [dict(r) for r in rows],
+                        'total': total,
+                    }
+                )
         return ok({'results': results, 'keyword': keyword})
     except Exception as e:
         log.warning(f'全库搜索失败: {e}')
@@ -461,12 +450,11 @@ async def handle_delete_rows(request: web.Request):
         return error('无效路径', status=403)
 
     try:
-        conn = _open_readwrite(abs_path)
-        placeholders = ','.join('?' * len(rowids))
-        cursor = conn.execute(f'DELETE FROM "{table}" WHERE rowid IN ({placeholders})', rowids)
-        deleted = cursor.rowcount
-        conn.commit()
-        conn.close()
+        with contextlib.closing(_open_readwrite(abs_path)) as conn:
+            placeholders = ','.join('?' * len(rowids))
+            cursor = conn.execute(f'DELETE FROM "{table}" WHERE rowid IN ({placeholders})', rowids)
+            deleted = cursor.rowcount
+            conn.commit()
         return ok({'deleted': deleted})
     except Exception as e:
         log.warning(f'删除数据失败: {e}')

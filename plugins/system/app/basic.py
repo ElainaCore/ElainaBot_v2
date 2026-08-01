@@ -88,7 +88,7 @@ async def about_info(event, match):
         if bot_cfg:
             bot_name = bot_cfg.get('name', 'Elaina')
             robot_qq = str(bot_cfg.get('robot_qq', ''))
-    except Exception:
+    except (AttributeError, TypeError):
         pass
 
     # 获取版本号

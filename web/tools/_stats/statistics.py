@@ -24,9 +24,6 @@ from web.tools._stats.gather import (
 
 log = logging.getLogger('ElainaBot.web.stats')
 
-_statistics_tasks: dict[str, dict[str, Any]] = {}
-_task_results: dict[str, dict[str, Any]] = {}
-
 # 简单内存缓存: {(date, appid_filter): (timestamp, data)} — 避免短时间内重复全表扫描
 _stats_cache: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
 _chart_cache: dict[tuple[int, str], tuple[float, dict[str, Any]]] = {}
@@ -45,7 +42,10 @@ def _cached(cache: dict[_K, tuple[float, _V]], key: _K) -> _V | None:
 
 
 def _store_cached(cache: dict[_K, tuple[float, _V]], key: _K, value: _V) -> _V:
-    cache[key] = (time.monotonic(), value)
+    now = time.monotonic()
+    for k in [k for k, (ts, _) in cache.items() if now - ts >= _CACHE_TTL]:
+        cache.pop(k, None)
+    cache[key] = (now, value)
     return value
 
 
@@ -72,23 +72,6 @@ async def handle_get_statistics(request: web.Request):
         return web.json_response({'success': True, 'data': data})
     except Exception as e:
         return web.json_response({'success': False, 'error': str(e)}, status=500)
-
-
-async def handle_get_task_status(request: web.Request):
-    task_id = request.match_info.get('task_id', '')
-    if task_id not in _statistics_tasks:
-        return web.json_response({'success': False, 'error': '任务不存在'}, status=404)
-    task = _statistics_tasks[task_id].copy()
-    if task['status'] == 'completed' and task_id in _task_results:
-        return web.json_response({'success': True, 'data': _task_results[task_id], 'task_info': task})
-    return web.json_response(
-        {
-            'success': True,
-            'status': task['status'],
-            'progress': task.get('progress', 0),
-            'message': task.get('message', ''),
-        }
-    )
 
 
 async def handle_get_available_dates(request: web.Request):

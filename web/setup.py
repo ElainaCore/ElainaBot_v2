@@ -1,14 +1,21 @@
 """Web 面板集成入口"""
 
+import contextlib
 import logging
 import os
 import re
 import sys
+from datetime import datetime
 
+import aiohttp.web_fileresponse as _fr
 from aiohttp import web
 
 import web.api as _panel_api
 import web.auth as _auth
+import web.ws as _ws
+from core.base import console as _console
+from core.base.logger import on_error
+from core.storage.log import SharedLogService
 
 log = logging.getLogger('ElainaBot.web')
 
@@ -18,12 +25,8 @@ def _disable_sendfile_on_windows():
     if sys.platform != 'win32':
         return
     os.environ.setdefault('AIOHTTP_NOSENDFILE', '1')
-    try:
-        import aiohttp.web_fileresponse as _fr
-
+    with contextlib.suppress(AttributeError):
         _fr.NOSENDFILE = True
-    except Exception:
-        pass
 
 
 class _WebPanelLogHandler(logging.Handler):
@@ -35,10 +38,6 @@ class _WebPanelLogHandler(logging.Handler):
 
     def emit(self, record):
         try:
-            from datetime import datetime
-
-            from core.storage.log import SharedLogService
-
             msg = record.getMessage()
             level = record.levelname
             entry = {
@@ -54,12 +53,11 @@ class _WebPanelLogHandler(logging.Handler):
             if shared:
                 shared.add_sync('framework', entry)
         except Exception:
+            # 日志处理器内部异常不外抛也不再记日志, 避免递归
             pass
 
 
 def _push_console_line(entry: dict):
-    import web.ws as _ws
-
     _ws.push_log('console', dict(entry))
 
 
@@ -81,9 +79,6 @@ def setup_web(app: web.Application, bot_manager, base_dir: str):
 
     # 注入日志推送 / 错误回调 / logging handler
     try:
-        import web.ws as _ws
-        from core.base.logger import on_error
-
         bot_manager._web_log_cb = _ws.push_log
         for _inst in bot_manager._bots.values():
             if hasattr(_inst, 'sender'):
@@ -111,16 +106,14 @@ def setup_web(app: web.Application, bot_manager, base_dir: str):
 
         on_error(_push_error)
 
-        from core.base import console as _console
-
         _console.install()
         _console.on_line(_push_console_line)
 
         _handler = _WebPanelLogHandler(_ws)
         _handler.setLevel(logging.INFO)
         logging.getLogger('ElainaBot').addHandler(_handler)
-    except Exception:
-        pass
+    except Exception as e:
+        logging.getLogger('ElainaBot.web').debug(f'面板日志推送安装失败: {e}')
     app.router.add_routes(_panel_api.get_routes())
 
     # 媒体文件静态路由 (data/media/)
@@ -151,6 +144,10 @@ _MIME = {
     '.json': 'application/json',
     '.svg': 'image/svg+xml',
     '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.gif': 'image/gif',
+    '.webp': 'image/webp',
     '.ico': 'image/x-icon',
 }
 

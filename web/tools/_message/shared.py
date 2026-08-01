@@ -1,9 +1,12 @@
 """消息管理 — 全局状态, 昵称缓存"""
 
+import logging
 import time
 from typing import Any
 
-_nickname_cache: dict[str, tuple[float, str]] = {}
+log = logging.getLogger('ElainaBot.web.message')
+
+_nickname_cache: dict[str, tuple[float, str]] = {}  # {user_id: (ts, name)}
 _CACHE_TIMEOUT = 86400
 _base_dir: str = ''
 _bot_manager: Any = None
@@ -19,8 +22,8 @@ def _get_nickname(user_id):
     if not user_id:
         return '未知用户'
     cached = _nickname_cache.get(user_id)
-    if cached and time.time() - cached['ts'] < _CACHE_TIMEOUT:
-        return cached['name']
+    if cached and time.time() - cached[0] < _CACHE_TIMEOUT:
+        return cached[1]
     # 从 data.db 查 users.name
     if _bot_manager:
         for inst in _bot_manager._bots.values():
@@ -28,10 +31,10 @@ def _get_nickname(user_id):
                 r = inst.log_service.query_data('SELECT name FROM users WHERE user_id=?', (user_id,))
                 if r and r[0].get('name'):
                     name = r[0]['name']
-                    _nickname_cache[user_id] = {'name': name, 'ts': time.time()}
+                    _nickname_cache[user_id] = (time.time(), name)
                     return name
-            except Exception:
-                pass
+            except Exception as e:
+                log.debug(f'查询昵称失败 {user_id}: {e}')
     return f'用户{user_id[-6:]}'
 
 
@@ -46,8 +49,8 @@ def _batch_get_nicknames(user_ids):
         if not uid:
             continue
         c = _nickname_cache.get(uid)
-        if c and now - c['ts'] < _CACHE_TIMEOUT:
-            out[uid] = c['name']
+        if c and now - c[0] < _CACHE_TIMEOUT:
+            out[uid] = c[1]
         else:
             pending.append(uid)
     if pending and _bot_manager:
@@ -64,9 +67,9 @@ def _batch_get_nicknames(user_ids):
                         nm = r.get('name')
                         if uid and nm and uid not in out:
                             out[uid] = nm
-                            _nickname_cache[uid] = {'name': nm, 'ts': now}
-                except Exception:
-                    pass
+                            _nickname_cache[uid] = (now, nm)
+                except Exception as e:
+                    log.debug(f'批量查询昵称失败: {e}')
     # fallback for missing
     for uid in user_ids:
         if uid and uid not in out:
@@ -81,23 +84,27 @@ def _get_bot(appid=''):
     return next(iter(_bot_manager._bots.values()))
 
 
-_fa_cache: set | None = None
+_fa_rows_cache: list | None = None
 _fa_cache_ts: float = 0
 _FA_CACHE_TTL = 120
 
 
-def _get_full_access_group_ids():
-    """返回所有全量群 group_id 集合 (带 120s 内存缓存)"""
-    global _fa_cache, _fa_cache_ts
+def _get_full_access_group_rows():
+    """返回所有全量群记录 [{group_id, appid, first_seen}] (带 120s 内存缓存)"""
+    global _fa_rows_cache, _fa_cache_ts
     now = time.time()
-    if _fa_cache is not None and now - _fa_cache_ts < _FA_CACHE_TTL:
-        return _fa_cache
+    if _fa_rows_cache is not None and now - _fa_cache_ts < _FA_CACHE_TTL:
+        return _fa_rows_cache
     if not _bot_manager:
-        return set()
+        return []
     try:
-        rows = _bot_manager.get_full_access_groups()
-        _fa_cache = {r['group_id'] for r in rows if r.get('group_id')}
+        _fa_rows_cache = _bot_manager.get_full_access_groups()
     except Exception:
-        _fa_cache = set()
+        _fa_rows_cache = []
     _fa_cache_ts = now
-    return _fa_cache
+    return _fa_rows_cache
+
+
+def _get_full_access_group_ids():
+    """返回所有全量群 group_id 集合"""
+    return {r['group_id'] for r in _get_full_access_group_rows() if r.get('group_id')}

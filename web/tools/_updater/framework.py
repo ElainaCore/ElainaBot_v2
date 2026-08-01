@@ -1,6 +1,7 @@
 """框架更新 — FrameworkUpdater 更新流程类"""
 
 import asyncio
+import contextlib
 import fnmatch
 import json
 import os
@@ -11,7 +12,9 @@ from datetime import datetime
 from pathlib import Path
 
 import aiohttp as _aiohttp
+import yaml
 
+from core.application import get_app
 from web.tools._updater.mirror import detect_environment
 from web.tools._updater.shared import (
     DEFAULT_SKIP,
@@ -58,8 +61,8 @@ class FrameworkUpdater:
             cfg = self._load_setting('skip_files', None)
             if cfg:
                 return cfg
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug(f'读取 skip_files 配置失败: {e}')
         return list(DEFAULT_SKIP)
 
     def _load_version(self):
@@ -83,7 +86,7 @@ class FrameworkUpdater:
                     ensure_ascii=False,
                 )
             self.current_version = version
-        except Exception:
+        except (OSError, TypeError, ValueError):
             pass
 
     def _load_setting(self, key, default):
@@ -102,7 +105,7 @@ class FrameworkUpdater:
             data[key] = value
             with open(self.settings_file, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=2, ensure_ascii=False)
-        except Exception:
+        except (OSError, TypeError, ValueError):
             pass
 
     def get_version_info(self):
@@ -167,7 +170,6 @@ class FrameworkUpdater:
                         headers=headers,
                         timeout=timeout,
                         allow_redirects=True,
-                        ssl=False,
                     ) as resp:
                         if resp.status == 200:
                             ct = resp.headers.get('content-type', '')
@@ -232,7 +234,6 @@ class FrameworkUpdater:
                     headers=headers,
                     timeout=timeout,
                     allow_redirects=True,
-                    ssl=False,
                 ) as resp,
             ):
                 resp.raise_for_status()
@@ -267,8 +268,6 @@ class FrameworkUpdater:
 
             # 读取日志目录名 (默认 'log')
             try:
-                import yaml
-
                 with open(self.base_dir / 'config' / 'settings.yaml', encoding='utf-8') as f:
                     _s = yaml.safe_load(f) or {}
                 log_dir_name = (_s.get('logging') or {}).get('dir', 'log')
@@ -378,17 +377,33 @@ class FrameworkUpdater:
             source = items[0] if len(items) == 1 and items[0].is_dir() else temp
 
             self._report('updating', '正在更新文件...', 60)
-            for root, _, files in os.walk(source):
-                for fname in files:
-                    src = os.path.join(root, fname)
-                    rel = os.path.relpath(src, source)
-                    if self._should_skip(rel):
-                        result['skipped'] += 1
-                        continue
-                    dst = self.base_dir / rel
-                    dst.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(src, dst)
+            # 两阶段原子更新: 先全部写入 .update_new 暂存文件, 再逐个 os.replace 替换
+            # 避免中途失败 (断网/磁盘满/权限) 留下新旧混杂的半更新状态 (如 Docker 重启后 No module named 'core.base.tasks')
+            staged = []
+            try:
+                for root, _, files in os.walk(source):
+                    for fname in files:
+                        src = os.path.join(root, fname)
+                        rel = os.path.relpath(src, source)
+                        if self._should_skip(rel):
+                            result['skipped'] += 1
+                            continue
+                        dst = self.base_dir / rel
+                        dst.parent.mkdir(parents=True, exist_ok=True)
+                        tmp = dst.with_name(dst.name + '.update_new')
+                        shutil.copy2(src, tmp)
+                        staged.append((tmp, dst))
+                for tmp, dst in staged:
+                    # 保留原文件的可执行位 (zip 解压丢失, 否则 docker-entrypoint.sh 等覆盖后容器无法重启)
+                    with contextlib.suppress(OSError):
+                        os.chmod(tmp, os.stat(tmp).st_mode | (os.stat(dst).st_mode & 0o111))
+                    os.replace(tmp, dst)
                     result['updated'] += 1
+            except BaseException:
+                for tmp, _dst in staged:
+                    with contextlib.suppress(OSError):
+                        os.unlink(tmp)
+                raise
 
             shutil.rmtree(temp, ignore_errors=True)
             if os.path.exists(zip_file):
@@ -448,8 +463,6 @@ class FrameworkUpdater:
     def _trigger_restart():
         """更新后重启: Windows 用外部脚本, Linux/Docker 走内部重启 + os.execv"""
         try:
-            from core.application import get_app
-
             app = get_app()
             if app:
                 log.info('更新完成, 触发重启...')
@@ -457,7 +470,7 @@ class FrameworkUpdater:
                 if app._stop_event:
                     app._stop_event.set()
                 return
-        except Exception:
+        except ImportError:
             pass
         log.warning('无法自动重启, 请手动重启')
 

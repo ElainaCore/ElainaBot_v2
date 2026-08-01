@@ -19,6 +19,6 @@ def read_dict_assignment(file_path: str, variable_name: str) -> dict | None:
             ):
                 value = ast.literal_eval(node.value)
                 return value if isinstance(value, dict) else None
-    except Exception:
+    except (OSError, SyntaxError, TypeError, ValueError):
         pass
     return None

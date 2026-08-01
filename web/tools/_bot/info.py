@@ -6,6 +6,8 @@ import urllib.parse
 import aiohttp as _aiohttp
 from aiohttp import web
 
+from core.base.config import cfg
+
 _SSL_CTX = ssl.create_default_context()
 _SSL_CTX.check_hostname = False
 _SSL_CTX.verify_mode = ssl.CERT_NONE
@@ -48,8 +50,6 @@ async def handle_get_robot_info(request: web.Request):
 
     webhook_url = ''
     if is_webhook:
-        from core.base.config import cfg
-
         host = cfg.get('settings', 'server.host', '0.0.0.0')
         port = cfg.get('settings', 'server.port', 5200)
         req_host = request.host or ''

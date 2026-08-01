@@ -42,10 +42,7 @@ class RestartScheduler:
 
         log.info(f'定时重启: {target.strftime("%m-%d %H:%M")}')
 
-        try:
-            await asyncio.sleep(wait_secs)
-        except asyncio.CancelledError:
-            return
+        await asyncio.sleep(wait_secs)
 
         log.info('定时重启触发')
         if self._on_restart:

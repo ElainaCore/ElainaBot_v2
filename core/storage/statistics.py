@@ -10,7 +10,8 @@ import sqlite3
 from datetime import datetime, timedelta
 
 from core.base.config import cfg
-from core.base.logger import FRAMEWORK, get_logger
+from core.base.logger import FRAMEWORK, get_logger, now_str
+from core.base.tasks import spawn
 from core.storage._daily_base import DailyScanService
 
 log = get_logger(FRAMEWORK, '统计')
@@ -21,6 +22,9 @@ _SCHEDULE_MINUTE = 0
 
 # 私聊判定: group_id 为空或 'c2c'
 _PRIVATE_GIDS = ('', 'c2c')
+
+# 分块阈值: 内存中累积的用户+群键数达到阈值即 flush 到 statistics.db, 避免大日志 OOM
+_FLUSH_KEYS = 50000
 
 _USER_TABLE_SQL = """
     CREATE TABLE IF NOT EXISTS user_stats (
@@ -86,7 +90,7 @@ class StatisticsService(DailyScanService):
             return
         self._running = True
         self._task = asyncio.create_task(self._scheduler_loop())
-        asyncio.create_task(self._startup_catchup())
+        spawn(self._startup_catchup())
         log.info(f'已启动 [每日 {self._schedule_hour:02d}:{self._schedule_minute:02d}]')
 
     async def _startup_catchup(self):
@@ -133,17 +137,7 @@ class StatisticsService(DailyScanService):
 
     async def aggregate_date(self, date_str):
         """聚合指定日期所有机器人统计, 返回 {appid: bool}"""
-        results = {}
-        appids = self.list_appids()
-        log.info(f'开始统计 [{date_str}], {len(appids)} 个机器人')
-        for appid in appids:
-            try:
-                results[appid] = await self.aggregate(appid, date_str)
-            except Exception as e:
-                log.warning(f'[{appid}] 统计失败: {e}')
-                results[appid] = False
-        log.info(f'统计完成 [{date_str}]: {sum(results.values())}/{len(results)} 成功')
-        return results
+        return await self._run_date_all(date_str, self.aggregate)
 
     async def aggregate(self, appid, date_str):
         """聚合指定机器人 + 日期的统计 (累加到 statistics.db)"""
@@ -181,37 +175,44 @@ class StatisticsService(DailyScanService):
         if self._is_processed(appid, date_str):
             log.debug(f'[{appid}] {date_str} 已统计, 跳过')
             return False
+        try:
+            result = self._stream_aggregate(appid, msg_db, date_str)
+        finally:
+            # 统计完成后主动触发 GC, 避免内存长期占用不回收
+            gc.collect()
+        return result
 
-        day_user, day_group = self._scan_day(msg_db, date_str)
-        if day_user is None:
+    def _stream_aggregate(self, appid, msg_db, date_str):
+        """流式扫描当日 receive 消息并分块累加到 statistics.db (单事务, 内存有界)"""
+        src = self._open_ro(msg_db)
+        if not src:
             return False
-
-        self._merge_into_db(appid, date_str, day_user, day_group)
-        user_count, group_count = len(day_user), len(day_group)
-        # 统计完成后主动释放大对象并触发 GC, 避免内存长期占用不回收
-        del day_user, day_group
-        gc.collect()
-        log.info(f'[{appid}] {date_str} 已累加: 用户 {user_count}, 群 {group_count}')
-        return True
-
-    def _scan_day(self, db_path, date_str):
-        """单遍扫描当日 receive 消息, 返回 (user_delta, group_delta) 增量"""
-        conn = self._open_ro(db_path)
-        if not conn:
-            return None, None
+        path = self._stats_db_path(appid)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        dst = sqlite3.connect(path, timeout=30)
         try:
             # 旧库可能没有 at_bot 列, 按已艾特处理
-            has_at_bot = any(r['name'] == 'at_bot' for r in conn.execute('PRAGMA table_info(log)'))
+            has_at_bot = any(r['name'] == 'at_bot' for r in src.execute('PRAGMA table_info(log)'))
             # 仅统计接收消息, 全量群仅计艾特机器人的
             at_ok = 'COALESCE(at_bot, 1) != 0' if has_at_bot else '1=1'
-            cur = conn.execute(
-                f"SELECT user_id, group_id, content FROM log WHERE direction='receive' AND {at_ok}"
-            )
+
+            dst.execute(_USER_TABLE_SQL)
+            dst.execute(_GROUP_TABLE_SQL)
+            dst.execute(_PROCESSED_TABLE_SQL)
+            # 再次确认幂等 (并发/重入保护)
+            if dst.execute('SELECT 1 FROM processed WHERE date=?', (date_str,)).fetchone():
+                return False
+            now = now_str()
+
             users = {}
             groups = {}
-            has_row = False
+            row_count = 0
+            user_seen = group_seen = 0
+            cur = src.execute(
+                f"SELECT user_id, group_id, content FROM log WHERE direction='receive' AND {at_ok}"
+            )
             for row in cur:
-                has_row = True
+                row_count += 1
                 uid, gid, content = row[0] or '', row[1] or '', row[2]
                 is_private = gid in _PRIVATE_GIDS
                 cmd = _extract_command(content)
@@ -223,6 +224,7 @@ class StatisticsService(DailyScanService):
                             'total': 0, 'private': 0,
                             'groups': {}, 'cmds': {}, 'daily': {},
                         }
+                        user_seen += 1
                     u['total'] += 1
                     u['daily'][date_str] = u['daily'].get(date_str, 0) + 1
                     if is_private:
@@ -238,43 +240,38 @@ class StatisticsService(DailyScanService):
                         g = groups[gid] = {
                             'total': 0, 'users': {}, 'cmds': {}, 'daily': {},
                         }
+                        group_seen += 1
                     g['total'] += 1
                     g['daily'][date_str] = g['daily'].get(date_str, 0) + 1
                     if uid:
                         g['users'][uid] = g['users'].get(uid, 0) + 1
                     if cmd:
                         g['cmds'][cmd] = g['cmds'].get(cmd, 0) + 1
-            if not has_row:
-                return {}, {}
-            return users, groups
-        except Exception as e:
-            log.warning(f'扫描消息库失败 [{db_path}]: {e}')
-            return None, None
-        finally:
-            conn.close()
 
-    def _merge_into_db(self, appid, date_str, day_user, day_group):
-        """将当日增量累加到 statistics.db, 并标记该日期已处理 (单事务)"""
-        path = self._stats_db_path(appid)
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        conn = sqlite3.connect(path, timeout=30)
-        try:
-            conn.execute(_USER_TABLE_SQL)
-            conn.execute(_GROUP_TABLE_SQL)
-            conn.execute(_PROCESSED_TABLE_SQL)
-            # 再次确认幂等 (并发/重入保护)
-            if conn.execute("SELECT 1 FROM processed WHERE date=?", (date_str,)).fetchone():
-                return
-            now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            self._merge_users(conn, day_user, now)
-            self._merge_groups(conn, day_group, now)
-            conn.execute(
-                "INSERT OR REPLACE INTO processed (date, processed_at) VALUES (?,?)",
+                # 阈值内分批落盘: 同一键跨批次的增量会逐批累加, 结果等价于一次性合并
+                if len(users) + len(groups) >= _FLUSH_KEYS:
+                    self._merge_users(dst, users, now)
+                    self._merge_groups(dst, groups, now)
+                    users.clear()
+                    groups.clear()
+
+            self._merge_users(dst, users, now)
+            self._merge_groups(dst, groups, now)
+            dst.execute(
+                'INSERT OR REPLACE INTO processed (date, processed_at) VALUES (?,?)',
                 (date_str, now),
             )
-            conn.commit()
+            dst.commit()
+            log.info(f'[{appid}] {date_str} 已累加: 消息 {row_count}, 用户 {user_seen}, 群 {group_seen}')
+            return True
+        except Exception as e:
+            with contextlib.suppress(Exception):
+                dst.rollback()
+            log.warning(f'统计聚合失败 [{msg_db}]: {e}')
+            return False
         finally:
-            conn.close()
+            src.close()
+            dst.close()
 
     @staticmethod
     def _add_maps(base_json, delta):
@@ -357,17 +354,6 @@ class StatisticsService(DailyScanService):
 
     # ===== 读取 (供 Web / 调试) =====
 
-    @staticmethod
-    def _open_ro(path):
-        if not os.path.isfile(path):
-            return None
-        try:
-            conn = sqlite3.connect(f'file:{path}?mode=ro', uri=True, timeout=10)
-            conn.row_factory = sqlite3.Row
-            return conn
-        except sqlite3.Error:
-            return None
-
     _USER_JSON_KEYS = ('group_messages', 'command_stats', 'daily_messages')
     _GROUP_JSON_KEYS = ('user_messages', 'command_stats', 'daily_messages')
 
@@ -387,13 +373,7 @@ class StatisticsService(DailyScanService):
             row = conn.execute(f"SELECT * FROM {table} WHERE {pk_col}=?", (pk_val,)).fetchone()
             if not row:
                 return None
-            d = dict(row)
-            for k in json_keys:
-                v = d.get(k)
-                if isinstance(v, str) and v:
-                    with contextlib.suppress(Exception):
-                        d[k] = json.loads(v)
-            return d
+            return self._decode_json_fields(dict(row), json_keys)
         except sqlite3.Error:
             return None
         finally:

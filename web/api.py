@@ -27,8 +27,14 @@ import web.tools._stats.statistics as statistics_handler
 import web.tools._stats.system as system_info
 import web.tools._updater.handlers as update_handler
 import web.ws as panel_ws
+from core.application import get_app
+from core.base import console as _console
+from core.base.config import cfg
+from core.plugin.web_pages import get_page_html, get_pages, match_route
+from core.storage.log import SharedLogService
 from web.response import error, json_body, ok
 from web.tools._bots import configured_bot_payload, iter_bots, running_bot_payload
+from web.tools._message.shared import set_context as _msg_set_ctx
 
 log = logging.getLogger('ElainaBot.web.api')
 
@@ -111,10 +117,6 @@ def get_routes() -> list:
         web.get('/api/statistics/totals', _(statistics_handler.handle_get_totals)),
         web.get('/api/statistics/hourly', _(statistics_handler.handle_get_hourly_statistics)),
         web.get('/api/statistics/chart', _(statistics_handler.handle_get_chart_data)),
-        web.get(
-            '/api/statistics/task/{task_id}',
-            _(statistics_handler.handle_get_task_status),
-        ),
         web.get('/api/statistics/dates', _(statistics_handler.handle_get_available_dates)),
         # ── 更新 ──
         web.get('/api/update/changelog', _(update_handler.handle_get_changelog)),
@@ -175,7 +177,7 @@ def get_routes() -> list:
         web.post('/api/openapi/webhook/check', _(openapi_handler.handle_check_webhook)),
         web.post('/api/openapi/webhook/auth-qr', _(openapi_handler.handle_get_webhook_auth_qr)),
         web.post('/api/openapi/webhook/set', _(openapi_handler.handle_set_webhook)),
-        # ── 新版开放平台 (v2, 内测) ──
+        # ── 新版开放平台 (v2) ──
         web.post('/api/openapi/v2/start-login', _(openapi_handler.handle_v2_start_login)),
         web.post('/api/openapi/v2/check-login', _(openapi_handler.handle_v2_check_login)),
         web.post('/api/openapi/v2/status', _(openapi_handler.handle_v2_status)),
@@ -183,6 +185,7 @@ def get_routes() -> list:
         web.post('/api/openapi/v2/switch-developer', _(openapi_handler.handle_v2_switch_developer)),
         web.post('/api/openapi/v2/proxy', _(openapi_handler.handle_v2_proxy)),
         web.post('/api/openapi/v2/upload-avatar', _(openapi_handler.handle_v2_upload_avatar)),
+        web.post('/api/openapi/v2/webhook-suggest', _(openapi_handler.handle_v2_webhook_suggest)),
         # ── 自定义页面 ──
         web.get('/api/web-pages', _(handle_get_web_pages)),
         web.get('/api/web-pages/{key}', _(handle_get_web_page_html)),
@@ -216,8 +219,6 @@ def set_context(bot_manager, base_dir: str):
     robot_info.set_context(bot_manager)
     _plugin_mgr_shared.set_context(base_dir, bot_manager)
     config_handler.set_context(base_dir)
-    from web.tools._message.shared import set_context as _msg_set_ctx
-
     _msg_set_ctx(base_dir, bot_manager)
     statistics_handler.set_context(bot_manager, base_dir)
     update_handler.set_context(base_dir)
@@ -243,8 +244,6 @@ async def handle_login(request: web.Request):
         return error('请求格式错误', status=400)
 
     password = body.get('password', '')
-    from core.base.config import cfg
-
     admin_pwd = cfg.get('settings', 'web.admin_password', '')
     if not admin_pwd:
         return error('未配置管理员密码', status=500)
@@ -273,16 +272,12 @@ _WEAK_PASSWORDS = frozenset({'admin', '123456', 'password', 'admin123', '1234567
 
 
 async def handle_password_status(request: web.Request):
-    from core.base.config import cfg
-
     pwd = cfg.get('settings', 'web.admin_password', '')
     is_default = not pwd or (not auth.is_hashed(pwd) and pwd in _WEAK_PASSWORDS)
     return ok({'is_default': is_default})
 
 
 async def handle_get_bots(request: web.Request):
-    from core.base.config import cfg
-
     bots = []
     # 已启动的机器人
     running_appids = set()
@@ -300,8 +295,6 @@ async def handle_get_bots(request: web.Request):
 
 async def handle_toggle_bot(request: web.Request):
     """切换机器人 enabled 开关"""
-    from core.base.config import cfg
-
     body = await json_body(request)
     if body is None:
         return error('请求格式错误', status=400)
@@ -315,8 +308,6 @@ async def handle_toggle_bot(request: web.Request):
         return error('未找到该机器人', status=404)
 
     # 同步等待机器人启停完成, 保证前端 fetchBots 能拿到最新状态
-    from core.application import get_app
-
     app = get_app()
     sync_error = ''
     if app and app.bot_registry is not None:
@@ -348,8 +339,8 @@ def _query_bot_logs(log_type, appid_filter, post_fn=None):
                 if post_fn:
                     post_fn(r)
             results.extend(rows)
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug(f'查询机器人 {appid} 日志失败: {e}')
     # id 是 AUTOINCREMENT, 按 (appid, id) 视为时间顺序, 取最新 50 条
     results.sort(key=lambda r: r.get('id', 0))
     return results[-50:]
@@ -367,9 +358,6 @@ def _tag_lifecycle_extra(r):
 
 def _gather_recent_logs_sync(appid_filter):
     """同步聚合所有日志查询 (在 executor 中执行, 避免阻塞事件循环)"""
-    from core.base import console as _console
-    from core.storage.log import SharedLogService
-
     messages = _query_bot_logs('message', appid_filter, _tag_direction)
     lifecycle = _query_bot_logs('lifecycle', appid_filter, _tag_lifecycle_extra)
     shared = SharedLogService._instance
@@ -402,14 +390,10 @@ async def handle_recent_logs(request: web.Request):
 
 
 async def handle_get_web_pages(request: web.Request):
-    from core.plugin.web_pages import get_pages
-
     return web.json_response({'success': True, 'pages': get_pages()})
 
 
 async def handle_get_web_page_html(request: web.Request):
-    from core.plugin.web_pages import get_page_html
-
     key = request.match_info['key']
     html = get_page_html(key)
     if html is None:
@@ -422,8 +406,6 @@ async def handle_get_web_page_html(request: web.Request):
 
 async def handle_ext_route(request: web.Request):
     """动态分发插件用 register_route 注册的 /api/ext/ 路由 (查表执行, 支持热重载)。"""
-    from core.plugin.web_pages import match_route
-
     entry = match_route(request.method, request.path)
     if entry is None:
         return web.json_response({'success': False, 'error': '路由不存在'}, status=404)

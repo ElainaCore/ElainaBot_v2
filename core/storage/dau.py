@@ -9,6 +9,7 @@ import sqlite3
 from datetime import datetime, timedelta
 
 from core.base.logger import FRAMEWORK, get_logger
+from core.base.tasks import spawn
 from core.storage._daily_base import DailyScanService
 from core.storage._schema import DAU_TABLE_SQL
 from core.storage.lifecycle_stats import compute_lifecycle_counts
@@ -35,7 +36,7 @@ class DAUService(DailyScanService):
             return
         self._running = True
         self._task = asyncio.create_task(self._scheduler_loop())
-        asyncio.create_task(self._backfill_missing())
+        spawn(self._backfill_missing())
         log.info(f'已启动 [每日 {self._schedule_hour:02d}:{self._schedule_minute:02d}]')
 
     async def _backfill_missing(self):
@@ -47,10 +48,11 @@ class DAUService(DailyScanService):
             return
         for i in range(1, 4):
             date_str = (today - timedelta(days=i)).isoformat()
-            missing = []
-            for appid in appids:
-                if not await self.load(appid, date_str) and os.path.isfile(self._message_db_path(appid, date_str)):
-                    missing.append(appid)
+            missing = [
+                appid
+                for appid in appids
+                if not await self.load(appid, date_str) and os.path.isfile(self._message_db_path(appid, date_str))
+            ]
             if not missing:
                 continue
             log.info(f'补算 {date_str} DAU: {len(missing)} 个机器人')
@@ -68,18 +70,7 @@ class DAUService(DailyScanService):
 
     async def regenerate_date(self, date_str):
         """重算指定日期所有机器人 DAU, 返回 {appid: bool}"""
-        results = {}
-        appids = self.list_appids()
-        log.info(f'开始统计 [{date_str}], {len(appids)} 个机器人')
-        for appid in appids:
-            try:
-                ok = await self.regenerate(appid, date_str)
-                results[appid] = ok
-            except Exception as e:
-                log.warning(f'[{appid}] 统计失败: {e}')
-                results[appid] = False
-        log.info(f'统计完成 [{date_str}]: {sum(results.values())}/{len(results)} 成功')
-        return results
+        return await self._run_date_all(date_str, self.regenerate)
 
     async def regenerate(self, appid, date_str):
         """重算指定机器人 + 日期的 DAU"""
@@ -180,9 +171,10 @@ class DAUService(DailyScanService):
             """)
             stats['top_users'] = [{'user_id': r['user_id'], 'message_count': r['c']} for r in cur.fetchall()]
 
-            cur.execute(f"""
+            # plugin_name 仅在回复日志 (direction='send') 中写入
+            cur.execute("""
                 SELECT plugin_name, COUNT(*) AS c FROM log
-                WHERE plugin_name != '' AND direction != 'send' AND {at_ok}
+                WHERE plugin_name != '' AND direction = 'send'
                 GROUP BY plugin_name ORDER BY c DESC LIMIT 10
             """)
             stats['top_commands'] = [{'command': r['plugin_name'], 'count': r['c']} for r in cur.fetchall()]
@@ -274,18 +266,6 @@ class DAUService(DailyScanService):
         finally:
             conn.close()
 
-    @staticmethod
-    def _open_ro(path):
-        """只读打开 SQLite, 返回 conn 或 None"""
-        if not os.path.isfile(path):
-            return None
-        try:
-            conn = sqlite3.connect(f'file:{path}?mode=ro', uri=True, timeout=10)
-            conn.row_factory = sqlite3.Row
-            return conn
-        except sqlite3.Error:
-            return None
-
     def _load_sync(self, appid, date_str):
         conn = self._open_ro(self._dau_db_path(appid))
         if not conn:
@@ -308,13 +288,5 @@ class DAUService(DailyScanService):
 
     _JSON_KEYS = ('message_stats_detail', 'user_stats_detail', 'command_stats_detail')
 
-    @staticmethod
-    def _row_to_dict(row):
-        d = dict(row)
-        for k in DAUService._JSON_KEYS:
-            v = d.get(k)
-            if not isinstance(v, str) or not v:
-                continue
-            with contextlib.suppress(Exception):
-                d[k] = json.loads(v)
-        return d
+    def _row_to_dict(self, row):
+        return self._decode_json_fields(dict(row), self._JSON_KEYS)

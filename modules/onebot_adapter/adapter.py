@@ -179,8 +179,8 @@ class OneBotAdapter:
                 rq = bc.get('robot_qq', '')
                 if aid and rq:
                     self._actx.qq_map[aid] = int(rq)
-        except Exception:
-            pass
+        except Exception as e:
+            self.log.debug(f'读取机器人 QQ 映射失败: {e}')
         for aid, qq in self._actx.qq_map.items():
             self.log.info(f'QQ 映射: appid={aid} → robot_qq={qq}')
         self._actx.default_qq = next(iter(self._actx.qq_map.values()), 0)
@@ -223,7 +223,7 @@ class OneBotAdapter:
             app = get_app()
             if app and app._http_server:
                 return app._http_server._app
-        except Exception:
+        except ImportError:
             pass
         return None
 

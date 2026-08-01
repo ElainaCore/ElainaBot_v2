@@ -2,7 +2,8 @@
 
 import asyncio
 import json
-from datetime import datetime
+
+from core.base.logger import now_str
 
 # 场景值定义
 _SCENE_MAP = {
@@ -49,7 +50,7 @@ class ShareMixin:
         db_path = self._resolve_db_path('share')
         conn = self._get_conn(db_path, 'share')
         lock = self._conn_locks.get(db_path)
-        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        now = now_str()
         with lock:
             row = conn.execute('SELECT referrals FROM log WHERE openid=?', (sharer_id,)).fetchone()
             if not row:

@@ -1,10 +1,13 @@
 """消息管理 — SQL 查询 (聊天列表聚合, 历史消息)"""
 
+import logging
 from datetime import date as _date
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import web.tools._message.shared as _shared
 from web.tools._bots import iter_bots
+
+log = logging.getLogger('ElainaBot.web.message')
 
 _MSG_COLS = 'id, timestamp, message_id, reference_id, user_id, group_id, content, raw_message, plugin_name, direction'
 
@@ -40,8 +43,8 @@ def _query_chat_messages_sync(chat_type, chat_id, appid_filter, days=3, limit=30
                     r['bot_qq'] = bot_qq
                     r['_date'] = d
                 results.extend(rows)
-            except Exception:
-                pass
+            except Exception as e:
+                log.debug(f'查询消息失败 {appid} {d}: {e}')
             # 今天已经够了就不查更早的日期
             if len(results) >= limit:
                 break
@@ -53,8 +56,6 @@ def _query_older_messages_sync(chat_type, chat_id, appid_filter, before_date_str
     """从 before_date 前一天开始往前搜索, 找到第一个有消息的日期即返回"""
     if not _shared._bot_manager:
         return [], '', False
-    from datetime import datetime
-
     try:
         bd = datetime.strptime(before_date_str, '%Y-%m-%d').date()
     except ValueError:
@@ -82,8 +83,8 @@ def _query_older_messages_sync(chat_type, chat_id, appid_filter, before_date_str
                     r['bot_qq'] = bot_qq
                     r['_date'] = d
                 results.extend(rows)
-            except Exception:
-                pass
+            except Exception as e:
+                log.debug(f'查询历史消息失败 {appid} {d}: {e}')
         if results:
             results.sort(key=lambda r: r.get('id', 0))
             return results[-limit:], d, True
@@ -105,64 +106,69 @@ def _query_lifecycle_events_sync(chat_type, chat_id, appid_filter, dates, limit=
                     r['appid'] = appid
                     r['_date'] = d
                 results.extend(rows)
-            except Exception:
-                pass
+            except Exception as e:
+                log.debug(f'查询生命周期事件失败 {appid} {d}: {e}')
     results.sort(key=lambda r: (r.get('_date', ''), r.get('id', 0)))
     return results[-limit:]
 
 
+# 单次覆盖索引扫描得到全部会话的最后消息 id/时间与条数, 取代逐会话点查
+_GROUP_CHATS_SQL = (
+    'SELECT group_id AS cid, MAX(id) AS last_id, MAX(timestamp) AS last_time, COUNT(*) AS n '
+    "FROM log WHERE group_id != '' AND group_id != 'c2c' GROUP BY group_id"
+)
+# group_id 等值分支拆开, 每个分支都可走 (group_id, user_id, id, timestamp) 索引
+_PRIVATE_CHATS_SQL = (
+    'SELECT cid, MAX(last_id) AS last_id, MAX(last_time) AS last_time, SUM(n) AS n FROM ('
+    'SELECT user_id AS cid, MAX(id) AS last_id, MAX(timestamp) AS last_time, COUNT(*) AS n '
+    "FROM log WHERE group_id = '' AND user_id != '' GROUP BY user_id "
+    'UNION ALL '
+    'SELECT user_id, MAX(id), MAX(timestamp), COUNT(*) '
+    "FROM log WHERE group_id = 'c2c' AND user_id != '' GROUP BY user_id"
+    ') GROUP BY cid'
+)
+
+
 def _aggregate_chats_sync(chat_type, appid_filter):
-    """SQL 聚合聊天列表 (仅今日)"""
+    """聚合聊天列表 (仅今日) — 每 bot 单次 GROUP BY 扫描, 仅前 200 个会话取最后消息内容"""
     if not _shared._bot_manager:
         return []
     dates = _recent_dates(1)
-    if chat_type == 'group':
-        agg_sql = (
-            'SELECT group_id AS chat_id, MAX(id) AS last_id, MAX(timestamp) AS last_time, '
-            "COUNT(*) AS msg_count FROM log WHERE group_id != '' AND group_id != 'c2c' "
-            'GROUP BY group_id'
-        )
-    else:
-        agg_sql = (
-            'SELECT user_id AS chat_id, MAX(id) AS last_id, MAX(timestamp) AS last_time, '
-            "COUNT(*) AS msg_count FROM log WHERE user_id != '' AND (group_id = '' OR group_id = 'c2c') "
-            'GROUP BY user_id'
-        )
+    sql = _GROUP_CHATS_SQL if chat_type == 'group' else _PRIVATE_CHATS_SQL
     merged = {}
     for appid, inst in iter_bots(_shared._bot_manager, appid_filter):
         bot_name = getattr(inst, 'name', appid)
         for d in dates:
             try:
-                rows = inst.log_service.query('message', agg_sql, date=d)
-            except Exception:
+                for r in inst.log_service.query('message', sql, date=d):
+                    cid = r.get('cid') or ''
+                    if not cid:
+                        continue
+                    last_id = r.get('last_id', 0) or 0
+                    key = (appid, cid)
+                    item = merged.get(key)
+                    if not item:
+                        item = {
+                            'chat_id': cid,
+                            'appid': appid,
+                            'bot_name': bot_name,
+                            'last_id': 0,
+                            'last_time': '',
+                            'last_date': '',
+                            'msg_count': 0,
+                        }
+                        merged[key] = item
+                    item['msg_count'] += r.get('n', 0) or 0
+                    if last_id and (last_id > item['last_id'] or d > item['last_date']):
+                        item['last_id'] = last_id
+                        item['last_time'] = r.get('last_time', '') or ''
+                        item['last_date'] = d
+            except Exception as e:
+                log.debug(f'聊天列表聚合失败 {appid} {d}: {e}')
                 continue
-            for r in rows:
-                cid = r.get('chat_id', '')
-                if not cid:
-                    continue
-                key = (appid, cid)
-                item = merged.get(key)
-                if not item:
-                    item = {
-                        'chat_id': cid,
-                        'appid': appid,
-                        'bot_name': bot_name,
-                        'last_id': 0,
-                        'last_time': '',
-                        'last_date': '',
-                        'msg_count': 0,
-                    }
-                    merged[key] = item
-                item['msg_count'] += r.get('msg_count', 0) or 0
-                rid = r.get('last_id', 0) or 0
-                rts = r.get('last_time', '') or ''
-                if rid and (rid > item['last_id'] or d > item['last_date']):
-                    item['last_id'] = rid
-                    item['last_time'] = rts
-                    item['last_date'] = d
     if not merged:
         return []
-    # 按 last_time 排序, 仅取前 200 个聊天的 last_content
+    # 按 last_time 排序, 仅前 200 个聊天取 last_content
     chats = sorted(merged.values(), key=lambda c: c.get('last_time', ''), reverse=True)
     top = chats[:200]
     by_path = {}
@@ -186,8 +192,8 @@ def _aggregate_chats_sync(chat_type, appid_filter):
                 )
                 for r in rows:
                     id_to_content[(appid, r.get('id'))] = r.get('content', '')
-            except Exception:
-                pass
+            except Exception as e:
+                log.debug(f'查询消息内容失败: {e}')
     for item in top:
         item['last_content'] = id_to_content.get((item['appid'], item['last_id']), '')
     return chats

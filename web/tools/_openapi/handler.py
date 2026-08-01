@@ -19,6 +19,8 @@ _v2_dir = ''
 _bot_api = None
 _bot_manager = None
 
+_WEBHOOK_ALLOWED_PORTS = {'80', '8080', '443', '8443'}
+
 
 def set_context(base_dir: str, bot_manager=None):
     global _data_file, _v2_dir, _bot_manager
@@ -46,7 +48,7 @@ def _save_data():
         os.makedirs(os.path.dirname(_data_file), exist_ok=True)
         with open(_data_file, 'w', encoding='utf-8') as f:
             json.dump(_openapi_user_data, f, indent=2, ensure_ascii=False)
-    except Exception:
+    except (OSError, TypeError, ValueError):
         pass
 
 
@@ -72,7 +74,7 @@ def _save_v2(user_id):
         path = os.path.join(_v2_dir, f'{user_id}.json')
         with open(path, 'w', encoding='utf-8') as f:
             json.dump(_openapi_v2_data.get(user_id, {}), f, indent=2, ensure_ascii=False)
-    except Exception:
+    except (OSError, TypeError, ValueError):
         pass
 
 
@@ -82,7 +84,7 @@ def _remove_v2(user_id):
         path = os.path.join(_v2_dir, f'{user_id}.json')
         if os.path.exists(path):
             os.remove(path)
-    except Exception:
+    except OSError:
         pass
 
 
@@ -129,12 +131,23 @@ def _require_api_and_login(body):
     return api, ud, None
 
 
-def _apply_login(user_id, creds):
-    """把一次扫码得到的凭证隔离写入新/旧两个存储。
+def _webhook_suggestion(request, appid):
+    """当本面板端口为 80/8080/443/8443 且框架本地存在该 appid 机器人时, 返回可自动填入的本机回调地址"""
+    has_bot = bool(_bot_manager and str(appid) in _bot_manager._bots)
+    scheme = request.headers.get('X-Forwarded-Proto', request.scheme)
+    host = request.headers.get('X-Forwarded-Host', request.host)
+    port = host.split(':')[1] if ':' in host else ('443' if scheme == 'https' else '80')
+    port_allowed = port in _WEBHOOK_ALLOWED_PORTS
+    return {
+        'available': has_bot and port_allowed,
+        'url': f'{scheme}://{host}/?appid={appid}',
+        'has_bot': has_bot,
+        'port_allowed': port_allowed,
+    }
 
-    新平台 (data/open/): b_token/qticket_lite/qticket/developer_id_lite/uin/skey
-    旧平台 (data/openapi.json): uin/developerId/ticket, 供系统插件与旧接口使用
-    """
+
+def _apply_login(user_id, creds):
+    """把扫码凭证隔离写入两个存储: 新平台 data/open/ (b_token/qticket/developer_id_lite/uin/skey), 旧平台 data/openapi.json (uin/developerId/ticket 供系统插件与旧接口)"""
     quid = creds.get('developer_id_lite') or creds.get('developerId') or ''
     uin = creds.get('uin') or ''
     # 新平台隔离存储
@@ -198,6 +211,7 @@ from web.tools._openapi.v2 import (  # noqa: E402
     handle_v2_status,
     handle_v2_switch_developer,
     handle_v2_upload_avatar,
+    handle_v2_webhook_suggest,
 )
 
 __all__ = [
@@ -231,6 +245,7 @@ __all__ = [
     'handle_v2_status',
     'handle_v2_switch_developer',
     'handle_v2_upload_avatar',
+    'handle_v2_webhook_suggest',
     'handle_verify_saved_login',
     'handle_webhook_suggest',
     'set_context',

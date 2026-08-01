@@ -5,12 +5,11 @@ import asyncio
 from aiohttp import web
 
 import web.auth as auth
+from core.storage.log import SharedLogService
 
 
 def _query_logs_sync(log_type, page_size, offset):
     """同步查询日志 (executor 中调用)"""
-    from core.storage.log import SharedLogService
-
     shared = SharedLogService._instance
     if log_type not in ('framework', 'error') or not shared:
         return [], 0

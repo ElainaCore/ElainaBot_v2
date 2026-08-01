@@ -20,7 +20,7 @@ CHUNK_THRESHOLD = 5 * 1024 * 1024  # 5MB
 # ==================== 上传 ====================
 
 
-async def upload_media_bytes(sender, file_bytes, file_type, endpoint, *, file_name=None, max_retry: int = 3):
+async def upload_media_bytes(sender, file_bytes, file_type, endpoint, *, file_name=None, max_retry: int = 3, event=None):
     """上传媒体 bytes, 返回 file_info (>5MB 自动分片)"""
     if not file_bytes:
         return None
@@ -33,6 +33,7 @@ async def upload_media_bytes(sender, file_bytes, file_type, endpoint, *, file_na
                 result = await _chunked_upload_from_bytes(sender, file_bytes, file_type, endpoint, file_name=file_name)
                 if result:
                     return result
+                sender.error = PromptTpl.UploadMediaFail.d({'retry_msg': '分片上传返回空结果 (无 file_info)'})
             except Exception as e:
                 retry_msg = '' if retry == 0 else f'(retry{retry}/{max_retry})'
                 sender.error = PromptTpl.UploadMediaFail.d({'retry_msg': retry_msg, 'e': e})
@@ -48,7 +49,9 @@ async def upload_media_bytes(sender, file_bytes, file_type, endpoint, *, file_na
         'file_type': file_type,
     }
     if isinstance(file_bytes, bytes):
-        req_data['file_data'] = base64.b64encode(file_bytes).decode()
+        req_data['file_data'] = await asyncio.get_running_loop().run_in_executor(
+            None, lambda: base64.b64encode(file_bytes).decode()
+        )
     elif isinstance(file_bytes, str):
         req_data['url'] = file_bytes  # 兼容使用url来发送
     if file_name:
@@ -59,7 +62,10 @@ async def upload_media_bytes(sender, file_bytes, file_type, endpoint, *, file_na
         success, resp = await sender.post_json(endpoint, req_data)
         last_resp = resp
         if not success:
-            log.warning(f'[{sender._appid}] 上传API失败: {resp} (endpoint={endpoint})')
+            if event:
+                event.error = resp
+            else:
+                log.warning(f'[{sender._appid}] 上传API失败: {resp} (endpoint={endpoint})')
             return None
         file_info = resp.get('file_info')
         if file_info:
@@ -67,7 +73,10 @@ async def upload_media_bytes(sender, file_bytes, file_type, endpoint, *, file_na
         if attempt == 0:
             log.debug(f'[{sender._appid}] 上传返回无 file_info, 重试 (resp={resp})')
             await asyncio.sleep(0.15)
-    log.warning(f'[{sender._appid}] 上传失败: 无 file_info (endpoint={endpoint}, resp={last_resp})')
+    if event:
+        event.error = last_resp
+    else:
+        log.warning(f'[{sender._appid}] 上传失败: 无 file_info (endpoint={endpoint}, resp={last_resp})')
     return None
 
 
@@ -100,7 +109,6 @@ async def upload_media_via_url(
     success, resp = await sender.post_json(endpoint, req_data)
     if success:
         return resp.get('file_info')
-    log.warning(f'upload_media_via_url.fail:{resp}')
     if event:
         event.error = resp
     return None
@@ -270,6 +278,6 @@ async def get_image_size(client, image_input):
         if isinstance(image_input, bytes):
             with Image.open(io.BytesIO(image_input)) as img:
                 return _img_size(img)
-    except Exception:
-        pass
+    except Exception as e:
+        log.debug(f'获取图片尺寸失败: {e}')
     return None

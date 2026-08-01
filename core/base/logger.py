@@ -1,10 +1,13 @@
 #!/usr/bin/env python
 """统一日志系统 — 格式化输出、错误上报"""
 
+import atexit
 import contextlib
 import json
 import logging
+import logging.handlers
 import os
+import queue
 import sys
 import traceback
 from datetime import datetime
@@ -28,8 +31,11 @@ _error_callbacks: list = []
 _framework_callbacks: list = []
 
 
-def _now_str():
+def now_str():
+    """当前时间字符串 'YYYY-MM-DD HH:MM:SS' (全框架复用)"""
     return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+
 
 
 def _fire(callbacks, data):
@@ -46,7 +52,7 @@ def _get_app_callbacks():
         app = get_app()
         if app:
             return app._error_callbacks, app._framework_callbacks
-    except Exception:
+    except ImportError:
         pass
     return [], []
 
@@ -135,6 +141,7 @@ class ElainaFilter(logging.Filter):
 # ==================== 初始化 ====================
 
 _initialized = False
+_queue_listener = None
 
 
 def setup(framework_name=None, level=logging.INFO, log_file=None):
@@ -157,14 +164,24 @@ def setup(framework_name=None, level=logging.INFO, log_file=None):
     # 控制台
     console = logging.StreamHandler(sys.stdout)
     console.setFormatter(ElainaFormatter())
-    root_logger.addHandler(console)
+
+    handlers = [console]
 
     # 文件(可选)
     if log_file:
         os.makedirs(os.path.dirname(log_file), exist_ok=True)
         fh = logging.FileHandler(log_file, encoding='utf-8')
         fh.setFormatter(ElainaFormatter())
-        root_logger.addHandler(fh)
+        handlers.append(fh)
+
+    # 写日志经队列交给后台线程: stdout/文件写入是同步磁盘 IO,
+    # 磁盘慢时直接在事件循环上 emit 会卡住循环
+    global _queue_listener
+    log_queue = queue.SimpleQueue()
+    root_logger.addHandler(logging.handlers.QueueHandler(log_queue))
+    _queue_listener = logging.handlers.QueueListener(log_queue, *handlers, respect_handler_level=True)
+    _queue_listener.start()
+    atexit.register(_queue_listener.stop)
 
     # 抑制第三方库噪音
     for name in ('websockets', 'aiohttp', 'asyncio'):
@@ -199,7 +216,7 @@ def report_error(module_type, module_name, error, context=None, notify=True):
         return
 
     ctx = context or {}
-    ts = _now_str()
+    ts = now_str()
     err_data = {
         'timestamp': ts,
         'appid': ctx.get('appid', '0000') if isinstance(ctx, dict) else '0000',
@@ -229,7 +246,7 @@ def report_framework(module_name, message, level='INFO'):
     log = get_logger(FRAMEWORK, module_name)
     getattr(log, level.lower(), log.info)(message)
     data = {
-        'timestamp': _now_str(),
+        'timestamp': now_str(),
         'content': f'[{FRAMEWORK}:{module_name}] {message}',
         'level': level,
     }
@@ -241,7 +258,7 @@ def report_framework(module_name, message, level='INFO'):
 def report_error_raw(module_type, module_name, content='', tb='', context='', appid=''):
     """直接提交自定义字段的错误, 触发回调链(SQLite+WebSocket)。仅记入报错表, 不输出控制台日志。"""
     data = {
-        'timestamp': _now_str(),
+        'timestamp': now_str(),
         'appid': str(appid) if appid else '0000',
         'module_type': module_type,
         'module_name': module_name,

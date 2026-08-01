@@ -89,7 +89,7 @@ class OneBotHTTPWebhook:
         try:
             if self._debug and event.get('post_type') != 'meta_event':
                 self._log.info(f'[HTTP上报→] {url} {body.decode("utf-8")[:500]}')
-            async with self._session.post(url, data=body, headers=headers, timeout=timeout, ssl=False) as resp:
+            async with self._session.post(url, data=body, headers=headers, timeout=timeout) as resp:
                 self._status[name] = {'ok': resp.status < 400, 'error': '' if resp.status < 400 else f'HTTP {resp.status}'}
                 if resp.status >= 400:
                     self._log.warning(f'HTTP 上报失败 [{url}]: HTTP {resp.status}')

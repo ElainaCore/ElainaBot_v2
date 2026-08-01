@@ -1,10 +1,14 @@
 """订阅消息服务 (SubscribeMixin) — 模板ID ↔ 群/用户 映射 (subscribe.db)"""
 
 import asyncio
-from datetime import datetime
+
+from core.base.logger import now_str
 
 SUB_TYPE_ONCE = 'once'
 SUB_TYPE_PERMANENT = 'permanent'
+
+OP_SUBSCRIBE = 1  # 开启订阅
+OP_UNSUBSCRIBE = 2  # 关闭订阅
 
 _UPSERT_SQL = (
     'INSERT INTO log (template_id, target_id, target_type, sub_type, subscribe_id, '
@@ -26,12 +30,7 @@ class SubscribeMixin:
         return conn, self._conn_locks.get(db_path)
 
     async def subscribe_record(self, results, group_id='', user_id='', once_template_ids=()):
-        """记录订阅事件 result 列表, 返回写入条数
-
-        - 群聊链路: group_id 非空, target_type='group'
-        - 单聊链路: 仅 user_id, target_type='user'
-        - sub_type: 模板 ID 在 once_template_ids 中为单次订阅, 否则为永久订阅
-        """
+        """记录订阅事件 result 列表并返回写入条数: group_id 非空为群聊链路否则单聊, 模板 ID 在 once_template_ids 中为单次订阅否则永久, op 1=开启(status=1) 2=关闭(status=0)"""
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
             None, self._subscribe_record_sync, results, group_id, user_id, once_template_ids)
@@ -42,7 +41,7 @@ class SubscribeMixin:
             return 0
         target_type = 'group' if group_id else 'user'
         once = {str(t) for t in once_template_ids}
-        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        now = now_str()
         rows = []
         for item in results or []:
             if not isinstance(item, dict):
@@ -57,7 +56,7 @@ class SubscribeMixin:
                 target_type,
                 sub_type,
                 str(item.get('subscribe_id') or ''),
-                int(item.get('op') or 0),
+                1 if int(item.get('op') or 0) == OP_SUBSCRIBE else 0,
                 int(item.get('subscribe_ts') or 0),
                 int(item.get('update_ts') or 0),
                 now,
@@ -116,6 +115,6 @@ class SubscribeMixin:
         with lock:
             conn.execute(
                 'UPDATE log SET status=0, updated_at=? WHERE template_id=? AND target_id=?',
-                (datetime.now().strftime('%Y-%m-%d %H:%M:%S'), str(template_id), str(target_id)),
+                (now_str(), str(template_id), str(target_id)),
             )
             conn.commit()

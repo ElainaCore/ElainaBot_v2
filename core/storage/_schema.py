@@ -3,6 +3,7 @@
 import contextlib
 import json
 import re
+import sqlite3
 
 from core.base.logger import SERVICE, get_logger
 from core.message.response import raw_response_text
@@ -187,6 +188,8 @@ _INDEXES = {
         'CREATE INDEX IF NOT EXISTS idx_msg_user_id ON log(user_id)',
         'CREATE INDEX IF NOT EXISTS idx_msg_group_agg ON log(group_id, id, timestamp)',
         'CREATE INDEX IF NOT EXISTS idx_msg_user_agg ON log(user_id, id, timestamp)',
+        # 私聊列表聚合覆盖索引 (group_id 等值 + user_id 范围可直接索引定位)
+        'CREATE INDEX IF NOT EXISTS idx_msg_user_chat_agg ON log(group_id, user_id, id, timestamp)',
         'CREATE INDEX IF NOT EXISTS idx_msg_message_id ON log(message_id)',
         'CREATE INDEX IF NOT EXISTS idx_msg_timestamp ON log(timestamp)',
         'CREATE INDEX IF NOT EXISTS idx_msg_reference_id ON log(reference_id)',
@@ -225,7 +228,7 @@ def _migrate_data_tables(conn):
     try:
         if conn.execute('PRAGMA user_version').fetchone()[0] >= _DATA_SCHEMA_VERSION:
             return
-    except Exception:
+    except sqlite3.Error:
         pass
     for table, col, col_def in _DATA_MIGRATIONS:
         try:

@@ -3,11 +3,11 @@
 
 import asyncio
 import contextlib
-import json
 import os
 from datetime import datetime, timedelta
 
-from core.base.logger import SERVICE, get_logger, on_error
+from core.base.logger import SERVICE, get_logger, now_str, on_error
+from core.base.tasks import spawn
 from core.storage._base import _BaseLogService
 from core.storage._schema import (
     _QUEUE_MAXSIZE,
@@ -91,7 +91,7 @@ class LogService(_BaseLogService, ShareMixin, WakeupMixin, SubscribeMixin):
             return False
         # DAU 立即刷写 (异步后台, 不阻塞调用方)
         if log_type == 'dau':
-            asyncio.create_task(self._flush_type('dau'))
+            spawn(self._flush_type('dau'))
         return True
 
     def query_data(self, sql, params=()):
@@ -100,7 +100,7 @@ class LogService(_BaseLogService, ShareMixin, WakeupMixin, SubscribeMixin):
 
     def _extract_row(self, log_type, data):
         """dict → INSERT 参数元组"""
-        ts = data.get('timestamp', datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+        ts = data.get('timestamp', now_str())
         if log_type == 'message':
             def _s(v): return str(v) if not isinstance(v, str) else v
             return (
@@ -137,13 +137,12 @@ class LogService(_BaseLogService, ShareMixin, WakeupMixin, SubscribeMixin):
                 _json_field(data, 'command_stats_detail'),
             )
         if log_type == 'lifecycle':
-            extra = {k: v for k, v in data.items() if k not in ('timestamp', 'type', 'user_id', 'group_id')}
             return (
                 ts,
                 data.get('type', ''),
                 data.get('user_id', ''),
                 data.get('group_id', ''),
-                json.dumps(extra, ensure_ascii=False) if extra else '',
+                data.get('extra', ''),
             )
         return None
 
@@ -309,5 +308,5 @@ class SharedLogService(_BaseLogService):
         log.info('[通用日志] 已关闭')
 
     def _extract_row(self, log_type, data):
-        ts = data.get('timestamp', datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+        ts = data.get('timestamp', now_str())
         return self._extract_common_row(log_type, data, ts)

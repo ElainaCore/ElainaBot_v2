@@ -7,6 +7,7 @@
 完整操作: 基础 Key / Hash / List / Set / Sorted Set / Pipeline / 管理命令
 """
 
+import asyncio
 import contextlib
 
 _DEFAULTS = {
@@ -19,6 +20,7 @@ _DEFAULTS = {
     'socket_timeout': 5,
     'socket_connect_timeout': 5,
     'health_check_interval': 30,
+    'retry_attempts': 2,
     'decode_responses': True,
 }
 
@@ -32,6 +34,7 @@ _COMMENTS = {
     'socket_timeout': '读写超时 (秒)',
     'socket_connect_timeout': '连接超时 (秒)',
     'health_check_interval': '健康检查间隔 (秒)',
+    'retry_attempts': '超时/断连自动重试次数 (指数退避), 0 为不重试',
     'decode_responses': '是否自动解码响应为字符串',
 }
 
@@ -49,12 +52,18 @@ class RedisPool:
 
     async def initialize(self):
         try:
+            import redis as _redis_pkg
             from redis.asyncio import BlockingConnectionPool, Redis
+            from redis.asyncio.retry import Retry
+            from redis.backoff import ExponentialBackoff
+            from redis.exceptions import ConnectionError as RedisConnectionError
+            from redis.exceptions import TimeoutError as RedisTimeoutError
         except ImportError:
             self._log.error('redis 未安装 (pip install redis>=5.0)')
             return
         try:
             password = self._cfg.get('password') or None
+            retries = int(self._cfg.get('retry_attempts', 2))
             pool = BlockingConnectionPool(
                 host=self._cfg.get('host', '127.0.0.1'),
                 port=int(self._cfg.get('port', 6379)),
@@ -65,7 +74,13 @@ class RedisPool:
                 socket_timeout=int(self._cfg.get('socket_timeout', 5)),
                 socket_connect_timeout=int(self._cfg.get('socket_connect_timeout', 5)),
                 health_check_interval=int(self._cfg.get('health_check_interval', 30)),
+                retry=Retry(ExponentialBackoff(cap=1, base=0.05), retries),
+                retry_on_error=[RedisConnectionError, RedisTimeoutError],
                 decode_responses=bool(self._cfg.get('decode_responses', True)),
+                # 显式传入版本: 避免每次新建连接时 importlib.metadata 读盘 METADATA
+                # (该同步磁盘读在事件循环上执行, 内存紧张/磁盘慢时会卡住循环数秒)
+                lib_name='redis-py',
+                lib_version=getattr(_redis_pkg, '__version__', 'unknown'),
             )
             self._client = Redis(connection_pool=pool)
             await self._client.ping()
@@ -83,11 +98,11 @@ class RedisPool:
         return self._client if self.is_available() else None
 
     async def close(self):
-        if self._client:
-            with contextlib.suppress(Exception):
-                await self._client.aclose()
-            self._client = None
         self._available = False
+        if self._client:
+            client, self._client = self._client, None
+            with contextlib.suppress(Exception):
+                await client.aclose()
 
     # ==================== 内部 ====================
 
@@ -289,6 +304,26 @@ class RedisPool:
     async def zcard(self, name):
         return await self._safe('ZCARD', self._client.zcard(name), default=0, key=name)
 
+    # ==================== Lua 脚本 ====================
+
+    async def eval(self, script, numkeys, *keys_and_args):
+        """执行 Lua 脚本 (异常向调用方抛出, 便于降级处理)"""
+        if not self.is_available():
+            return None
+        return await self._client.eval(script, numkeys, *keys_and_args)
+
+    async def evalsha(self, sha, numkeys, *keys_and_args):
+        """按 SHA1 执行已缓存的 Lua 脚本"""
+        if not self.is_available():
+            return None
+        return await self._client.evalsha(sha, numkeys, *keys_and_args)
+
+    async def script_load(self, script):
+        """缓存 Lua 脚本, 返回 SHA1"""
+        if not self.is_available():
+            return None
+        return await self._client.script_load(script)
+
     # ==================== Pipeline / 管理 ====================
 
     def pipeline(self, transaction=True):
@@ -320,3 +355,64 @@ class RedisPool:
     async def ping(self):
         """连通性测试"""
         return bool(await self._safe('PING', self._client.ping(), default=False))
+
+
+# ==================== 跨模块重载存活的连接池持有器 ====================
+# reload 仅 pop `modules.datastore` 主模块, 本子模块留在 sys.modules 中,
+# 因此这里的全局持有器可跨 datastore 重载存活, 实现客户端平滑热更 (无重连空窗)。
+
+_holder = {'sig': None, 'pool': None, 'pending_close': None}
+
+_SIG_KEYS = (
+    'host', 'port', 'password', 'db', 'max_connections', 'pool_timeout',
+    'socket_timeout', 'socket_connect_timeout', 'health_check_interval',
+    'retry_attempts', 'decode_responses',
+)
+
+
+def _sig(cfg):
+    return tuple(str(cfg.get(k)) for k in _SIG_KEYS)
+
+
+async def get_pool(cfg, log):
+    """获取 Redis 客户端: 配置未变复用已连接客户端, 变则新建并关旧 (平滑热更)"""
+    pc = _holder['pending_close']
+    if pc is not None and not pc.done():
+        pc.cancel()
+    _holder['pending_close'] = None
+
+    sig = _sig(cfg)
+    if _holder['pool'] is not None and _holder['sig'] == sig and _holder['pool'].is_available():
+        return _holder['pool']
+
+    old = _holder['pool']
+    pool = RedisPool(cfg, log)
+    await pool.initialize()
+    _holder['sig'] = sig
+    _holder['pool'] = pool
+    if old is not None:
+        with contextlib.suppress(Exception):
+            await old.close()
+    return pool
+
+
+def schedule_close(delay=3):
+    """teardown 调用: 延迟关闭当前客户端; delay 内若再次 get_pool 则被取消"""
+    if _holder['pool'] is None:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+
+    async def _close():
+        await asyncio.sleep(delay)
+        pool = _holder['pool']
+        _holder['sig'] = None
+        _holder['pool'] = None
+        _holder['pending_close'] = None
+        if pool is not None:
+            with contextlib.suppress(Exception):
+                await pool.close()
+
+    _holder['pending_close'] = loop.create_task(_close())

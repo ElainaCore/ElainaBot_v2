@@ -19,7 +19,7 @@ _start_time = datetime.now()
 _last_gc: float = 0.0
 _GC_INTERVAL = 30
 _bot_manager = None
-_info_cache = (0.0, None)
+_info_cache: tuple[float, dict | None] = (0.0, None)
 _INFO_CACHE_TTL = 5
 
 
@@ -54,7 +54,7 @@ def _cpu_model():
                     if line.startswith('model name'):
                         model = line.split(':', 1)[1].strip()
                         break
-    except Exception:
+    except OSError:
         pass
     if not model:
         with contextlib.suppress(Exception):
@@ -112,20 +112,20 @@ def get_system_info() -> dict:
                     today_messages += rows[0].get('cnt', 0)
                     today_active += rows[0].get('users', 0)
                     active_groups += rows[0].get('groups', 0)
-            except Exception:
-                pass
+            except Exception as e:
+                log.debug(f'统计今日消息失败: {e}')
             try:
                 r = inst.log_service.query_data('SELECT COUNT(*) as c FROM users')
                 if r:
                     total_users += r[0].get('c', 0)
-            except Exception:
-                pass
+            except Exception as e:
+                log.debug(f'统计用户数失败: {e}')
             try:
                 r = inst.log_service.query_data('SELECT COUNT(*) as c FROM groups_users')
                 if r:
                     total_groups += r[0].get('c', 0)
-            except Exception:
-                pass
+            except Exception as e:
+                log.debug(f'统计群数失败: {e}')
 
     return {
         'cpu_percent': round(sys_cpu, 1),

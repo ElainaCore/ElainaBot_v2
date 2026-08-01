@@ -5,11 +5,12 @@ from __future__ import annotations
 import asyncio
 import re
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import TYPE_CHECKING, Any
 
 from core.base.config import cfg
 from core.base.logger import FRAMEWORK, PLUGIN, get_logger, report_error
+from core.base.tasks import spawn
 from core.plugin.context import _make_reply_log_cb
 
 if TYPE_CHECKING:
@@ -64,6 +65,13 @@ class _DispatchMixin:
 
     _cached_app: Any = None
 
+    # 宿主类 (PluginManager) 提供的属性/方法声明
+    _appid: str
+    _all_handlers: list[dict[str, Any]]
+    _all_interceptors: list[dict[str, Any]]
+    _check_blacklist: Callable[[Event], tuple[str, str] | None]
+    _is_owner: Callable[[Event], bool]
+
     # ---------- 索引构建 (由 _rebuild_handler_list 调用) ----------
 
     def _build_dispatch_index(self) -> None:
@@ -101,6 +109,7 @@ class _DispatchMixin:
         if et not in _FULL_CHECK_TYPES:
             handlers = self._handlers_for(et)
             if not handlers:
+                event.finish_dispatch()
                 return False
             scene: int = _event_scene(event)
             matched: list[tuple[dict[str, Any], re.Match[str]]] = []
@@ -117,8 +126,9 @@ class _DispatchMixin:
                 if h.get('block', False):  # 默认放行, block=True 时拦截后续
                     break
             if not matched:
+                event.finish_dispatch()
                 return False
-            asyncio.create_task(self._run_chain(matched, event, user_id, et, content))
+            spawn(self._run_chain(matched, event, user_id, et, content))
             return True
 
         # ── 消息事件: 完整检查链 ──
@@ -148,13 +158,13 @@ class _DispatchMixin:
                 kind, reason = bl
                 tpl: str = 'blacklist' if kind == 'user' else 'group_blacklist'
                 tvars: dict[str, str] = {'user_id': user_id, 'reason': reason}
-                asyncio.create_task(event.reply(template_name=tpl, template_vars=tvars))
+                spawn(event.reply(template_name=tpl, template_vars=tvars))
             return True
 
         # 维护模式
         if not suppress_reply and _get(appid, 'maintenance.enabled', False) and not self._is_owner(event):
             if _get(appid, 'maintenance.reply', True):
-                asyncio.create_task(event.reply(template_name='maintenance'))
+                spawn(event.reply(template_name='maintenance'))
             return True
 
         # 非AT群消息权限
@@ -180,7 +190,7 @@ class _DispatchMixin:
                 report_error(PLUGIN, ic.get('_plugin', '?'), e)
 
         # 处理器匹配
-        scene: int = _event_scene(event)
+        scene = _event_scene(event)
         handlers = self._handlers_for(et)
         handler_content = content
         if is_group_msg and _get(appid, 'non_at_message.strip_bot_name_at', False):
@@ -197,7 +207,7 @@ class _DispatchMixin:
         if should_default and _get(appid, 'message.send_default_response', True):
             excluded: list[str] = _get(appid, 'message.default_response_excluded_regex', []) or []
             if not any(re.search(p, content) for p in excluded if p):
-                asyncio.create_task(event.reply(template_name='default', template_vars={'user_id': user_id}))
+                spawn(event.reply(template_name='default', template_vars={'user_id': user_id}))
         return False
 
     def _match_handlers(
@@ -236,7 +246,7 @@ class _DispatchMixin:
                 # 群聊专属指令在私聊环境 → 告知用户并终止
                 if h['group_only'] and not is_non_at:
                     self._fire_chain(matched, event, user_id, et, content)
-                    asyncio.create_task(
+                    spawn(
                         event.reply(
                             template_name='group_only',
                             template_vars={'user_id': user_id},
@@ -248,7 +258,7 @@ class _DispatchMixin:
             if h['owner_only'] and not self._is_owner(event):
                 self._fire_chain(matched, event, user_id, et, content)
                 if not is_non_at:
-                    asyncio.create_task(
+                    spawn(
                         event.reply(
                             template_name='owner_only',
                             template_vars={'user_id': user_id},
@@ -273,7 +283,7 @@ class _DispatchMixin:
     ) -> None:
         """调度命中的 handler 链顺序执行 (空则跳过)"""
         if matched:
-            asyncio.create_task(self._run_chain(matched, event, user_id, et, content))
+            spawn(self._run_chain(matched, event, user_id, et, content))
 
     async def _run_chain(
         self,
@@ -304,35 +314,26 @@ class _DispatchMixin:
         et: str,
         content: str,
     ) -> None:
+        timeout_ctx = None
+        ctx: dict[str, str] = {
+            'handler': h['name'],
+            'user_id': user_id,
+            'group_id': event.group_id or '',
+            'event_type': et,
+            'content': content[:200],
+        }
         try:
             fn = h['func']
             coro = fn(event, match) if h['is_coro'] else asyncio.get_running_loop().run_in_executor(None, fn, event, match)
-            await asyncio.wait_for(coro, timeout=300)
-        except TimeoutError:
-            report_error(
-                PLUGIN,
-                plugin_name or '?',
-                f'处理器 [{h["name"]}] 超时(300s)',
-                context={
-                    'handler': h['name'],
-                    'user_id': user_id,
-                    'event_type': et,
-                    'content': content[:200],
-                },
-            )
+            timeout_ctx = asyncio.timeout(300)
+            async with timeout_ctx:
+                await coro
+        except TimeoutError as e:
+            # 区分处理器整体超时与 handler 内部抛出的 TimeoutError (如渲染/网络超时)
+            err = f'处理器 [{h["name"]}] 超时(300s)' if timeout_ctx is not None and timeout_ctx.expired() else e
+            report_error(PLUGIN, plugin_name or '?', err, context=ctx)
         except Exception as e:
-            report_error(
-                PLUGIN,
-                plugin_name or '?',
-                e,
-                context={
-                    'handler': h['name'],
-                    'user_id': user_id,
-                    'group_id': event.group_id or '',
-                    'event_type': et,
-                    'content': content[:200],
-                },
-            )
+            report_error(PLUGIN, plugin_name or '?', e, context=ctx)
         finally:
             event.raw = event._reply_log_cb = None
 

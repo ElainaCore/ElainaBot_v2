@@ -14,6 +14,7 @@ from functools import wraps
 
 from aiohttp import web
 
+from core.base.config import cfg
 from web.response import error
 
 _BAN_DURATION = 43200
@@ -85,7 +86,7 @@ def _read_json(path, default=None):
         if os.path.exists(path):
             with open(path, encoding='utf-8') as f:
                 return json.load(f)
-    except Exception:
+    except (OSError, ValueError):
         pass
     return default or {}
 
@@ -96,7 +97,7 @@ def _write_text_sync(path, text):
         try:
             with open(path, 'w', encoding='utf-8') as f:
                 f.write(text)
-        except Exception:
+        except OSError:
             pass
 
 
@@ -134,8 +135,6 @@ def _peer_ip(request: web.Request) -> str:
 
 def _trust_forwarded() -> bool:
     try:
-        from core.base.config import cfg
-
         return bool(cfg.get('settings', 'web.trust_forwarded_headers', False))
     except Exception:
         return False
@@ -220,7 +219,7 @@ def cleanup_expired_ip_bans():
                     d['is_banned'] = False
                     d['ban_time'] = None
                     d['fail_times'] = []
-            except Exception:
+            except (TypeError, ValueError):
                 pass
     # 超限时淘汰最旧的无封禁记录
     if len(ip_access_data) > _MAX_IP_RECORDS:
@@ -251,7 +250,7 @@ def _load_session_data():
             info['expires'] = datetime.fromisoformat(info['expires'])
             if now < info['expires']:
                 valid_sessions[token] = info
-        except Exception:
+        except (KeyError, TypeError, ValueError):
             pass
 
 
@@ -283,9 +282,9 @@ def _cleanup_sessions():
 def create_session(request: web.Request) -> str:
     """创建会话并返回 bearer token"""
     _cleanup_sessions()
-    if len(valid_sessions) > _MAX_SESSIONS:
+    if len(valid_sessions) >= _MAX_SESSIONS:
         oldest = sorted(valid_sessions, key=lambda t: valid_sessions[t]['created'])
-        for t in oldest[: len(valid_sessions) - _MAX_SESSIONS]:
+        for t in oldest[: len(valid_sessions) - _MAX_SESSIONS + 1]:
             valid_sessions.pop(t)
 
     ip = get_real_ip(request)

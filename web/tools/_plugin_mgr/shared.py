@@ -5,6 +5,8 @@ import os
 
 from aiohttp import web
 
+from web.tools._zipsafe import is_within
+
 log = logging.getLogger('ElainaBot.web.plugin_mgr')
 
 # ==================== 全局状态 (由 plugin_manager.set_context 注入) ====================
@@ -53,14 +55,13 @@ def get_mm():
 
 def validate_path(path, base):
     abs_p = os.path.abspath(path)
-    return abs_p.startswith(os.path.abspath(base)), abs_p
+    return is_within(base, abs_p), abs_p
 
 
 def validate_config_path(raw_path):
     """校验配置路径在 modules/ 或 plugins/ 下, 返回 (abs_path, error_response)"""
     abs_path = os.path.abspath(os.path.normpath(raw_path))
-    allowed = (os.path.abspath(modules_dir()), os.path.abspath(plugins_dir()))
-    if not any(abs_path.startswith(d) for d in allowed):
+    if not any(is_within(d, abs_path) for d in (modules_dir(), plugins_dir())):
         return None, web.json_response({'success': False, 'message': '无效路径'}, status=403)
     return abs_path, None
 

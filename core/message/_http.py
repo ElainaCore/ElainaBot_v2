@@ -1,7 +1,10 @@
 """HTTP 请求层 — Token 自动重试、API 基础方法"""
 
 import asyncio
+import random
+import time
 
+from core.base.config import cfg
 from core.base.logger import FRAMEWORK, get_logger
 from core.message.response import loads_raw_response
 from core.network.http_compat import HAS_HTTPX
@@ -14,6 +17,7 @@ MSG_TYPE_TEXT = 0
 MSG_TYPE_MARKDOWN = 2
 MSG_TYPE_ARK = 3
 MSG_TYPE_MEDIA = 7
+MSG_TYPE_CARD = 8
 
 
 class MessageType:
@@ -23,6 +27,7 @@ class MessageType:
     MSG_TYPE_MARKDOWN = MSG_TYPE_MARKDOWN
     MSG_TYPE_ARK = MSG_TYPE_ARK
     MSG_TYPE_MEDIA = MSG_TYPE_MEDIA
+    MSG_TYPE_CARD = MSG_TYPE_CARD
 
 
 _API_BASE = 'https://api.sgroup.qq.com'
@@ -30,6 +35,85 @@ _API_BASE = 'https://api.sgroup.qq.com'
 _IGNORE_ERROR_CODES = frozenset({11293, 40054002, 40054003})
 _TOKEN_EXPIRED_CODE = 11244
 _MAX_MEDIA_DOWNLOAD = 100 * 1024 * 1024  # 100MB 下载上限, 防止 OOM
+_NET_MAX_RETRIES = 2
+_NET_RETRY_DELAY = 0.5  # 秒, 按次数线性递增
+_RATE_LIMIT_ERR_CODE = 40023001
+_RATE_LIMIT_RESEND_PER_SEC = 40  # 限频补发速率 (全局每秒条数)
+_VIOLATION_CODE = 40034006  # 消息内容违规
+_DEFAULT_MAX_CONNECTIONS = 200
+
+
+class _NullSem:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+_NULL_SEM = _NullSem()
+
+
+class _ResendLimiter:
+    """限频补发节流器: 按固定速率分配补发时隙"""
+
+    def __init__(self, per_sec):
+        self._interval = 1.0 / per_sec
+        self._next = 0.0
+        self._lock = asyncio.Lock()
+
+    async def acquire(self):
+        async with self._lock:
+            now = time.monotonic()
+            slot = max(now, self._next)
+            self._next = slot + self._interval
+        if slot > now:
+            await asyncio.sleep(slot - now)
+
+
+_RESEND_LIMITER = _ResendLimiter(_RATE_LIMIT_RESEND_PER_SEC)
+
+
+def _msg_seq():
+    return random.randint(1000000, 9999999)
+
+
+def _is_rate_limited(data):
+    """判断是否接口频率限制错误"""
+    return isinstance(data, dict) and data.get('err_code') == _RATE_LIMIT_ERR_CODE
+
+
+def _is_violation(data):
+    """判断是否消息内容违规被拦截"""
+    return isinstance(data, dict) and data.get('err_code') == _VIOLATION_CODE
+
+
+def _is_retryable(e):
+    """超时/连接类异常可安全重试 (payload 含 msg_seq, 平台会去重)"""
+    lowered = f'{type(e).__name__} {e}'.lower()
+    if 'pooltimeout' in lowered:
+        return False
+    return 'timeout' in lowered or 'connect' in lowered or 'connection' in lowered
+
+
+def _describe_exception(e, method, endpoint):
+    """将网络层异常转为带原因的错误响应 (框架侧, code=-1)"""
+    name = type(e).__name__
+    detail = str(e)
+    lowered = f'{name} {detail}'.lower()
+    if 'timeout' in lowered:
+        reason = '请求超时'
+    elif 'connect' in lowered or 'connection' in lowered:
+        reason = '连接失败'
+    elif 'ssl' in lowered or 'certificate' in lowered:
+        reason = 'SSL/证书错误'
+    else:
+        reason = '网络异常'
+    msg = f'框架网络层{reason} ({name}'
+    if detail:
+        msg += f': {detail}'
+    msg += f') {method} {endpoint}'
+    return {'message': msg, 'code': -1}
 
 
 class _HttpMixin:
@@ -45,10 +129,24 @@ class _HttpMixin:
         # 客户端由 TokenManager 统一管理生命周期
         self._client = None
 
+    def _get_send_sem(self):
+        """发送并发信号量 (每个机器人一个)"""
+        if self._send_sem is None:
+            net = cfg.get('settings', 'network') or {}
+            limit = int(net.get('max_concurrency', net.get('max_connections', _DEFAULT_MAX_CONNECTIONS)) or 0)
+            self._send_sem = asyncio.Semaphore(limit) if limit > 0 else _NULL_SEM
+        return self._send_sem
+
     async def _request(self, method, endpoint, **kwargs):
+        async with self._get_send_sem():
+            return await self._request_inner(method, endpoint, **kwargs)
+
+    async def _request_inner(self, method, endpoint, **kwargs):
         client = await self._ensure_client()
         extra_headers = kwargs.pop('headers', None)
-        for attempt in range(2):
+        token_retried = False
+        net_retries = 0
+        while True:
             token = await self._token_mgr.get_token()
             headers = dict(extra_headers) if extra_headers else {}
             headers['Authorization'] = f'QQBot {token}'
@@ -68,7 +166,8 @@ class _HttpMixin:
                             'code': status,
                         }
                     del body
-                    if err.get('code') == _TOKEN_EXPIRED_CODE and attempt == 0:
+                    if err.get('code') == _TOKEN_EXPIRED_CODE and not token_retried:
+                        token_retried = True
                         await self._token_mgr.refresh_token()
                         await asyncio.sleep(0.1)
                         continue
@@ -79,14 +178,38 @@ class _HttpMixin:
                     return True, result
                 return True, {}
             except Exception as e:
-                return False, {'message': str(e), 'code': -1}
-        return False, {'message': 'max retries', 'code': -1}
+                if net_retries < _NET_MAX_RETRIES and _is_retryable(e):
+                    net_retries += 1
+                    log.warning(
+                        f'[{self._appid}] 网络异常自动重试 {net_retries}/{_NET_MAX_RETRIES}: '
+                        f'{type(e).__name__} {method} {endpoint}'
+                    )
+                    self._report_send_error(
+                        f'网络异常自动重试 {net_retries}/{_NET_MAX_RETRIES}: {method} {endpoint}',
+                        _describe_exception(e, method, endpoint),
+                    )
+                    await asyncio.sleep(_NET_RETRY_DELAY * net_retries)
+                    continue
+                return False, _describe_exception(e, method, endpoint)
 
     async def get_json(self, endpoint, **kwargs):
         return await self._request('GET', endpoint, **kwargs)
 
     async def post_json(self, endpoint, payload):
-        return await self._request('POST', endpoint, json=payload)
+        ok, data = await self._request('POST', endpoint, json=payload)
+        # 频率限制: 仅被动消息 (带 msg_id/event_id) 重发一次, 全局按每秒 40 条节流, 同 msg_seq 平台会去重
+        if (
+            not ok
+            and _is_rate_limited(data)
+            and isinstance(payload, dict)
+            and payload.get('msg_seq')
+            and (payload.get('msg_id') or payload.get('event_id'))
+        ):
+            log.warning(f'[{self._appid}] 接口频率限制, 排队重发被动消息: POST {endpoint}')
+            self._report_send_error(f'接口频率限制, 排队重发被动消息: POST {endpoint}', data, payload)
+            await _RESEND_LIMITER.acquire()
+            ok, data = await self._request('POST', endpoint, json=payload)
+        return ok, data
 
     async def put(self, endpoint, **kwargs):
         return await self._request('PUT', endpoint, **kwargs)

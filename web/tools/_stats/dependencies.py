@@ -4,12 +4,8 @@ import contextlib
 import os
 import platform
 import re
+import tomllib
 from importlib import metadata
-
-try:
-    import tomllib
-except ModuleNotFoundError:  # Python < 3.11 无 tomllib, 降级正则解析
-    tomllib = None
 
 from aiohttp import web
 
@@ -67,20 +63,9 @@ _DEP_RE = re.compile(r'^([A-Za-z0-9_.-]+)\s*(\[[^\]]*\])?\s*(.*)$')
 
 def _parse_pyproject(path: str) -> tuple[str, list[str]]:
     """返回 (requires-python, 依赖声明列表)"""
-    if tomllib:
-        with open(path, 'rb') as f:
-            project = tomllib.load(f).get('project', {})
-        return project.get('requires-python', ''), list(project.get('dependencies', []))
-    # 降级: 正则提取 requires-python 与 dependencies 块中的字符串
-    with open(path, encoding='utf-8') as f:
-        text = f.read()
-    m = re.search(r'requires-python\s*=\s*["\']([^"\']+)["\']', text)
-    requires_python = m.group(1) if m else ''
-    deps: list[str] = []
-    m = re.search(r'^dependencies\s*=\s*\[(.*?)\]', text, re.S | re.M)
-    if m:
-        deps = re.findall(r'["\']([^"\']+)["\']', m.group(1))
-    return requires_python, deps
+    with open(path, 'rb') as f:
+        project = tomllib.load(f).get('project', {})
+    return project.get('requires-python', ''), list(project.get('dependencies', []))
 
 
 def _collect() -> dict:

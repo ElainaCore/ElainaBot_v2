@@ -58,7 +58,7 @@ def _save_data():
         os.makedirs(_OLD_OPEN_DIR, exist_ok=True)
         with open(_DATA_FILE, 'w', encoding='utf-8') as f:
             json.dump(_user_data, f, indent=2, ensure_ascii=False)
-    except Exception:
+    except (OSError, TypeError, ValueError):
         pass
 
 

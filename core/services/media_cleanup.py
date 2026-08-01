@@ -4,6 +4,10 @@ import asyncio
 import os
 import time
 
+from core.base.logger import FRAMEWORK, get_logger
+
+log = get_logger(FRAMEWORK, '媒体清理')
+
 
 class MediaCleanupService:
     """定时清理过期的媒体文件 (图片/语音/视频等)"""
@@ -22,8 +26,8 @@ class MediaCleanupService:
             try:
                 cutoff = time.time() - self._max_age_secs
                 await loop.run_in_executor(None, self._do_cleanup, cutoff)
-            except Exception:
-                pass
+            except Exception as e:
+                log.debug(f'媒体清理失败: {e}')
 
     def _do_cleanup(self, cutoff: float):
         for name in os.listdir(self._media_dir):

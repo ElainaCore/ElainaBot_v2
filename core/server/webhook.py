@@ -1,12 +1,13 @@
 """Webhook 请求处理 — 验证 / 转发 / 交互响应"""
 
-import asyncio
+import functools
 import json
 import logging
 
 from aiohttp import web
 
 from core.base.sign import verify_and_respond
+from core.base.tasks import spawn
 from core.message.event import Event
 
 log = logging.getLogger('ElainaBot.webhook')
@@ -63,10 +64,10 @@ class WebhookHandler:
             if is_interaction:
                 # 启动 ACK 倒计时, 分发结束后用插件设置的 code 兜底/返回
                 event.start_ack_countdown()
-                task = asyncio.create_task(self._on_event(event))
-                task.add_done_callback(lambda t, ev=event: _finish_interaction(ev, t))
+                task = spawn(self._on_event(event))
+                task.add_done_callback(functools.partial(_finish_interaction, event))
             else:
-                asyncio.create_task(self._on_event(event))
+                spawn(self._on_event(event))
         except Exception as e:
             self._on_error({'appid': appid, 'source': 'Webhook', 'error': e})
             if is_interaction:

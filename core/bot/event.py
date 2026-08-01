@@ -7,7 +7,8 @@ import time
 from datetime import datetime, timedelta
 
 from core.base.config import cfg
-from core.base.logger import FRAMEWORK, get_logger, report_error
+from core.base.logger import FRAMEWORK, get_logger, now_str, report_error
+from core.base.tasks import spawn
 from core.message.event import (
     FRIEND_ADD,
     FRIEND_DEL,
@@ -34,7 +35,8 @@ _GROUP_CACHE_MAX = 10000
 _FULL_ACCESS_CACHE_TTL = 1800
 _DIRTY_FLUSH_THRESHOLD = 500  # 脏群数超过此阈值提前刷写
 _TRACK_WORKERS = 8  # 用户追踪后台 worker 数
-_TRACK_QUEUE_MAX = 5000  # 用户追踪队列上限, 满则丢弃 (背压, 防止突发时任务无界堆积)
+_TRACK_QUEUE_MAX = 5000  # 用户追踪队列上限, 满则转入合并缓冲 (不丢弃)
+_TRACK_DEDUP_TTL = 60  # 同键群消息追踪去重窗口(秒): 追踪任务对同键幂等, 短时重复直接跳过
 
 
 _today_cache = ('', 0.0)  # (date_str, valid_until_epoch)
@@ -99,7 +101,11 @@ class EventHandlerMixin:
         # 用户追踪后台队列 (有界, 背压): 替代每条消息 create_task 无界堆积
         self._track_queue = None
         self._track_workers = []
-        self._track_drop_count = 0
+        self._track_recent = {}  # {去重键: 过期时间} 同键短时跳过
+        self._track_recent_purge = 0.0
+        self._track_pending = {}  # {(appid, uid, gid): 任务} 队列满时的合并缓冲
+        self._track_drainer = None
+        self._track_overflow_count = 0
 
     # ==================== 用户追踪后台队列 ====================
 
@@ -111,14 +117,43 @@ class EventHandlerMixin:
         self._track_workers = [asyncio.create_task(self._track_worker()) for _ in range(_TRACK_WORKERS)]
 
     def _enqueue_track(self, bot, event, appid):
-        """投递用户追踪任务到有界队列; 队列满时丢弃 (过载保护, 仅影响追踪非主流程)"""
+        """投递用户追踪任务: 群消息同键短时去重削峰; 队列满时转入合并缓冲, 不丢弃"""
         self._ensure_track_workers()
+        gid = event.group_id or ''
+        if event.event_type == GROUP_MESSAGE_CREATE and gid:
+            # 追踪对同(用户/群/角色/当天)幂等, 同键短时重复无新信息, 跳过以削减洪峰任务量
+            key = (appid, event.user_id, gid, event.member_role or '',
+                   bool(getattr(event, 'username', '')), bool(getattr(event, 'is_bot', False)))
+            now = time.time()
+            if now > self._track_recent_purge:
+                self._track_recent_purge = now + 60
+                self._track_recent = {k: v for k, v in self._track_recent.items() if v > now}
+            if self._track_recent.get(key, 0) > now:
+                return
+            self._track_recent[key] = now + _TRACK_DEDUP_TTL
         try:
             self._track_queue.put_nowait((bot, event, appid))
         except asyncio.QueueFull:
-            self._track_drop_count += 1
-            if self._track_drop_count % 1000 == 1:
-                log.warning(f'[用户追踪] 队列已满({_TRACK_QUEUE_MAX}), 累计丢弃 {self._track_drop_count} 条 (过载背压)')
+            # 同键合并缓冲 (追踪幂等, 合并无损), 由 drainer 在队列腾出空位后回灌
+            self._track_pending[(appid, event.user_id, gid)] = (bot, event, appid)
+            self._track_overflow_count += 1
+            if self._track_overflow_count % 1000 == 1:
+                log.warning(
+                    f'[用户追踪] 队列已满({_TRACK_QUEUE_MAX}), 转入合并缓冲 '
+                    f'(累计 {self._track_overflow_count} 条, 待回灌 {len(self._track_pending)} 键, 不丢弃)'
+                )
+            self._ensure_track_drainer()
+
+    def _ensure_track_drainer(self):
+        if self._track_drainer is None or self._track_drainer.done():
+            self._track_drainer = asyncio.create_task(self._drain_track_pending())
+
+    async def _drain_track_pending(self):
+        """队列有空位时把合并缓冲回灌 (阻塞式 put, 保证最终全部处理)"""
+        while self._track_pending:
+            key = next(iter(self._track_pending))
+            item = self._track_pending.pop(key)
+            await self._track_queue.put(item)
 
     async def _track_worker(self):
         q = self._track_queue
@@ -285,7 +320,7 @@ class EventHandlerMixin:
         if expire and now < expire:
             return
         self._full_access_cache[group_id] = now + _FULL_ACCESS_CACHE_TTL
-        ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        ts = now_str()
         bot.log_service.db_queue(
             'INSERT OR IGNORE INTO full_access_groups (group_id, first_seen) VALUES (?, ?)',
             (group_id, ts),
@@ -293,18 +328,27 @@ class EventHandlerMixin:
 
     def _record_bot_admin(self, bot, group_id):
         """记录机器人在该群为管理员"""
-        ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        ts = now_str()
         bot.log_service.db_queue(
             'INSERT OR REPLACE INTO group_bot_admin (group_id, updated_at) VALUES (?, ?)',
             (group_id, ts),
         )
 
     def get_full_access_groups(self):
-        """从 data.db 拉取所有全量群记录"""
-        bot = next(iter(self._bots.values()), None)
-        if not bot:
-            return []
-        rows = bot.log_service.query_data('SELECT group_id FROM full_access_groups ORDER BY first_seen DESC')
+        """从所有 bot 的 data.db 拉取全量群记录 (含所属 appid)"""
+        rows = []
+        for appid, bot in self._bots.items():
+            try:
+                bot_rows = bot.log_service.query_data('SELECT group_id, first_seen FROM full_access_groups')
+            except Exception as e:
+                log.debug(f'读取全量群记录失败 {appid}: {e}')
+                continue
+            rows.extend(
+                {'group_id': r['group_id'], 'first_seen': r.get('first_seen') or '', 'appid': appid}
+                for r in bot_rows
+                if r.get('group_id')
+            )
+        rows.sort(key=lambda r: r['first_seen'], reverse=True)
         return rows
 
     # ==================== 生命周期 ====================
@@ -316,7 +360,7 @@ class EventHandlerMixin:
         if raw_event:
             raw_json = json.dumps(raw_event, ensure_ascii=False)
             entry['extra'] = raw_json
-        asyncio.create_task(bot.log_service.add('lifecycle', entry))
+        spawn(bot.log_service.add('lifecycle', entry))
         web_entry = {'appid': bot.appid, 'bot_name': bot.name, **entry}
         if raw_event:
             web_entry['raw_message'] = entry['extra']
@@ -450,6 +494,7 @@ class EventHandlerMixin:
         if now - self._cache_clean_ts > 600:
             self._cache_clean_ts = now
             self._known_users = {k: v for k, v in self._known_users.items() if v > now}
+            self._full_access_cache = {k: v for k, v in self._full_access_cache.items() if v > now}
             # 清理过期群缓存 (expire_ts < now), 避免不活跃群的 user_map 一直占用内存
             active = {k: v for k, v in self._group_users_cache.items() if v[0] > now}
             self._group_users_cache = active

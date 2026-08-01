@@ -86,7 +86,7 @@ def _save_mirror_cache(mirrors):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, 'w', encoding='utf-8') as f:
             json.dump({'mirrors': mirrors}, f)
-    except Exception:
+    except (OSError, TypeError, ValueError):
         pass
 
 
@@ -108,7 +108,7 @@ def clear_mirror_cache():
         path = _mirror_cache_path()
         if os.path.isfile(path):
             os.remove(path)
-    except Exception:
+    except OSError:
         pass
 
 
@@ -122,4 +122,4 @@ def _build_mirror_url(original_url, mirror):
 # 默认跳过的路径
 DEFAULT_SKIP = ['config/', 'data/', 'plugins/', 'modules/', '.git/', '__pycache__/', 'tests/', '.github/', '.gitignore', 'README.md']
 # 白名单: 即使父目录在 skip 列表, 这些路径仍然正常更新
-DEFAULT_WHITELIST = ['plugins/system/']
+DEFAULT_WHITELIST = ['plugins/system/', 'plugins/alone/示例插件.py']

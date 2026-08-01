@@ -109,4 +109,7 @@ class SubscribeStatusParser(LifecycleParser):
         results = d.get('result')
         event.subscribe_results = results if isinstance(results, list) else []
         target = event.group_id or event.user_id
-        event.content = f'订阅消息状态变更 {target} ({len(event.subscribe_results)} 条)'
+        # op: 1=开启订阅, 2=关闭订阅
+        on = sum(1 for r in event.subscribe_results if isinstance(r, dict) and r.get('op') == 1)
+        off = sum(1 for r in event.subscribe_results if isinstance(r, dict) and r.get('op') == 2)
+        event.content = f'订阅消息状态变更 {target} (开启 {on} / 关闭 {off})'

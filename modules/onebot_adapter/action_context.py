@@ -76,8 +76,9 @@ class ActionContext:
                     'source': 'onebot',
                 },
             )
-        except Exception:
-            pass
+        except Exception as e:
+            if self.log:
+                self.log.debug(f'面板日志推送失败: {e}')
 
     async def log_send(
         self,

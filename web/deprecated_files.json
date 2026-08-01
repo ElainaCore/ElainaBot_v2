@@ -24,5 +24,8 @@
   "web/dist/assets/use-message.js",
   "plugins/system/app/examples.py",
   "plugins/system/app/web_pages.py",
-  "bot_restarter.py"
+  "bot_restarter.py",
+  "core/message/parsers.py",
+  "core/base/zipsafe.py",
+  "core/extension/"
 ]

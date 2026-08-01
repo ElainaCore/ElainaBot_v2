@@ -96,7 +96,7 @@ def _merge_requirements(req_files):
         try:
             with open(fp, encoding='utf-8') as f:
                 lines = f.readlines()
-        except Exception:
+        except OSError:
             continue
         for raw in lines:
             parsed = _parse_req(raw)

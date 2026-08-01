@@ -1,6 +1,7 @@
 """插件市场 — GitHub 下载, 镜像排名"""
 
 import json
+import logging
 import time
 
 import aiohttp as _aiohttp
@@ -9,6 +10,10 @@ from web.tools._market.shared import (
     PLUGIN_REPO,
     _ranked_mirror_urls,
 )
+from web.tools._updater.mirror import get_fast_mirrors
+from web.tools._updater.shared import _build_mirror_url
+
+log = logging.getLogger('ElainaBot.web.market')
 
 _plugin_cache = None  # 缓存的插件列表
 _plugin_cache_ts = 0
@@ -19,12 +24,13 @@ async def _try_fetch_json(session, urls, headers, timeout):
     """依次尝试 URL 列表下载 JSON, 成功返回解析结果, 全部失败返回 None"""
     for url in urls:
         try:
-            async with session.get(url, headers=headers, timeout=timeout, ssl=False, allow_redirects=True) as resp:
+            async with session.get(url, headers=headers, timeout=timeout, allow_redirects=True) as resp:
                 if resp.status == 200:
                     body = await resp.read()
                     if body[:1] in (b'[', b'{'):
                         return json.loads(body)
-        except Exception:
+        except Exception as e:
+            log.debug(f'镜像请求失败 {url}: {e}')
             continue
     return None
 
@@ -42,8 +48,6 @@ async def _fetch_plugin_json(force=False):
     async with _aiohttp.ClientSession() as session:
         data = await _try_fetch_json(session, _ranked_mirror_urls(raw_url), headers, timeout)
     if not data:
-        from web.tools._updater.mirror import get_fast_mirrors
-
         await get_fast_mirrors(force=True)
         async with _aiohttp.ClientSession() as session:
             data = await _try_fetch_json(session, _ranked_mirror_urls(raw_url), headers, timeout)
@@ -73,26 +77,22 @@ async def _fetch_once(session, url, timeout):
         async with session.get(
             url,
             timeout=_aiohttp.ClientTimeout(total=timeout),
-            ssl=False,
             allow_redirects=True,
             headers={'User-Agent': 'ElainaBot/1.0'},
         ) as resp:
             if resp.status == 200:
                 return await resp.read()
-    except Exception:
-        pass
+    except Exception as e:
+        log.debug(f'下载失败 {url}: {e}')
     return None
 
 
 async def _download_file(url, timeout=60, mirror=None):
     """按镜像排名下载并校验内容, 全失败重新测速后再试; mirror 非空时优先使用指定镜像"""
     is_gh = 'github.com' in url or 'githubusercontent.com' in url
+    urls = _ranked_mirror_urls(url) if is_gh else [url]
     if mirror and is_gh:
-        from web.tools._updater.shared import _build_mirror_url
-
-        urls = [_build_mirror_url(url, mirror)] + _ranked_mirror_urls(url)
-    else:
-        urls = _ranked_mirror_urls(url) if is_gh else [url]
+        urls.insert(0, _build_mirror_url(url, mirror))
     async with _aiohttp.ClientSession() as session:
         for u in urls:
             body = await _fetch_once(session, u, timeout)
@@ -100,8 +100,6 @@ async def _download_file(url, timeout=60, mirror=None):
                 return body
     # 全失败 → 重新测速后再试
     if is_gh:
-        from web.tools._updater.mirror import get_fast_mirrors
-
         await get_fast_mirrors(force=True)
         async with _aiohttp.ClientSession() as session:
             for u in _ranked_mirror_urls(url):

@@ -2,6 +2,7 @@
 
 from aiohttp import web
 
+import web.tools._market.fetch as _fetch_mod
 from web.tools._market.fetch import _extract_plugins, _fetch_plugin_json
 from web.tools._market.install import (
     TYPE_MODULE,
@@ -17,6 +18,8 @@ from web.tools._market.shared import (
     _safe_name,
     _save_market_mirror,
 )
+from web.tools._updater.mirror import _test_one_mirror
+from web.tools._updater.shared import GITHUB_FILE_MIRRORS, _load_mirror_cache
 
 
 async def handle_market_list(request: web.Request):
@@ -79,8 +82,6 @@ async def handle_market_detail(request: web.Request):
 
 async def handle_market_refresh(request: web.Request):
     """强制刷新插件库缓存"""
-    import web.tools._market.fetch as _fetch_mod
-
     _fetch_mod._plugin_cache, _fetch_mod._plugin_cache_ts = None, 0
     data = await _fetch_plugin_json(force=True)
     if data is None:
@@ -94,8 +95,6 @@ async def handle_market_refresh(request: web.Request):
 
 async def handle_market_get_mirror(request: web.Request):
     """获取当前市场镜像偏好 + 可用镜像列表"""
-    from web.tools._updater.shared import GITHUB_FILE_MIRRORS, _load_mirror_cache
-
     cached = _load_mirror_cache()
     return web.json_response(
         {
@@ -119,7 +118,5 @@ async def handle_market_test_mirror(request: web.Request):
     """测试单个镜像延迟"""
     body = await request.json()
     mirror = body.get('mirror', '')
-    from web.tools._updater.mirror import _test_one_mirror
-
     result = await _test_one_mirror(mirror, timeout=5)
     return web.json_response({'success': True, 'data': result})

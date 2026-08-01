@@ -29,7 +29,6 @@ async def _test_one_mirror(mirror, timeout=3):
                 headers={'User-Agent': 'ElainaBot-Mirror-Test'},
                 timeout=_aiohttp.ClientTimeout(total=timeout),
                 allow_redirects=False,
-                ssl=False,
             ) as resp,
         ):
             latency = time.time() - start
@@ -91,7 +90,7 @@ def detect_environment():
             with open('/proc/1/cgroup') as f:
                 if 'docker' in f.read() or 'containerd' in f.read():
                     info['docker'] = True
-        except Exception:
+        except OSError:
             pass
     # 可写性检测
     try:

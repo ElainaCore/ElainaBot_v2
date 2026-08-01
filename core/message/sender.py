@@ -4,7 +4,6 @@
 import asyncio
 import json
 import os
-import random
 import re
 
 from core.base.config import cfg
@@ -13,10 +12,13 @@ from core.message import bot_openid
 from core.message._http import (
     _API_BASE,
     MSG_TYPE_ARK,
+    MSG_TYPE_CARD,
     MSG_TYPE_MARKDOWN,
     MSG_TYPE_MEDIA,
     MSG_TYPE_TEXT,
     _HttpMixin,
+    _is_violation,
+    _msg_seq,
     log,
 )
 from core.message._media_send import (
@@ -32,11 +34,6 @@ from core.message.keyboard import (
 from core.message.media import get_image_size as _get_image_size
 from core.message.media import upload_media_bytes, upload_media_via_url
 from core.message.template import tpl
-
-
-def _msg_seq():
-    return random.randint(10000, 999999)
-
 
 _ESCAPE_MAP = {'n': '\n', 't': '\t', 'r': '\r', '\\': '\\', '0': '\0', 'a': '\a', 'b': '\b', 'f': '\f', 'v': '\v'}
 
@@ -65,6 +62,7 @@ class MessageSender(_HttpMixin, _MediaSendMixin, _SenderLogMixin):
         '_log_service',
         '_reply_log_cb',
         '_reply_plugin_name',
+        '_send_sem',
     )
 
     def __init__(self, token_manager, custom_api_base=''):
@@ -80,6 +78,7 @@ class MessageSender(_HttpMixin, _MediaSendMixin, _SenderLogMixin):
         self._reply_log_cb = None
         self._reply_plugin_name = ''
         self._media_dir = ''
+        self._send_sem = None
 
     def bind_instance(self, *, log_service=None, bot_name='', bot_qq='', media_dir=''):
         """由 BotInstance 调用, 注入运行时依赖"""
@@ -135,7 +134,10 @@ class MessageSender(_HttpMixin, _MediaSendMixin, _SenderLogMixin):
             prompt_buttons=prompt_buttons,
             **kwargs,
         )
+        return await self._reply_send(endpoint, event, payload, content, auto_delete_time)
 
+    async def _reply_send(self, endpoint, event, payload, content, auto_delete_time):
+        """回复发送公共尾部: 发送 + 成功后自动撤回 (reply/reply_ark/reply_card 共用)"""
         success, data = await self._send_with_error_handling(endpoint, payload, event, content)
         if success:
             self._maybe_auto_recall(event, data, auto_delete_time)
@@ -192,10 +194,25 @@ class MessageSender(_HttpMixin, _MediaSendMixin, _SenderLogMixin):
         endpoint = event.reply_endpoint
         if not endpoint:
             return None
-        success, data = await self._send_with_error_handling(endpoint, payload, event, content)
-        if success:
-            self._maybe_auto_recall(event, data, auto_delete_time)
-        return data
+        return await self._reply_send(endpoint, event, payload, content, auto_delete_time)
+
+    async def reply_card(self, event, card_type='tuwen', data=None, content='', *, auto_delete_time=None):
+        """回复卡片消息 (msg_type=8); data 为 dict 时原样作为 card.content, card_type='tuwen' 时也可传 (标题,描述,图片URL,跳转URL) 元组简写"""
+        if isinstance(data, tuple | list) and card_type == 'tuwen':
+            title, description, pic_url, url = (list(data) + [''] * 4)[:4]
+            data = {'title': title or '', 'description': description or '',
+                    'pic_url': pic_url or '', 'url': url or ''}
+        payload = {
+            'msg_type': MSG_TYPE_CARD,
+            'msg_seq': _msg_seq(),
+            'content': content or '',
+            'card': {'type': card_type, 'content': data or {}},
+        }
+        _set_msg_or_event_id(payload, event)
+        endpoint = event.reply_endpoint
+        if not endpoint:
+            return None
+        return await self._reply_send(endpoint, event, payload, content, auto_delete_time)
 
     # ==================== 主动推送 ====================
 
@@ -263,16 +280,18 @@ class MessageSender(_HttpMixin, _MediaSendMixin, _SenderLogMixin):
         if ok:
             self._log_push(endpoint, payload, content, data)
         else:
-            err_code = data.get('code', '') if isinstance(data, dict) else ''
-            err_msg = data.get('message', str(data)) if isinstance(data, dict) else str(data)
-            report_error_raw(
-                FRAMEWORK,
-                '主动消息',
-                content=f'主动消息发送失败 [{err_code}] {err_msg}',
-                tb=f'endpoint: {endpoint}\npayload: {json.dumps(payload, ensure_ascii=False, default=str)[:500]}',
-                appid=self._appid,
-            )
-            await self._handle_send_failure(endpoint, data)
+            # 违规拦截: 先给插件机会重发其他内容, 补救成功则不写报错日志
+            remedied = await self._handle_send_failure(endpoint, data)
+            if not (_is_violation(data) and remedied):
+                err_code = data.get('code', '') if isinstance(data, dict) else ''
+                err_msg = data.get('message', str(data)) if isinstance(data, dict) else str(data)
+                report_error_raw(
+                    FRAMEWORK,
+                    '主动消息',
+                    content=f'主动消息发送失败 [{err_code}] {err_msg}',
+                    tb=f'endpoint: {endpoint}\npayload: {json.dumps(payload, ensure_ascii=False, default=str)[:500]}',
+                    appid=self._appid,
+                )
         return ok, data, payload
 
     async def send_to_channel(self, channel_id, content=None, *, msg_id=None, buttons=None, **kwargs):

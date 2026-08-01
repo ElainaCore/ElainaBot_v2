@@ -176,8 +176,8 @@ async def handle_save_config(request: web.Request):
                     old_comments = _extract_yaml_comments(f.read())
                 if old_comments:
                     content = '\n'.join(_rebuild_yaml(parsed, old_comments)) + '\n'
-            except Exception:
-                pass
+            except Exception as e:
+                log.debug(f'YAML 注释保留失败: {e}')
     elif fmt == 'json':
         try:
             data = json.loads(content)

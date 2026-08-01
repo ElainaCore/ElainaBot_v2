@@ -46,9 +46,7 @@ def parse_ptuicb(text: str) -> dict:
     m = _PTUICB_RE.search(text or '')
     if not m:
         return {'code': '', 'url': '', 'msg': ''}
-    args = []
-    for part in m.group(1).split(','):
-        args.append(part.strip().strip("'").strip('"'))
+    args = [part.strip().strip("'").strip('"') for part in m.group(1).split(',')]
     return {
         'code': args[0] if len(args) > 0 else '',
         'url': args[2] if len(args) > 2 else '',
@@ -142,11 +140,7 @@ class _UnquotedCookieJar(aiohttp.CookieJar):
         unquoted: BaseCookie[str] = BaseCookie()
         for name, cookie in cookies.items():
             morsel: Morsel[str] = Morsel()
-            morsel.__setstate__({
-                'key': name,
-                'value': cookie.value,
-                'coded_value': cookie.value,
-            })
+            morsel.set(name, cookie.value, cookie.value)
             unquoted[name] = morsel
         return unquoted
 
@@ -161,13 +155,7 @@ class _UnquotedCookieJar(aiohttp.CookieJar):
 
 
 class QQScanLogin:
-    """一次性的 q.qq.com 新版扫码登录会话。
-
-    流程: create_session → ptlogin2 扫码 → check_sig → write_login_state 绑定
-    → /lite/poll → bopen/callback 302 下发 b-token/qticket 等凭证。
-    跨请求共享同一 CookieJar 以保持登录态, 每次操作新建短生命周期 ClientSession。
-    状态: waiting / scanned / confirming / selecting / expired / rejected / failed / logged_in
-    """
+    """一次性 q.qq.com 扫码登录会话 (create_session→扫码→check_sig→绑定→poll→callback 下发凭证), 跨请求共享 CookieJar, 状态: waiting/scanned/confirming/selecting/expired/rejected/failed/logged_in"""
 
     APPID = _PT_APPID
     DAID = _PT_DAID
@@ -205,7 +193,7 @@ class QQScanLogin:
         trace = aiohttp.TraceConfig()
         trace.on_request_redirect.append(self._sync_response_cookies)
         trace.on_request_end.append(self._sync_response_cookies)
-        conn = aiohttp.TCPConnector(family=socket.AF_INET, ssl=False)
+        conn = aiohttp.TCPConnector(family=socket.AF_INET)
         return aiohttp.ClientSession(
             timeout=_TIMEOUT,
             connector=conn,

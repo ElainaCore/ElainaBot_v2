@@ -25,7 +25,7 @@ def _save():
         out = {a: {'ids': sorted(e['ids']), 'done': e['done']} for a, e in _data.items()}
         with open(_FILE, 'w', encoding='utf-8') as f:
             json.dump(out, f, ensure_ascii=False)
-    except Exception:
+    except (OSError, TypeError, ValueError):
         pass
 
 

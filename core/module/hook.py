@@ -111,7 +111,7 @@ def get_hook_manager():
         app = get_app()
         if app is not None:
             return app.hook_manager
-    except Exception:
+    except ImportError:
         pass
     if _instance is None:
         _instance = HookManager()

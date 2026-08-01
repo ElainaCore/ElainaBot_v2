@@ -9,6 +9,7 @@ from datetime import datetime
 from aiohttp import WSMsgType, web
 
 import web.auth as auth
+from core.base.tasks import spawn
 
 log = logging.getLogger('ElainaBot.web.ws')
 
@@ -58,10 +59,12 @@ class WSBroadcast:
         if not self.has_clients():
             return
         try:
-            asyncio.get_running_loop().create_task(self.broadcast(msg_type, data))
-            return
+            asyncio.get_running_loop()
         except RuntimeError:
             pass
+        else:
+            spawn(self.broadcast(msg_type, data))
+            return
         loop = self._loop
         if loop is None or loop.is_closed():
             return
@@ -87,9 +90,7 @@ class WSBroadcast:
         """服务器关闭时主动断开所有面板连接, 避免阻塞 runner.shutdown()"""
         for ws in list(self._clients):
             with contextlib.suppress(Exception, RuntimeError):
-                asyncio.get_running_loop().create_task(
-                    ws.close(code=1001, message=b'Server shutdown')
-                )
+                spawn(ws.close(code=1001, message=b'Server shutdown'))
         self._clients.clear()
         self._sse_queues.clear()
 
@@ -200,8 +201,10 @@ async def handle_sse(request: web.Request) -> web.StreamResponse:
                 await resp.write(f'data: {payload}\n\n'.encode())
             except TimeoutError:
                 await resp.write(b': keepalive\n\n')
-    except (asyncio.CancelledError, ConnectionResetError, Exception):
-        pass
+    except asyncio.CancelledError:
+        pass  # 客户端断开时 aiohttp 会取消 handler
+    except Exception as e:
+        log.debug(f'SSE 连接异常: {e}')
     finally:
         _broadcast.sse_queues.discard(queue)
         log.debug(f'SSE 客户端已断开 (WS:{len(_broadcast.clients)} SSE:{len(_broadcast.sse_queues)})')
