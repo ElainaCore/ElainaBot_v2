@@ -62,7 +62,6 @@ class MessageSender(_HttpMixin, _MediaSendMixin, _SenderLogMixin):
         '_log_service',
         '_reply_log_cb',
         '_reply_plugin_name',
-        '_send_sem',
     )
 
     def __init__(self, token_manager, custom_api_base=''):
@@ -78,7 +77,6 @@ class MessageSender(_HttpMixin, _MediaSendMixin, _SenderLogMixin):
         self._reply_log_cb = None
         self._reply_plugin_name = ''
         self._media_dir = ''
-        self._send_sem = None
 
     def bind_instance(self, *, log_service=None, bot_name='', bot_qq='', media_dir=''):
         """由 BotInstance 调用, 注入运行时依赖"""
