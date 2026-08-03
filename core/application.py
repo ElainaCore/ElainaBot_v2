@@ -76,10 +76,20 @@ def get_app() -> 'Application | None':
     return _app
 
 
+def close_console_window():
+    """关闭当前 Windows 控制台窗口。"""
+    import ctypes
+
+    hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+    if hwnd:
+        ctypes.windll.user32.PostMessageW(hwnd, 0x0010, 0, 0)
+
+
 def relaunch():
-    """重新拉起自身进程 (Windows 下 execv 对残留线程不可靠, 改用 Popen + _exit)"""
+    """重新拉起自身进程，并在 Windows 下关闭旧控制台窗口。"""
     if sys.platform == 'win32':
-        subprocess.Popen([sys.executable] + sys.argv, creationflags=getattr(subprocess, 'CREATE_NEW_CONSOLE', 0))
+        subprocess.Popen([sys.executable] + sys.argv, creationflags=subprocess.CREATE_NEW_CONSOLE)
+        close_console_window()
         os._exit(0)
     os.execv(sys.executable, [sys.executable] + sys.argv)
 
