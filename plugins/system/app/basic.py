@@ -32,12 +32,15 @@ async def ping(event, match):
 
     import aiohttp
 
+    from core.application import get_app
+
     t0 = time.time()
+    bot = get_app().get_bot(event.appid)
     try:
         async with (
             aiohttp.ClientSession() as s,
             s.get(
-                'https://api.sgroup.qq.com/gateway/bot',
+                f'{bot.token_manager.api_base}/gateway/bot',
                 timeout=aiohttp.ClientTimeout(total=5),
             ),
         ):

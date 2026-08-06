@@ -14,8 +14,6 @@ from core.message.event import Event
 
 log = get_logger(SERVICE, 'WebSocket')
 
-_GATEWAY_URL = 'https://api.sgroup.qq.com/gateway/bot'
-
 _OP_DISPATCH = 0
 _OP_HEARTBEAT = 1
 _OP_IDENTIFY = 2
@@ -56,7 +54,6 @@ class WSClient:
         reconnect_interval=5,
         max_reconnects=-1,
         custom_url='',
-        custom_api_base='',
         client_name='ElainaBot',
     ):
         self._appid = str(appid)
@@ -66,7 +63,6 @@ class WSClient:
         self._reconnect_interval = reconnect_interval
         self._max_reconnects = max_reconnects
         self._custom_url = custom_url.strip() if custom_url else ''
-        self._custom_api_base = custom_api_base.strip().rstrip('/') if custom_api_base else ''
         self._client_name = str(client_name).strip() or 'ElainaBot'
 
         self._ws = None
@@ -246,8 +242,7 @@ class WSClient:
             log.info(f'[{self._appid}] 使用自定义 WS 地址: {self._custom_url}')
             return self._gateway_url
 
-        # 自定义 API 基址时, 从该基址获取网关
-        url = f'{self._custom_api_base}/gateway/bot' if self._custom_api_base else _GATEWAY_URL
+        url = f'{self._tm.api_base}/gateway/bot'
         token = await self._tm.get_token()
         client = await self._tm.get_client()
         resp = await client.get(url, headers={'Authorization': f'QQBot {token}'})

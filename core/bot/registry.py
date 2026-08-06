@@ -7,6 +7,7 @@ from core.base.config import cfg
 from core.base.logger import SYSTEM, report_error
 from core.base.tasks import spawn
 from core.bot.instance import BotInstance
+from core.network.access import DEFAULT_API_VERSION
 from core.network.websocket import WSClient
 
 log = logging.getLogger('ElainaBot.registry')
@@ -128,14 +129,20 @@ class BotRegistry:
             bot = self._bots[appid]
             new_cfg = valid[appid]
             new_secret = str(new_cfg.get('secret', ''))
-            new_api_base = str(new_cfg.get('api_base', '') or '')
+            new_api_version = str(new_cfg.get('api_version', DEFAULT_API_VERSION) or DEFAULT_API_VERSION).strip().lower()
+            new_api_base = str(new_cfg.get('api_base', '') or '').rstrip('/')
+            old_api_base = str(bot.bot_cfg.get('api_base', '') or '').rstrip('/')
 
-            if new_secret != bot.secret or new_api_base != (bot.token_manager.api_base if bot.token_manager else ''):
+            if (
+                new_secret != bot.secret
+                or new_api_version != bot.token_manager.api_version
+                or new_api_base != old_api_base
+            ):
                 await bot.stop()
                 self._bots.pop(appid, None)
                 inst = await self._start_one(new_cfg)
                 if inst:
-                    self._push_web_log('framework', {'content': f'热重载: {inst.name} ({appid}) 密钥已更新, 重新连接'})
+                    self._push_web_log('framework', {'content': f'热重载: {inst.name} ({appid}) 凭据或接口已更新, 重新连接'})
                 continue
 
             bot.bot_cfg = new_cfg
@@ -153,7 +160,6 @@ class BotRegistry:
                     reconnect_interval=ws_cfg.get('reconnect_interval', 5),
                     max_reconnects=ws_cfg.get('max_reconnects', -1),
                     custom_url=ws_cfg.get('custom_url', ''),
-                    custom_api_base=new_api_base,
                     client_name=str(identify_cfg.get('name', '') or ''),
                 )
                 spawn(bot.ws_client.connect())

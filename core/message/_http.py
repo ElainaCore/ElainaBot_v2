@@ -28,8 +28,6 @@ class MessageType:
     MSG_TYPE_CARD = MSG_TYPE_CARD
 
 
-_API_BASE = 'https://api.sgroup.qq.com'
-
 _IGNORE_ERROR_CODES = frozenset({11293, 40054002, 40054003})
 _TOKEN_EXPIRED_CODE = 11244
 _MAX_MEDIA_DOWNLOAD = 100 * 1024 * 1024  # 100MB 下载上限, 防止 OOM

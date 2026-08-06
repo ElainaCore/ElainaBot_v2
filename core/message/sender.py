@@ -10,7 +10,6 @@ from core.base.config import cfg
 from core.base.logger import FRAMEWORK, report_error_raw
 from core.message import bot_openid
 from core.message._http import (
-    _API_BASE,
     MSG_TYPE_ARK,
     MSG_TYPE_CARD,
     MSG_TYPE_MARKDOWN,
@@ -53,8 +52,6 @@ class MessageSender(_HttpMixin, _MediaSendMixin, _SenderLogMixin):
         '_token_mgr',
         '_appid',
         '_client',
-        '_base_url',
-        '_custom_api_base',
         '_web_log_cb',
         '_bot_name',
         '_bot_qq',
@@ -64,11 +61,9 @@ class MessageSender(_HttpMixin, _MediaSendMixin, _SenderLogMixin):
         '_reply_plugin_name',
     )
 
-    def __init__(self, token_manager, custom_api_base=''):
+    def __init__(self, token_manager):
         self._token_mgr = token_manager
         self._appid = token_manager.appid
-        self._custom_api_base = custom_api_base.rstrip('/') if custom_api_base else ''
-        self._base_url = self._custom_api_base or _API_BASE
         self._client = None
         self._web_log_cb = None
         self._bot_name = ''
@@ -467,4 +462,3 @@ class MessageSender(_HttpMixin, _MediaSendMixin, _SenderLogMixin):
             }
         payload.update(kwargs)
         return payload
-
