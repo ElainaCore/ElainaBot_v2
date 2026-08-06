@@ -1,6 +1,22 @@
 """API 测试: 数据库浏览模块 (database/*)"""
 
+import pytest
+
 from tests.helpers import assert_success_response
+from web.tools._database.browser import _is_sqlite_path
+
+
+@pytest.mark.parametrize(
+    'path',
+    ['data.db', 'data.sqlite', 'data.sqlite3', 'data.db3', 'data.s3db', 'data.sl3', 'DATA.SQLITE'],
+)
+def test_supported_sqlite_extensions(path):
+    assert _is_sqlite_path(path)
+
+
+@pytest.mark.parametrize('path', ['data.sql', 'data.db-wal', 'data.db-shm', 'data.txt', 'data'])
+def test_rejects_non_database_extensions(path):
+    assert not _is_sqlite_path(path)
 
 
 class TestDatabaseList:
