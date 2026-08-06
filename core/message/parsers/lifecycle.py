@@ -49,6 +49,21 @@ class GroupMemberRemoveParser(LifecycleParser):
         event.content = f'用户 {event.user_id} 退出群聊 {event.group_id}'
 
 
+class GroupJoinRequestParser(LifecycleParser):
+    """群成员入群申请事件解析器"""
+
+    def parse(self, event, d):
+        self._parse_base(event, d, 'member_openid')
+        event.is_group = True
+        event.username = d.get('username', '')
+        event.join_request_id = d.get('join_request_id', '')
+        event.apply_at = d.get('apply_at', '')
+        event.apply_source = d.get('apply_source', '')
+        event.invited_by = d.get('invited_by', '')
+        event.timestamp = event.apply_at or event.timestamp
+        event.content = f'用户 {event.username or event.user_id} 申请加入群聊 {event.group_id}'
+
+
 class GroupMsgRejectParser(LifecycleParser):
     """群消息拒绝事件解析器"""
 

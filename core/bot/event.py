@@ -14,6 +14,7 @@ from core.message.event import (
     FRIEND_DEL,
     GROUP_ADD_ROBOT,
     GROUP_DEL_ROBOT,
+    GROUP_JOIN_REQUEST,
     GROUP_MEMBER_ADD,
     GROUP_MEMBER_REMOVE,
     GROUP_MESSAGE_CREATE,
@@ -407,6 +408,10 @@ class EventHandlerMixin:
             await self._remove_user_from_group(bot, gid, uid)
         self._log_lifecycle(bot, 'group_member_del', {'group_id': gid, 'user_id': uid}, raw_event=event.raw)
 
+    async def _handle_group_join_request(self, bot, event):
+        self._log_lifecycle(bot, 'group_join_request', {
+            'group_id': event.group_id or '', 'user_id': event.user_id or ''}, raw_event=event.raw)
+
     async def _handle_friend_add(self, bot, event):
         uid = event.user_id or ''
         sharer_id = event.sharer_id or ''
@@ -465,6 +470,7 @@ class EventHandlerMixin:
         GROUP_DEL_ROBOT: _handle_group_del,
         GROUP_MEMBER_ADD: _handle_group_member_add,
         GROUP_MEMBER_REMOVE: _handle_group_member_remove,
+        GROUP_JOIN_REQUEST: _handle_group_join_request,
         FRIEND_ADD: _handle_friend_add,
         FRIEND_DEL: _handle_friend_del,
         GROUP_MSG_REJECT: _handle_group_msg_reject,

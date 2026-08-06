@@ -15,6 +15,7 @@ from core.message.parsers.lifecycle import (
     FriendDelParser,
     GroupAddRobotParser,
     GroupDelRobotParser,
+    GroupJoinRequestParser,
     GroupMemberAddParser,
     GroupMemberRemoveParser,
     GroupMsgReceiveParser,
@@ -49,6 +50,7 @@ GROUP_MSG_RECEIVE = 'GROUP_MSG_RECEIVE'
 # 群成员 (用户入群/退群)
 GROUP_MEMBER_ADD = 'GROUP_MEMBER_ADD'
 GROUP_MEMBER_REMOVE = 'GROUP_MEMBER_REMOVE'
+GROUP_JOIN_REQUEST = 'GROUP_JOIN_REQUEST'
 
 # 订阅消息 (用户允许/拒绝订阅)
 SUBSCRIBE_MESSAGE_STATUS = 'SUBSCRIBE_MESSAGE_STATUS'
@@ -88,6 +90,7 @@ LIFECYCLE_TYPES = frozenset(
         GROUP_MSG_RECEIVE,
         GROUP_MEMBER_ADD,
         GROUP_MEMBER_REMOVE,
+        GROUP_JOIN_REQUEST,
         SUBSCRIBE_MESSAGE_STATUS,
     }
 )
@@ -128,6 +131,7 @@ _FRIEND_ADD_PARSER = FriendAddParser()
 _FRIEND_DEL_PARSER = FriendDelParser()
 _GROUP_MEMBER_ADD_PARSER = GroupMemberAddParser()
 _GROUP_MEMBER_REMOVE_PARSER = GroupMemberRemoveParser()
+_GROUP_JOIN_REQUEST_PARSER = GroupJoinRequestParser()
 _MESSAGE_PARSER = MessageParser()
 _GROUP_MSG_REJECT_PARSER = GroupMsgRejectParser()
 _GROUP_MSG_RECEIVE_PARSER = GroupMsgReceiveParser()
@@ -146,6 +150,7 @@ _PARSERS = {
     GROUP_DEL_ROBOT: _GROUP_DEL_PARSER,
     GROUP_MEMBER_ADD: _GROUP_MEMBER_ADD_PARSER,
     GROUP_MEMBER_REMOVE: _GROUP_MEMBER_REMOVE_PARSER,
+    GROUP_JOIN_REQUEST: _GROUP_JOIN_REQUEST_PARSER,
     FRIEND_ADD: _FRIEND_ADD_PARSER,
     FRIEND_DEL: _FRIEND_DEL_PARSER,
     GROUP_MSG_REJECT: _GROUP_MSG_REJECT_PARSER,
@@ -210,6 +215,10 @@ class Event:
         'subscribe_results',
         'mentions',
         'bot_member_role',
+        'join_request_id',
+        'apply_at',
+        'apply_source',
+        'invited_by',
         'is_at_self',
         'is_at_other_bot',
         'is_at_other_user',
@@ -258,6 +267,10 @@ class Event:
         self.subscribe_results = []
         self.mentions = []
         self.bot_member_role = ''
+        self.join_request_id = ''
+        self.apply_at = ''
+        self.apply_source = ''
+        self.invited_by = ''
         self.is_at_self = False
         self.is_at_other_bot = False
         self.is_at_other_user = False

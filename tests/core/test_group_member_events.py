@@ -1,4 +1,4 @@
-"""GROUP_MEMBER_ADD / GROUP_MEMBER_REMOVE 事件解析与处理测试"""
+"""群成员变更及入群申请事件解析与处理测试"""
 
 import json
 
@@ -6,6 +6,7 @@ import pytest
 
 from core.bot.event import EventHandlerMixin
 from core.message.event import (
+    GROUP_JOIN_REQUEST,
     GROUP_MEMBER_ADD,
     GROUP_MEMBER_REMOVE,
     Event,
@@ -28,6 +29,26 @@ def _build(event_type, group='group_001', member='user_001'):
     return Event.from_websocket('102000001', payload)
 
 
+def _build_join_request():
+    return Event.from_websocket(
+        '102000001',
+        {
+            'op': 0,
+            'id': 'GROUP_JOIN_REQUEST:event_001',
+            't': GROUP_JOIN_REQUEST,
+            'd': {
+                'group_openid': 'group_001',
+                'join_request_id': 'request_001',
+                'member_openid': 'user_001',
+                'username': '申请人',
+                'apply_at': '2026-08-06T12:10:53+08:00',
+                'apply_source': 'invited',
+                'invited_by': 'inviter_001',
+            },
+        },
+    )
+
+
 class TestGroupMemberParsing:
     def test_parse_member_add(self):
         evt = _build(GROUP_MEMBER_ADD)
@@ -42,6 +63,21 @@ class TestGroupMemberParsing:
         assert evt.is_lifecycle is True
         assert evt.group_id == 'group_001'
         assert evt.user_id == 'user_001'
+
+    def test_parse_join_request(self):
+        evt = _build_join_request()
+        assert evt.event_type == GROUP_JOIN_REQUEST
+        assert evt.is_lifecycle is True
+        assert evt.is_group is True
+        assert evt.chat_type == 'group'
+        assert evt.group_id == 'group_001'
+        assert evt.user_id == 'user_001'
+        assert evt.username == '申请人'
+        assert evt.timestamp == '2026-08-06T12:10:53+08:00'
+        assert evt.join_request_id == 'request_001'
+        assert evt.apply_at == '2026-08-06T12:10:53+08:00'
+        assert evt.apply_source == 'invited'
+        assert evt.invited_by == 'inviter_001'
 
 
 # ==================== 处理测试 ====================
@@ -68,6 +104,7 @@ class _Bot:
     def __init__(self, rows=None):
         self.appid = '102000001'
         self.name = 'test_bot'
+        self.sender = object()
         self.log_service = _RecordingLogService(rows)
 
 
@@ -95,6 +132,22 @@ def _users_of(write):
 
 
 class TestGroupMemberHandlers:
+    @pytest.mark.asyncio
+    async def test_join_request_is_dispatched_to_plugins(self, monkeypatch):
+        class _PluginManager:
+            def __init__(self):
+                self.events = []
+
+            async def dispatch(self, event, _sender):
+                self.events.append(event)
+
+        h = _Harness(rows=[])
+        h._plugin_manager = _PluginManager()
+        monkeypatch.setattr('core.bot.event.cfg.get_bot_setting', lambda *_args, **_kwargs: False)
+        event = _build_join_request()
+        await h._on_event(event)
+        assert h._plugin_manager.events == [event]
+
     @pytest.mark.asyncio
     async def test_add_inserts_new_group(self):
         h = _Harness(rows=[])
