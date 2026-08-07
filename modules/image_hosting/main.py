@@ -60,11 +60,12 @@ async def setup(ctx):
     defaults = {cls.name: dict(cls.defaults) for cls in bed_classes}
     comments = {cls.name: dict(cls.comments) for cls in bed_classes}
     cfg = ctx.ensure_config(defaults, comments=comments)
+    retired_changed = _remove_retired_cnb_config(cfg)
     ordered_cfg = _order_bed_config(cfg, bed_classes)
-    if list(ordered_cfg) != list(cfg):
+    if retired_changed or list(ordered_cfg) != list(cfg):
         ctx.save_config(ordered_cfg, comments=comments)
         cfg = ordered_cfg
-        log.info('图床配置顺序已更新')
+        log.info('图床配置已更新')
     beds = {cls.name: cls(cfg.get(cls.name, {})) for cls in bed_classes}
     _instance = ImageHosting(cfg, ctx, beds)
     _instance.initialize()
@@ -182,3 +183,16 @@ def _order_bed_config(cfg, bed_classes):
     retired = {'qiniu', 'xinyew'}
     ordered.update((name, value) for name, value in cfg.items() if name not in ordered and name not in retired)
     return ordered
+
+
+def _remove_retired_cnb_config(cfg):
+    """Remove CNB endpoint overrides; the service endpoints are fixed constants."""
+    cnb_cfg = cfg.get('cnb') if isinstance(cfg, dict) else None
+    if not isinstance(cnb_cfg, dict):
+        return False
+    changed = False
+    for key in ('api_base', 'asset_base'):
+        if key in cnb_cfg:
+            del cnb_cfg[key]
+            changed = True
+    return changed

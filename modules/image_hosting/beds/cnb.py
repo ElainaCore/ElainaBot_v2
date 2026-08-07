@@ -9,6 +9,9 @@ import httpx
 
 from ._common import BaseBed, guess_content_type, log
 
+_API_BASE = 'https://api.cnb.cool'
+_ASSET_BASE = 'https://cnb.cool'
+
 
 class Bed(BaseBed):
     name = 'cnb'
@@ -18,10 +21,8 @@ class Bed(BaseBed):
         'enabled': False,
         'repo': '',
         'token': '',
-        'api_base': 'https://api.cnb.cool',
-        'asset_base': 'https://cnb.cool',
         'max_file_size': 100 * 1024 * 1024,
-        'verify_public_url': True,
+        'verify_public_url': False,
         'timeout': 30,
     }
     comments = {
@@ -29,10 +30,8 @@ class Bed(BaseBed):
         'enabled': '是否启用 CNB 图床',
         'repo': '目标仓库 slug，格式为组织名/仓库名；仓库必须公开，否则 QQ/CDN 无法匿名读取图片',
         'token': '访问令牌：上传需要 repo-code:rw；列表需要 repo-manage:r；删除需要 repo-manage:rw',
-        'api_base': 'CNB OpenAPI 地址',
-        'asset_base': '公开资源地址，默认 https://cnb.cool',
         'max_file_size': '单张图片最大大小 (字节)，默认 100MB',
-        'verify_public_url': '上传后校验公开资源 URL 是否可匿名读取',
+        'verify_public_url': '上传后校验公开资源 URL 是否可匿名读取（默认关闭）',
         'timeout': 'CNB API 单次请求超时秒数',
     }
 
@@ -96,7 +95,7 @@ class Bed(BaseBed):
 
                 asset_url = self._asset_url(asset_path)
                 verification = None
-                if self._cfg.get('verify_public_url', True):
+                if self._cfg.get('verify_public_url', False):
                     check = await client.get(asset_url, headers={'Range': 'bytes=0-0'})
                     if check.status_code not in (200, 206):
                         raise RuntimeError(f'公开资源校验失败 (HTTP {check.status_code})')
@@ -124,17 +123,18 @@ class Bed(BaseBed):
             return result
         return result.get('asset_url') or (False, 'CNB 未返回资源 URL')
 
-    async def list_assets(self, limit=10):
+    async def list_assets(self, limit=10, page=1):
         """列出仓库资源附件，并为每条记录补充公开 URL。"""
         if not self.is_available():
             return []
         page_size = min(max(int(limit or 10), 1), 100)
+        page = max(int(page or 1), 1)
         try:
             async with self._client() as client:
                 response = await client.get(
                     self._api_url('list-assets'),
                     headers=self._headers(),
-                    params={'page': 1, 'page_size': page_size},
+                    params={'page': page, 'page_size': page_size},
                 )
                 _raise_for_status(response, '读取资源列表', permission='repo-manage:r')
                 records = response.json()
@@ -148,6 +148,47 @@ class Bed(BaseBed):
         except Exception as exc:
             log.warning(f'CNB 资源列表读取失败: {exc}')
             return []
+
+    async def list_all_assets(self, page_size=100):
+        """分页读取仓库中的全部资源附件；请求失败返回 None。"""
+        if not self.is_available():
+            return []
+        page_size = min(max(int(page_size or 100), 1), 100)
+        records = []
+        page = 1
+        seen_pages = set()
+        try:
+            async with self._client() as client:
+                while True:
+                    response = await client.get(
+                        self._api_url('list-assets'),
+                        headers=self._headers(),
+                        params={'page': page, 'page_size': page_size},
+                    )
+                    _raise_for_status(response, '读取资源列表', permission='repo-manage:r')
+                    payload = response.json()
+                    batch = payload if isinstance(payload, list) else []
+                    signature = tuple(
+                        str(item.get('id') or item.get('path') or '')
+                        for item in batch
+                        if isinstance(item, dict)
+                    )
+                    if signature in seen_pages:
+                        log.warning('CNB 资源列表分页重复，停止继续读取（已读取 %d 个）', len(records))
+                        break
+                    seen_pages.add(signature)
+                    for record in batch[:page_size]:
+                        item = dict(record)
+                        if item.get('path'):
+                            item['url'] = self._asset_url(item['path'])
+                        records.append(item)
+                    if len(batch) < page_size:
+                        break
+                    page += 1
+            return records
+        except Exception as exc:
+            log.warning(f'CNB 全量资源列表读取失败: {exc}')
+            return None
 
     async def delete(self, resource):
         """按资源 ID、记录 dict、资源路径或公开 URL 删除附件。"""
@@ -189,11 +230,10 @@ class Bed(BaseBed):
 
     def _api_url(self, operation):
         repo = quote(_repo_path(self._cfg.get('repo', '')), safe='/')
-        return f"{str(self._cfg.get('api_base', 'https://api.cnb.cool')).rstrip('/')}/{repo}/-/{operation}"
+        return f"{_API_BASE}/{repo}/-/{operation}"
 
     def _asset_url(self, path):
-        base = str(self._cfg.get('asset_base', 'https://cnb.cool')).rstrip('/')
-        return f'{base}/{quote(unquote(str(path)).lstrip("/"), safe="/%-._~")}'
+        return f'{_ASSET_BASE}/{quote(unquote(str(path)).lstrip("/"), safe="/%-._~")}'
 
     def _headers(self):
         return {

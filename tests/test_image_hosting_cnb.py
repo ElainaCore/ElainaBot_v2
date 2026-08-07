@@ -10,10 +10,7 @@ def _bed(handler):
             'enabled': True,
             'repo': 'demo/repo',
             'token': 'secret-token',
-            'api_base': 'https://api.cnb.cool',
-            'asset_base': 'https://cnb.cool',
             'max_file_size': 1024,
-            'verify_public_url': True,
             'timeout': 5,
         }
     )
@@ -41,14 +38,13 @@ async def test_upload_uses_cnb_openapi_without_plugin_dependency():
             assert request.headers['x-cnb-signature'] == 'signed'
             assert request.content == b'png-data'
             return httpx.Response(200)
-        if request.method == 'GET':
-            assert request.headers['range'] == 'bytes=0-0'
-            return httpx.Response(206, headers={'Content-Type': 'image/png'})
         raise AssertionError(f'unexpected request: {request.method} {request.url}')
 
     result = await _bed(handler).upload(b'png-data', 'test.png')
 
     assert result['asset_url'] == 'https://cnb.cool/demo/repo/-/assets/aa/test.png'
+    assert result['verification'] is None
+    assert [request.method for request in requests] == ['POST', 'PUT']
     assert requests[0].url.path == '/demo/repo/-/upload/imgs'
     assert requests[0].headers['authorization'] == 'Bearer secret-token'
 
@@ -68,3 +64,33 @@ async def test_list_and_delete_assets():
 
     assert records[0]['url'] == 'https://cnb.cool/demo/repo/-/assets/aa/test.png'
     assert await bed.delete(records[0]) is True
+
+
+@pytest.mark.asyncio
+async def test_list_all_assets_reads_every_page():
+    pages = []
+
+    def handler(request):
+        if request.method != 'GET':
+            raise AssertionError(f'unexpected request: {request.method} {request.url}')
+        page = int(request.url.params['page'])
+        pages.append(page)
+        if page == 1:
+            return httpx.Response(
+                200,
+                json=[
+                    {'id': str(index), 'path': f'/demo/repo/-/assets/{index}.png'}
+                    for index in range(100)
+                ],
+            )
+        return httpx.Response(
+            200,
+            json=[{'id': '100', 'path': '/demo/repo/-/assets/100.png'}],
+        )
+
+    records = await _bed(handler).list_all_assets()
+
+    assert records is not None
+    assert len(records) == 101
+    assert pages == [1, 2]
+    assert records[-1]['url'] == 'https://cnb.cool/demo/repo/-/assets/100.png'

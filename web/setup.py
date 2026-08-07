@@ -26,7 +26,7 @@ def _disable_sendfile_on_windows():
         return
     os.environ.setdefault('AIOHTTP_NOSENDFILE', '1')
     with contextlib.suppress(AttributeError):
-        _fr.NOSENDFILE = True
+        _fr.__dict__['NOSENDFILE'] = True
 
 
 class _WebPanelLogHandler(logging.Handler):
