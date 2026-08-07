@@ -1,4 +1,4 @@
-"""API 测试: 中间件行为 (并发请求, token 复用, 响应格式, IP 封禁)"""
+"""API 测试: 中间件行为 (并发请求, 会话复用, 响应格式, IP 封禁)。"""
 
 import asyncio
 
@@ -8,10 +8,11 @@ from tests.helpers import assert_success_response
 class TestConcurrency:
     """并发请求测试"""
 
-    async def test_concurrent_requests(self, api_client, auth_headers):
+    async def test_concurrent_requests(self, api_client, auth_cookies):
         """多个并发请求应正确响应"""
+
         async def make_request():
-            return await api_client.get('/api/auth/check', headers=auth_headers)
+            return await api_client.get('/api/auth/check', cookies=auth_cookies)
 
         tasks = [make_request() for _ in range(5)]
         results = await asyncio.gather(*tasks)
@@ -21,11 +22,11 @@ class TestConcurrency:
             assert_success_response(data)
 
 
-class TestTokenReuse:
-    """Token 复用测试"""
+class TestSessionReuse:
+    """Cookie 会话复用测试。"""
 
-    async def test_token_reused_across_requests(self, api_client, auth_headers):
-        """同一个 token 可跨请求复用"""
+    async def test_session_reused_across_requests(self, api_client, auth_cookies):
+        """同一个会话可跨请求复用。"""
         endpoints = [
             '/api/auth/check',
             '/api/bots',
@@ -33,16 +34,25 @@ class TestTokenReuse:
             '/api/system/info',
         ]
         for endpoint in endpoints:
-            resp = await api_client.get(endpoint, headers=auth_headers)
+            resp = await api_client.get(endpoint, cookies=auth_cookies)
             assert resp.status == 200, f'{endpoint}: expected 200, got {resp.status}'
 
-    async def test_revoked_token(self, api_client, auth_token):
-        """无效 token 应被拒绝"""
-        resp = await api_client.get(
-            '/api/auth/check',
-            headers={'Authorization': 'Bearer revoked_token_xyz'},
-        )
+    async def test_revoked_session(self, api_client, auth_cookies):
+        """已撤销的会话 Cookie 应被拒绝。"""
+        from web.auth import SESSION_COOKIE, valid_sessions
+
+        valid_sessions.pop(auth_cookies[SESSION_COOKIE])
+        resp = await api_client.get('/api/auth/check', cookies=auth_cookies)
         assert resp.status == 401
+
+    async def test_cross_origin_write_is_rejected(self, api_client, auth_cookies):
+        resp = await api_client.post(
+            '/api/config/save',
+            json={},
+            cookies=auth_cookies,
+            headers={'Origin': 'https://attacker.example'},
+        )
+        assert resp.status == 403
 
 
 class TestResponseFormat:
@@ -69,7 +79,7 @@ class TestResponseFormat:
         assert_success_response(data)
         assert set(data) == {'success', 'code', 'message', 'data'}
         assert data['code'] == 0
-        assert data['data']['token']
+        assert data['data'] == {'is_weak': False}
 
 
 class TestIPBanning:
@@ -77,7 +87,9 @@ class TestIPBanning:
 
     async def test_login_failure_count(self, api_client):
         """多次失败登录后的状态"""
-        for i in range(6):
+        for i in range(5):
             resp = await api_client.post('/api/auth/login', json={'password': f'wrong_{i}'})
-        # 5 次失败后 IP 被封
-        assert resp.status in (401, 403)
+        assert resp.status == 403
+
+        resp = await api_client.post('/api/auth/login', json={'password': 'test_pass'})
+        assert resp.status == 403

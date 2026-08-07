@@ -11,7 +11,7 @@ from ._common import BaseBed, get_any_sender, log, run_sync
 class Bed(BaseBed):
     name = 'qq_file'
     display_name = 'QQ分片文件'
-    priority = 70
+    priority = 40
     defaults = {
         'enabled': True,
         'target_type': 'group',

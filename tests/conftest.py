@@ -24,7 +24,7 @@ def sample_config_dir():
         # settings.yaml
         settings = {
             'server': {'host': '0.0.0.0', 'port': 15200},
-            'web': {'access_token': 'test_token', 'admin_password': 'test_pass'},
+            'web': {'admin_password': 'test_pass'},
             'logging': {
                 'dir': 'log',
                 'insert_interval': 2,
@@ -88,81 +88,6 @@ def config_manager(sample_config_dir):
     return mgr
 
 
-# ==================== Event Fixtures ====================
-
-
-@pytest.fixture
-def sample_group_at_payload():
-    """群聊 @ 消息原始 payload"""
-    return {
-        'id': 'evt_001',
-        'op': 0,
-        'd': {
-            'id': 'msg_001',
-            'author': {
-                'id': 'user_abc',
-                'member_openid': 'member_xyz',
-            },
-            'content': '/help',
-            'timestamp': '2026-05-17T10:00:00+08:00',
-            'group_openid': 'group_001',
-            'message_reference': {},
-            'attachments': [],
-        },
-    }
-
-
-@pytest.fixture
-def sample_c2c_payload():
-    """私聊消息原始 payload"""
-    return {
-        'id': 'evt_002',
-        'op': 0,
-        'd': {
-            'id': 'msg_002',
-            'author': {
-                'id': 'user_def',
-            },
-            'content': 'hello',
-            'timestamp': '2026-05-17T10:01:00+08:00',
-            'message_reference': {},
-            'attachments': [],
-        },
-    }
-
-
-@pytest.fixture
-def sample_event():
-    """构造 Event 对象"""
-    from core.message.event import Event
-
-    evt = Event()
-    evt.event_type = 'GROUP_AT_MESSAGE_CREATE'
-    evt.appid = '123456'
-    evt.message_id = 'msg_001'
-    evt.user_id = 'user_abc'
-    evt.content = '/help'
-    evt.group_id = 'group_001'
-    evt.timestamp = '2026-05-17T10:00:00+08:00'
-    evt.is_at_self = True
-    evt.is_group = True
-    evt.is_direct = False
-    evt.raw_content = '/help'
-    return evt
-
-
-# ==================== Mock Fixtures ====================
-
-
-@pytest.fixture
-def mock_token_response():
-    """模拟 QQ Bot API Token 响应"""
-    return {
-        'access_token': 'mock_access_token_xxx',
-        'expires_in': 7200,
-    }
-
-
 # ==================== Phase 2 Fixtures ====================
 
 
@@ -174,14 +99,6 @@ def reset_app_global():
     _app_mod._app = None
     yield
     _app_mod._app = None
-
-
-@pytest.fixture
-def app_instance():
-    """创建独立的 Application 实例 (不启动)"""
-    from core.application import Application
-
-    return Application()
 
 
 # ==================== Phase 2: API 测试 Fixtures ====================
@@ -225,7 +142,7 @@ def api_config_dir():
         # settings.yaml
         settings = {
             'server': {'host': '0.0.0.0', 'port': 15200},
-            'web': {'access_token': 'test_token', 'admin_password': 'test_pass'},
+            'web': {'admin_password': 'test_pass'},
             'logging': {
                 'dir': 'log',
                 'insert_interval': 2,
@@ -330,17 +247,13 @@ async def api_client(setup_app):
 
 
 @pytest.fixture
-async def auth_headers(api_client):
-    """登录获取 token, 返回带 Authorization 的请求头"""
-    resp = await api_client.post('/api/auth/login', json={'password': 'test_pass'})
-    data = await resp.json()
-    token = (data.get('data') or {}).get('token', '')
-    return {'Authorization': f'Bearer {token}'}
+async def auth_cookies(api_client):
+    """登录并返回受保护 API 所需的会话 Cookie。"""
+    from web.auth import SESSION_COOKIE
 
-
-@pytest.fixture
-async def auth_token(api_client):
-    """仅返回 token 字符串"""
     resp = await api_client.post('/api/auth/login', json={'password': 'test_pass'})
-    data = await resp.json()
-    return (data.get('data') or {}).get('token', '')
+    assert resp.status == 200
+    assert SESSION_COOKIE in resp.cookies
+    cookies = {SESSION_COOKIE: resp.cookies[SESSION_COOKIE].value}
+    api_client.session.cookie_jar.clear()
+    return cookies

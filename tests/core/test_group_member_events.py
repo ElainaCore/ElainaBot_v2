@@ -168,10 +168,12 @@ class TestGroupMemberHandlers:
 
     @pytest.mark.asyncio
     async def test_remove_deletes_user(self):
-        existing = json.dumps([
-            {'userid': 'u1', 'value': 1, 'last_active': '2020-01-01'},
-            {'userid': 'u2', 'value': 1, 'last_active': '2020-01-01'},
-        ])
+        existing = json.dumps(
+            [
+                {'userid': 'u1', 'value': 1, 'last_active': '2020-01-01'},
+                {'userid': 'u2', 'value': 1, 'last_active': '2020-01-01'},
+            ]
+        )
         h = _Harness(rows=[{'users': existing}])
         await h._handle_group_member_remove(h.bot, _build(GROUP_MEMBER_REMOVE, member='u2'))
         writes = [w for w in h.bot.log_service.writes if 'groups_users' in w[0]]

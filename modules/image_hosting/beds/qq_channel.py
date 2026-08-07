@@ -11,7 +11,7 @@ from ._common import BaseBed, detect_mime, run_sync
 class Bed(BaseBed):
     name = 'qq_channel'
     display_name = 'QQ频道'
-    priority = 30
+    priority = 70
     defaults = {
         'enabled': False,
         'channel_id': '',

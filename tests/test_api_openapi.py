@@ -38,41 +38,41 @@ class TestOpenapiAuth:
 class TestOpenapiLogin:
     """OpenAPI 登录流程测试"""
 
-    async def test_start_login_no_bot_api(self, api_client, auth_headers):
+    async def test_start_login_no_bot_api(self, api_client, auth_cookies):
         resp = await api_client.post(
             '/api/openapi/start-login',
             json={'user_id': 'test_user'},
-            headers=auth_headers,
+            cookies=auth_cookies,
         )
         assert resp.status in (200, 500)
 
-    async def test_check_login_not_started(self, api_client, auth_headers):
+    async def test_check_login_not_started(self, api_client, auth_cookies):
         resp = await api_client.post(
             '/api/openapi/check-login',
             json={'user_id': 'nonexistent_user'},
-            headers=auth_headers,
+            cookies=auth_cookies,
         )
         assert resp.status == 200
         data = await resp.json()
         # status 可能是 not_started 或 success
         assert 'status' in data or 'success' in data
 
-    async def test_login_status(self, api_client, auth_headers):
+    async def test_login_status(self, api_client, auth_cookies):
         resp = await api_client.post(
             '/api/openapi/login-status',
             json={'user_id': 'web_user'},
-            headers=auth_headers,
+            cookies=auth_cookies,
         )
         assert resp.status == 200
         data = await resp.json()
         assert_success_response(data)
         assert 'logged_in' in data
 
-    async def test_logout(self, api_client, auth_headers):
+    async def test_logout(self, api_client, auth_cookies):
         resp = await api_client.post(
             '/api/openapi/logout',
             json={'user_id': 'test_user'},
-            headers=auth_headers,
+            cookies=auth_cookies,
         )
         assert resp.status == 200
         data = await resp.json()
@@ -80,15 +80,15 @@ class TestOpenapiLogin:
 
 
 class TestOpenapiV2Auth:
-    async def test_manual_cookie_route_is_removed(self, api_client, auth_headers):
+    async def test_manual_cookie_route_is_removed(self, api_client, auth_cookies):
         resp = await api_client.post(
             '/api/openapi/v2/set-creds',
             json={'user_id': 'test_user', 'cookie': 'b-token=not-used'},
-            headers=auth_headers,
+            cookies=auth_cookies,
         )
         assert resp.status == 404
 
-    async def test_proxy_only_suggests_qr_login(self, api_client, auth_headers, monkeypatch):
+    async def test_proxy_only_suggests_qr_login(self, api_client, auth_cookies, monkeypatch):
         user_id = 'qr_only_user'
         monkeypatch.setitem(_openapi_v2_data, user_id, {'type': 'ok'})
         resp = await api_client.post(
@@ -98,7 +98,7 @@ class TestOpenapiV2Auth:
                 'path': '/cgi-bin/v2/info/list_bots',
                 'payload': {},
             },
-            headers=auth_headers,
+            cookies=auth_cookies,
         )
         assert resp.status == 200
         data = await resp.json()
@@ -106,7 +106,7 @@ class TestOpenapiV2Auth:
         assert data['message'] == '新版开放平台未授权，请重新扫码登录'
         assert 'Cookie' not in data['message']
 
-    async def test_proxy_returns_qq_response_without_wrapper(self, api_client, auth_headers, monkeypatch):
+    async def test_proxy_returns_qq_response_without_wrapper(self, api_client, auth_cookies, monkeypatch):
         class FakeBotApi:
             async def v2_request(self, method, path, cookie='', skey='', data=None, params=None):
                 assert skey == '@abc-123*'
@@ -137,7 +137,7 @@ class TestOpenapiV2Auth:
                 'path': '/cgi-bin/v2/info/list_bots',
                 'payload': {},
             },
-            headers=auth_headers,
+            cookies=auth_cookies,
         )
 
         assert resp.status == 200
@@ -146,7 +146,7 @@ class TestOpenapiV2Auth:
             'data': {'bots': [{'bot_appid': 102905988}]},
         }
 
-    async def test_proxy_clears_expired_qq_login(self, api_client, auth_headers, monkeypatch):
+    async def test_proxy_clears_expired_qq_login(self, api_client, auth_cookies, monkeypatch):
         class FakeBotApi:
             async def v2_request(self, method, path, cookie='', skey='', data=None, params=None):
                 return {'retcode': 10004, 'msg': '请重新登录'}
@@ -173,7 +173,7 @@ class TestOpenapiV2Auth:
                 'path': '/cgi-bin/v2/info/list_bots',
                 'payload': {},
             },
-            headers=auth_headers,
+            cookies=auth_cookies,
         )
 
         assert resp.status == 200
@@ -188,27 +188,27 @@ class TestOpenapiV2Auth:
 class TestOpenapiWhitelist:
     """OpenAPI 白名单操作测试"""
 
-    async def test_get_whitelist_no_login(self, api_client, auth_headers):
+    async def test_get_whitelist_no_login(self, api_client, auth_cookies):
         resp = await api_client.post(
             '/api/openapi/whitelist',
             json={},
-            headers=auth_headers,
+            cookies=auth_cookies,
         )
         # 无登录信息时返回错误
         assert resp.status in (200, 400, 401)
 
-    async def test_update_whitelist_no_login(self, api_client, auth_headers):
+    async def test_update_whitelist_no_login(self, api_client, auth_cookies):
         resp = await api_client.post(
             '/api/openapi/whitelist/update',
             json={},
-            headers=auth_headers,
+            cookies=auth_cookies,
         )
         assert resp.status in (200, 400, 401)
 
-    async def test_batch_add_whitelist_no_login(self, api_client, auth_headers):
+    async def test_batch_add_whitelist_no_login(self, api_client, auth_cookies):
         resp = await api_client.post(
             '/api/openapi/whitelist/batch-add',
             json={},
-            headers=auth_headers,
+            cookies=auth_cookies,
         )
         assert resp.status in (200, 400, 401)

@@ -6,7 +6,7 @@ from ._common import UA, BaseBed, detect_mime, run_sync
 class Bed(BaseBed):
     name = 'chatglm'
     display_name = 'ChatGLM'
-    priority = 40
+    priority = 10
     defaults = {
         'enabled': False,
     }

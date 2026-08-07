@@ -17,7 +17,7 @@ from ._common import (
 class Bed(BaseBed):
     name = 'cos'
     display_name = 'COS'
-    priority = 10
+    priority = 50
     defaults = {
         'enabled': False,
         'region': 'ap-guangzhou',

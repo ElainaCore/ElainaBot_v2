@@ -10,7 +10,7 @@ from ._common import BaseBed, detect_mime, run_sync
 class Bed(BaseBed):
     name = 'bilibili'
     display_name = 'B站'
-    priority = 20
+    priority = 60
     defaults = {
         'enabled': False,
         'csrf_token': '',

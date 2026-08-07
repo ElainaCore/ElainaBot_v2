@@ -17,10 +17,10 @@ class MockLogService:
     in memory. Tracks queue pressure and drop events.
     """
 
-    def __init__(self, appid="0000", config=None):
+    def __init__(self, appid='0000', config=None):
         self._appid = str(appid)
         self._config = config or MockConfig()
-        self._logs = {"message": deque(maxlen=10000), "lifecycle": deque(maxlen=5000)}
+        self._logs = {'message': deque(maxlen=10000), 'lifecycle': deque(maxlen=5000)}
         self._queue_maxsize = 1000
         self._queue_current = 0
         self._queue_peak = 0
@@ -52,7 +52,7 @@ class MockLogService:
             if len(q) >= q.maxlen:
                 self._drop_count += 1
                 return False
-            q.append({"ts": time.time(), "data": data})
+            q.append({'ts': time.time(), 'data': data})
         return True
 
     async def add(self, log_type, data):
@@ -102,12 +102,12 @@ class MockLogService:
     def queue_snapshot(self):
         """Return current queue state for monitoring."""
         return {
-            "current_depth": self._queue_current,
-            "peak_depth": self._queue_peak,
-            "drop_count": self._drop_count,
-            "add_count": self._add_count,
-            "flush_count": self._flush_count,
-            "queue_maxsize": self._queue_maxsize,
+            'current_depth': self._queue_current,
+            'peak_depth': self._queue_peak,
+            'drop_count': self._drop_count,
+            'add_count': self._add_count,
+            'flush_count': self._flush_count,
+            'queue_maxsize': self._queue_maxsize,
         }
 
     def drain_queue(self):
@@ -125,12 +125,10 @@ class MockLogService:
 
     def stats(self):
         return {
-            "appid": self._appid,
-            "add_count": self._add_count,
-            "queue_peak": self._queue_peak,
-            "drop_count": self._drop_count,
-            "flush_count": self._flush_count,
-            "avg_flush_ms": round(
-                (self._total_flush_time / max(self._flush_count, 1)) * 1000, 2
-            ),
+            'appid': self._appid,
+            'add_count': self._add_count,
+            'queue_peak': self._queue_peak,
+            'drop_count': self._drop_count,
+            'flush_count': self._flush_count,
+            'avg_flush_ms': round((self._total_flush_time / max(self._flush_count, 1)) * 1000, 2),
         }

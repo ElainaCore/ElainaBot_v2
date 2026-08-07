@@ -17,6 +17,7 @@ if ROOT not in sys.path:
 
 # ==================== 共享 handlers ====================
 
+
 async def _health_handler(_request):
     return web.json_response({'status': 'ok'})
 
@@ -238,9 +239,7 @@ class TestShutdownWithWebSocket:
             ws_url_base = str(client.make_url('/ws/panel'))
             ws_url_base = ws_url_base.replace('http://', 'ws://')
             for _ in range(5):
-                ws = await client.session.ws_connect(
-                    ws_url_base, headers={'Cookie': f'elaina_session={_TEST_WS_TOKEN}'}
-                )
+                ws = await client.session.ws_connect(ws_url_base, headers={'Cookie': f'elaina_session={_TEST_WS_TOKEN}'})
                 connections.append(ws)
 
             bc = _ws.get_broadcast()

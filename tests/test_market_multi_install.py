@@ -1,8 +1,8 @@
 """单元测试: 插件市场新安装模型 (complete / single 多文件 / 独立文件夹 / 一仓库多插件)"""
 
 import io
+import json
 import os
-import tempfile
 import zipfile
 
 import pytest
@@ -19,9 +19,17 @@ def _make_repo_zip(files: dict, root='repo-main') -> bytes:
     return buf.getvalue()
 
 
+class _FakeRequest:
+    def __init__(self, data):
+        self._data = data
+
+    async def json(self):
+        return self._data
+
+
 @pytest.fixture
-def base(monkeypatch):
-    d = tempfile.mkdtemp()
+def base(tmp_path):
+    d = str(tmp_path)
     os.makedirs(os.path.join(d, 'plugins'), exist_ok=True)
     shared.set_context(d)
     return d
@@ -78,6 +86,32 @@ def test_extract_subdir_missing(base):
 
 
 # ==================== single: 共享 alone 目录 (alone=True 默认) ====================
+
+
+def test_install_py_uses_shared_alone_directory(base):
+    meta = b'"""x"""\n__plugin_meta__ = {"version": "2.1.0"}\n'
+    result = install._install_py(meta, '测试插件', 'https://raw/u/repo/main/foo.py')
+
+    assert result['success']
+    assert os.path.isfile(os.path.join(base, 'plugins', 'alone', '测试插件.py'))
+    assert not os.path.isdir(os.path.join(base, 'plugins', '测试插件'))
+    assert '测试插件' in install._get_installed_names()
+    assert install._get_local_plugin_version('测试插件') == '2.1.0'
+
+    fallback = install._install_py(b'x', '', 'https://x/y/bar.py')
+    assert fallback['success']
+    assert os.path.isfile(os.path.join(base, 'plugins', 'alone', 'bar.py'))
+
+
+async def test_uninstall_single_file_plugin(base):
+    install._install_py(b'x', '测试插件', 'https://x/foo.py')
+    alone_py = os.path.join(base, 'plugins', 'alone', '测试插件.py')
+
+    resp = await install.handle_market_uninstall(_FakeRequest({'name': '测试插件', 'type': 'plugin'}))
+    body = json.loads(resp.text)
+
+    assert body['success'], body
+    assert not os.path.exists(alone_py)
 
 
 async def test_single_alone_shared(base, monkeypatch):
@@ -168,15 +202,14 @@ async def test_complete_subdir(base, monkeypatch):
 
 async def test_alone_path_with_requirements(base, monkeypatch):
     """path 为数组: .py 装到 alone/<名>.py, 声明的 requirements.txt → alone/<名>_requirements.txt"""
+
     async def fake_dl(url, **kw):
         if url.endswith('requirements.txt'):
             return b'openai>=1.0.0\n'
         return b'"""x"""\n__plugin_meta__ = {"version": "1.0.0"}\n'
 
     monkeypatch.setattr(install, '_download_file', fake_dl)
-    result, target = await install._install_single(
-        'https://github.com/u/r', '今日猪猪',
-        path=['alone/今日猪猪.py', 'alone/requirements.txt'], alone=True)
+    result, target = await install._install_single('https://github.com/u/r', '今日猪猪', path=['alone/今日猪猪.py', 'alone/requirements.txt'], alone=True)
     assert result['success'], result
     assert target == install._ALONE_DIR
     alone = os.path.join(base, 'plugins', 'alone')
@@ -188,15 +221,14 @@ async def test_alone_path_with_requirements(base, monkeypatch):
 
 async def test_alone_path_named_requirements_kept(base, monkeypatch):
     """作者声明的文件本就是 xxx_requirements.txt → 原样保存, 不加前缀"""
+
     async def fake_dl(url, **kw):
         if url.endswith('.txt'):
             return b'httpx>=0.27\n'
         return b'__plugin_meta__ = {"version": "1.0.0"}\n'
 
     monkeypatch.setattr(install, '_download_file', fake_dl)
-    result, _ = await install._install_single(
-        'https://github.com/u/r', '字符字',
-        path='alone/字符字.py, alone/字符字_requirements.txt', alone=True)
+    result, _ = await install._install_single('https://github.com/u/r', '字符字', path='alone/字符字.py, alone/字符字_requirements.txt', alone=True)
     assert result['success'], result
     alone = os.path.join(base, 'plugins', 'alone')
     assert os.path.isfile(os.path.join(alone, '字符字.py'))
