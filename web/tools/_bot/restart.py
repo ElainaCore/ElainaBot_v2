@@ -86,7 +86,8 @@ async def handle_restart(request: web.Request):
             f.write(script)
 
         if _IS_WINDOWS:
-            subprocess.Popen([sys.executable, restarter], cwd=_base_dir, creationflags=subprocess.CREATE_NO_WINDOW)
+            creationflags = subprocess.__dict__.get('CREATE_NO_WINDOW', 0)
+            subprocess.Popen([sys.executable, restarter], cwd=_base_dir, creationflags=creationflags)
 
             def _delayed_exit():
                 close_console_window()
