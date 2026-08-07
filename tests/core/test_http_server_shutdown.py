@@ -4,6 +4,7 @@ import asyncio
 import os
 import sys
 import time
+from datetime import datetime, timedelta
 
 import pytest
 from aiohttp import web
@@ -162,7 +163,7 @@ class TestHttpServerStopLifecycle:
 # ==================== 带 WebSocket 的集成测试 ====================
 
 
-# 用固定 token 绕过 WS 鉴权，避免依赖完整的 auth.login 流程
+# 用固定 Cookie 会话测试 WS 鉴权。
 _TEST_WS_TOKEN = 'test_ws_shutdown_token'
 
 
@@ -175,7 +176,12 @@ class TestShutdownWithWebSocket:
         """注入测试 token 到 auth.valid_sessions"""
         import web.auth as _auth
 
-        _auth.valid_sessions[_TEST_WS_TOKEN] = time.time() + 3600
+        now = datetime.now()
+        _auth.valid_sessions[_TEST_WS_TOKEN] = {
+            'created': now,
+            'expires': now + timedelta(hours=1),
+            'ip': '127.0.0.1',
+        }
         yield
         _auth.valid_sessions.pop(_TEST_WS_TOKEN, None)
 
@@ -195,10 +201,9 @@ class TestShutdownWithWebSocket:
         await client.start_server()
 
         try:
-            # 带 token 的 WebSocket 连接
-            ws_url = str(client.make_url(f'/ws/panel?token={_TEST_WS_TOKEN}'))
+            ws_url = str(client.make_url('/ws/panel'))
             ws_url = ws_url.replace('http://', 'ws://')
-            ws_conn = await client.session.ws_connect(ws_url)
+            ws_conn = await client.session.ws_connect(ws_url, headers={'Cookie': f'elaina_session={_TEST_WS_TOKEN}'})
             assert ws_conn.closed is False
 
             # 模拟关闭流程: shutdown() → 连接断开
@@ -230,10 +235,12 @@ class TestShutdownWithWebSocket:
 
         connections = []
         try:
-            ws_url_base = str(client.make_url(f'/ws/panel?token={_TEST_WS_TOKEN}'))
+            ws_url_base = str(client.make_url('/ws/panel'))
             ws_url_base = ws_url_base.replace('http://', 'ws://')
             for _ in range(5):
-                ws = await client.session.ws_connect(ws_url_base)
+                ws = await client.session.ws_connect(
+                    ws_url_base, headers={'Cookie': f'elaina_session={_TEST_WS_TOKEN}'}
+                )
                 connections.append(ws)
 
             bc = _ws.get_broadcast()

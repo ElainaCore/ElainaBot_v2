@@ -65,7 +65,7 @@ def _push_console_line(entry: dict):
 async def _api_no_cache_middleware(request: web.Request, handler):
     """API 响应禁止浏览器/代理缓存, 保证数据实时"""
     resp = await handler(request)
-    if request.path.startswith('/api/') and not request.path.startswith('/api/media/'):
+    if request.path.startswith('/api/'):
         resp.headers.setdefault('Cache-Control', 'no-store')
     return resp
 
@@ -116,10 +116,10 @@ def setup_web(app: web.Application, bot_manager, base_dir: str):
         logging.getLogger('ElainaBot.web').debug(f'面板日志推送安装失败: {e}')
     app.router.add_routes(_panel_api.get_routes())
 
-    # 媒体文件静态路由 (data/media/)
+    # 媒体文件使用鉴权路由。
     media_dir = os.path.join(base_dir, 'data', 'media')
     os.makedirs(media_dir, exist_ok=True)
-    app.router.add_static('/api/media/', media_dir)
+    app.router.add_get('/api/media/{filename}', _auth.require_auth(_make_media_handler(media_dir)))
 
     # 优先使用仓库内随版本发布的 web/dist, 避免旧 web-vue/dist 覆盖新构建
     _web_dir = os.path.dirname(__file__)
@@ -150,6 +150,19 @@ _MIME = {
     '.webp': 'image/webp',
     '.ico': 'image/x-icon',
 }
+
+
+def _make_media_handler(media_dir: str):
+    media_root = os.path.realpath(media_dir)
+
+    async def handler(request: web.Request):
+        filename = request.match_info['filename']
+        path = os.path.realpath(os.path.join(media_root, filename))
+        if os.path.basename(filename) != filename or not path.startswith(media_root + os.sep) or not os.path.isfile(path):
+            raise web.HTTPNotFound()
+        return web.FileResponse(path, headers={'Cache-Control': 'private, no-store'})
+
+    return handler
 
 _ASSET_REF_PATTERN = re.compile(r'(?:/web/)?assets/[A-Za-z0-9_.-]+\.(?:css|js)')
 

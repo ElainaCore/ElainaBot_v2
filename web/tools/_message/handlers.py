@@ -42,7 +42,7 @@ log = logging.getLogger('ElainaBot.web.message')
 
 _chat_list_cache: dict[tuple[str, str], tuple[float, list[dict[str, Any]]]] = {}
 _CHAT_LIST_TTL = 10
-_chat_list_lock = None  # asyncio.Lock, 延迟初始化 (仅首次无缓存时使用)
+_chat_list_locks: dict[tuple[str, str], asyncio.Lock] = {}
 _chat_refreshing: set[tuple[str, str]] = set()  # 后台刷新中的 cache_key, 防重复刷新
 _chat_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix='chat-agg')
 
@@ -133,12 +133,7 @@ async def _build_chat_list(chat_type, appid_filter):
             })
         return result
     chats = await loop.run_in_executor(_chat_executor, _aggregate_chats_sync, chat_type, appid_filter)
-    if chat_type == 'user':
-        ids = [c['chat_id'] for c in chats]
-        nicks = await loop.run_in_executor(_chat_executor, _batch_get_nicknames, ids)
-        for c in chats:
-            c['nickname'] = nicks.get(c['chat_id'], f'用户{c["chat_id"][-6:]}')
-    else:
+    if chat_type != 'user':
         fa_ids = _get_full_access_group_ids()
         remarks = _load_remarks()
         for c in chats:
@@ -161,6 +156,14 @@ async def _refresh_chat_list(cache_key, chat_type, appid_filter):
         _chat_refreshing.discard(cache_key)
 
 
+async def _add_user_nicknames(chats):
+    if not chats:
+        return chats
+    loop = asyncio.get_running_loop()
+    nicks = await loop.run_in_executor(_chat_executor, _batch_get_nicknames, [c['chat_id'] for c in chats])
+    return [{**c, 'nickname': nicks.get(c['chat_id'], f'用户{c["chat_id"][-6:]}')} for c in chats]
+
+
 async def handle_get_chats(request: web.Request):
     """获取聊天列表 — SQL GROUP BY 聚合 + 批量昵称 + 缓存 (过期先返旧数据, 后台刷新)"""
     try:
@@ -170,12 +173,11 @@ async def handle_get_chats(request: web.Request):
     chat_type = body.get('type', 'group')
     search = body.get('search', '').lower()
     appid_filter = body.get('appid', '')
-    page = max(int(body.get('page', 1)), 1)
-    page_size = min(int(body.get('page_size', 50)), 100)
-
-    global _chat_list_lock
-    if _chat_list_lock is None:
-        _chat_list_lock = asyncio.Lock()
+    try:
+        page = max(int(body.get('page', 1)), 1)
+        page_size = min(max(int(body.get('page_size', 50)), 1), 100)
+    except (TypeError, ValueError):
+        page, page_size = 1, 50
 
     cache_key = (chat_type, appid_filter)
     cached = _chat_list_cache.get(cache_key)
@@ -187,7 +189,7 @@ async def handle_get_chats(request: web.Request):
             spawn(_refresh_chat_list(cache_key, chat_type, appid_filter))
     else:
         # 首次无缓存, 同类请求合并等待一次构建
-        async with _chat_list_lock:
+        async with _chat_list_locks.setdefault(cache_key, asyncio.Lock()):
             cached = _chat_list_cache.get(cache_key)
             if cached:
                 chats = cached[1]
@@ -196,11 +198,16 @@ async def handle_get_chats(request: web.Request):
                 _chat_list_cache[cache_key] = (time.time(), chats)
 
     if search:
+        if chat_type == 'user':
+            chats = await _add_user_nicknames(chats)
         chats = [c for c in chats if search in c['chat_id'].lower() or search in c.get('nickname', '').lower() or search in c.get('remark', '').lower()]
 
     total = len(chats)
+    page = min(page, max((total + page_size - 1) // page_size, 1))
     start = (page - 1) * page_size
     paged = chats[start : start + page_size]
+    if chat_type == 'user' and not search and paged:
+        paged = await _add_user_nicknames(paged)
 
     return web.json_response(
         {

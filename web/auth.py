@@ -11,6 +11,7 @@ import time
 import uuid
 from datetime import datetime, timedelta
 from functools import wraps
+from urllib.parse import urlsplit
 
 from aiohttp import web
 
@@ -25,6 +26,7 @@ _MAX_SESSIONS = 10
 _MAX_FAIL_COUNT = 5
 _SESSION_DAYS = 7
 _MAX_IP_RECORDS = 10000
+SESSION_COOKIE = 'elaina_session'
 
 valid_sessions: dict = {}
 ip_access_data: dict = {}
@@ -298,17 +300,25 @@ def create_session(request: web.Request) -> str:
     return token
 
 
-def validate_token(request: web.Request) -> bool:
-    """验证 Authorization: Bearer <token> 或 ?token= 查询参数"""
-    _cleanup_sessions()
-    # 优先从 Authorization 头获取
-    token = ''
+def get_request_token(request: web.Request) -> str:
+    """从请求头或安全 Cookie 获取会话令牌。"""
     auth_header = request.headers.get('Authorization', '')
     if auth_header.startswith('Bearer '):
-        token = auth_header[7:]
-    # 回退: 从 query 参数获取 (iframe/导航请求无法带 header)
-    if not token:
-        token = request.query.get('token', '')
+        return auth_header[7:].strip()
+    return request.cookies.get(SESSION_COOKIE, '')
+
+
+def set_session_cookie(response: web.StreamResponse, request: web.Request, token: str) -> None:
+    secure = request.secure or request.headers.get('X-Forwarded-Proto', '').split(',')[0].strip() == 'https'
+    response.set_cookie(
+        SESSION_COOKIE, token, httponly=True, secure=secure, samesite='Strict', max_age=_SESSION_DAYS * 86400, path='/'
+    )
+
+
+def validate_token(request: web.Request) -> bool:
+    """验证 Bearer 或 HttpOnly Cookie 中的会话令牌。"""
+    _cleanup_sessions()
+    token = get_request_token(request)
     if not token or token not in valid_sessions:
         return False
     info = valid_sessions[token]
@@ -317,6 +327,21 @@ def validate_token(request: web.Request) -> bool:
         _save_session_data()
         return False
     return True
+
+
+def revoke_session(request: web.Request) -> None:
+    token = get_request_token(request)
+    if token:
+        valid_sessions.pop(token, None)
+        _save_session_data()
+
+
+def is_same_origin(request: web.Request) -> bool:
+    """Cookie 鉴权时拒绝跨站写请求。"""
+    origin = request.headers.get('Origin')
+    if not origin:
+        return True
+    return hmac.compare_digest(urlsplit(origin).netloc.lower(), request.host.lower())
 
 
 # ==================== 中间件 ====================
@@ -329,6 +354,9 @@ def require_auth(handler):
     async def wrapped(request):
         if not validate_token(request):
             return error('未登录或会话已过期', status=401)
+        uses_cookie = not request.headers.get('Authorization', '').startswith('Bearer ')
+        if uses_cookie and request.method not in ('GET', 'HEAD', 'OPTIONS') and not is_same_origin(request):
+            return error('跨站请求已拒绝', status=403)
         return await handler(request)
 
     return wrapped

@@ -162,6 +162,8 @@ async def handle_create_plugin(request: web.Request):
     if not is_within(pdir, target_dir):
         return web.json_response({'success': False, 'message': '无效目录'}, status=403)
     plugin_path = os.path.join(target_dir, filename)
+    if not is_within(pdir, plugin_path):
+        return web.json_response({'success': False, 'message': '无效文件名'}, status=403)
     if os.path.exists(plugin_path):
         return web.json_response({'success': False, 'message': '文件已存在'}, status=409)
     os.makedirs(target_dir, exist_ok=True)

@@ -51,6 +51,7 @@ def get_routes() -> list:
     return [
         # ── 鉴权 ──
         web.post('/api/auth/login', handle_login),
+        web.post('/api/auth/logout', _(handle_auth_logout)),
         web.get('/api/auth/check', _(handle_auth_check)),
         web.get('/api/auth/password-status', _(handle_password_status)),
         # ── 机器人 ──
@@ -261,7 +262,16 @@ async def handle_login(request: web.Request):
     auth.record_ip_access(ip, 'success')
     token = auth.create_session(request)
     is_weak = password in _WEAK_PASSWORDS
-    return ok({'token': token, 'is_weak': is_weak})
+    response = ok({'token': token, 'is_weak': is_weak})
+    auth.set_session_cookie(response, request, token)
+    return response
+
+
+async def handle_auth_logout(request: web.Request):
+    auth.revoke_session(request)
+    response = ok()
+    response.del_cookie(auth.SESSION_COOKIE, path='/')
+    return response
 
 
 async def handle_auth_check(request: web.Request):
@@ -356,33 +366,35 @@ def _tag_lifecycle_extra(r):
         r['raw_message'] = r['extra']
 
 
-def _gather_recent_logs_sync(appid_filter):
-    """同步聚合所有日志查询 (在 executor 中执行, 避免阻塞事件循环)"""
-    messages = _query_bot_logs('message', appid_filter, _tag_direction)
-    lifecycle = _query_bot_logs('lifecycle', appid_filter, _tag_lifecycle_extra)
+_RECENT_LOG_TYPES = ('message', 'framework', 'error', 'lifecycle', 'console')
+_BOT_LOG_POST = {'message': _tag_direction, 'lifecycle': _tag_lifecycle_extra}
+
+
+def _query_recent_log(log_type, appid_filter):
+    if log_type in _BOT_LOG_POST:
+        return _query_bot_logs(log_type, appid_filter, _BOT_LOG_POST[log_type])
+    if log_type == 'console':
+        return _console.get_lines()
     shared = SharedLogService._instance
-    if shared:
-        framework = shared.query('framework', _LOG_SQL)
-        framework.reverse()
-        errors = shared.query('error', _LOG_SQL)
-        errors.reverse()
-    else:
-        framework = []
-        errors = []
-    return {
-        'message': messages,
-        'framework': framework,
-        'error': errors,
-        'lifecycle': lifecycle,
-        'console': _console.get_lines(),
-    }
+    rows = shared.query(log_type, _LOG_SQL) if shared else []
+    rows.reverse()
+    return rows
+
+
+def _gather_recent_logs_sync(appid_filter, log_type=''):
+    """同步聚合所有日志查询 (在 executor 中执行, 避免阻塞事件循环)"""
+    types = (log_type,) if log_type else _RECENT_LOG_TYPES
+    return {item: _query_recent_log(item, appid_filter) for item in types}
 
 
 async def handle_recent_logs(request: web.Request):
     """最近日志 — SQLite 同步查询放到 executor, 不阻塞事件循环"""
     appid_filter = request.query.get('appid', '')
+    log_type = request.query.get('type', '')
+    if log_type and log_type not in _RECENT_LOG_TYPES:
+        return error('无效日志类型', status=400)
     loop = asyncio.get_running_loop()
-    payload = await loop.run_in_executor(None, _gather_recent_logs_sync, appid_filter)
+    payload = await loop.run_in_executor(None, _gather_recent_logs_sync, appid_filter, log_type)
     return web.json_response(payload)
 
 

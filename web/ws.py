@@ -134,10 +134,8 @@ def push_system_info(data: dict):
 
 
 async def handle_ws(request: web.Request) -> web.WebSocketResponse:
-    """WebSocket 端点: /ws/panel?token=xxx"""
-    # 验证 token
-    token = request.query.get('token', '')
-    if not token or token not in auth.valid_sessions:
+    """WebSocket 端点。"""
+    if not auth.validate_token(request) or not auth.is_same_origin(request):
         return web.Response(status=401, text='Unauthorized')  # type: ignore[return-value]  # auth failure before WS upgrade
 
     # 禁用 permessage-deflate: 部分代理/加速层无法正确转发压缩帧, 会导致浏览器报 Invalid frame header
@@ -176,9 +174,8 @@ async def _handle_client_msg(ws: web.WebSocketResponse, data: dict):
 
 
 async def handle_sse(request: web.Request) -> web.StreamResponse:
-    """SSE 端点: /api/sse/panel?token=xxx (WebSocket 不可用时的降级通道)"""
-    token = request.query.get('token', '')
-    if not token or token not in auth.valid_sessions:
+    """SSE 降级端点。"""
+    if not auth.validate_token(request) or not auth.is_same_origin(request):
         return web.Response(status=401, text='Unauthorized')
 
     resp = web.StreamResponse()
