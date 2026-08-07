@@ -348,7 +348,7 @@ async def api_ping(request):
     return web.json_response({'ok': True, 'plugin': 'alone'})
 
 
-@register_route('POST', '/api/ext/alone/echo')  # 默认 auth=True, 需 Authorization: Bearer <token>
+@register_route('POST', '/api/ext/alone/echo')  # 默认 auth=True, 需要面板登录 Cookie
 async def api_echo(request):
     body = await request.json()
     return web.json_response({'ok': True, 'you_sent': body})

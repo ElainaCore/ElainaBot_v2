@@ -262,7 +262,7 @@ async def handle_login(request: web.Request):
     auth.record_ip_access(ip, 'success')
     token = auth.create_session(request)
     is_weak = password in _WEAK_PASSWORDS
-    response = ok({'token': token, 'is_weak': is_weak})
+    response = ok({'is_weak': is_weak})
     auth.set_session_cookie(response, request, token)
     return response
 
@@ -421,6 +421,7 @@ async def handle_ext_route(request: web.Request):
     entry = match_route(request.method, request.path)
     if entry is None:
         return web.json_response({'success': False, 'error': '路由不存在'}, status=404)
-    if entry['auth'] and not auth.validate_token(request):
-        return web.json_response({'success': False, 'error': '未登录或会话已过期'}, status=401)
+    denied = auth.authorize_request(request) if entry['auth'] else None
+    if denied is not None:
+        return denied
     return await entry['handler'](request)

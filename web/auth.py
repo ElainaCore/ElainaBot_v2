@@ -301,10 +301,7 @@ def create_session(request: web.Request) -> str:
 
 
 def get_request_token(request: web.Request) -> str:
-    """从请求头或安全 Cookie 获取会话令牌。"""
-    auth_header = request.headers.get('Authorization', '')
-    if auth_header.startswith('Bearer '):
-        return auth_header[7:].strip()
+    """从安全 Cookie 获取会话令牌。"""
     return request.cookies.get(SESSION_COOKIE, '')
 
 
@@ -316,7 +313,7 @@ def set_session_cookie(response: web.StreamResponse, request: web.Request, token
 
 
 def validate_token(request: web.Request) -> bool:
-    """验证 Bearer 或 HttpOnly Cookie 中的会话令牌。"""
+    """验证 HttpOnly Cookie 中的会话令牌。"""
     _cleanup_sessions()
     token = get_request_token(request)
     if not token or token not in valid_sessions:
@@ -344,19 +341,25 @@ def is_same_origin(request: web.Request) -> bool:
     return hmac.compare_digest(urlsplit(origin).netloc.lower(), request.host.lower())
 
 
+def authorize_request(request: web.Request):
+    if not validate_token(request):
+        return error('未登录或会话已过期', status=401)
+    if request.method not in ('GET', 'HEAD', 'OPTIONS') and not is_same_origin(request):
+        return error('跨站请求已拒绝', status=403)
+    return None
+
+
 # ==================== 中间件 ====================
 
 
 def require_auth(handler):
-    """aiohttp 路由装饰器: 要求 Bearer token"""
+    """aiohttp 路由装饰器: 要求登录 Cookie。"""
 
     @wraps(handler)
     async def wrapped(request):
-        if not validate_token(request):
-            return error('未登录或会话已过期', status=401)
-        uses_cookie = not request.headers.get('Authorization', '').startswith('Bearer ')
-        if uses_cookie and request.method not in ('GET', 'HEAD', 'OPTIONS') and not is_same_origin(request):
-            return error('跨站请求已拒绝', status=403)
+        denied = authorize_request(request)
+        if denied is not None:
+            return denied
         return await handler(request)
 
     return wrapped

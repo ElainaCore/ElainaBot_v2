@@ -171,7 +171,6 @@
 <div class="toast" id="toast"></div>
 
 <script>
-const TOKEN = new URLSearchParams(location.search).get('token') || localStorage.getItem('elaina_token') || '';
 const API = '/api/ext/onebot/network';
 
 const ICONS = {
@@ -208,9 +207,9 @@ function toast(msg, ok = true) {
 }
 
 async function req(method, body) {
-  const r = await fetch(API + '?token=' + encodeURIComponent(TOKEN), {
+  const r = await fetch(API, {
     method,
-    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + TOKEN },
+    headers: { 'Content-Type': 'application/json' },
     body: body ? JSON.stringify(body) : undefined,
   });
   return r.json();

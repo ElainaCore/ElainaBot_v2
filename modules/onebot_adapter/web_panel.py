@@ -2,7 +2,7 @@
 
 复用框架的 Web 面板扩展机制 (core.plugin.web_pages), 模块与插件共用同一注册表:
   - register_page:  在面板侧边栏注册「OneBot 网络」页 (iframe 加载 panel.html)
-  - register_route: 注册 /api/ext/onebot/* 配置接口 (复用后台登录 token 鉴权)
+  - register_route: 注册 /api/ext/onebot/* 配置接口 (复用后台登录 Cookie 鉴权)
 """
 
 from __future__ import annotations
