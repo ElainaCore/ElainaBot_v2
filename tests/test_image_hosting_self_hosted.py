@@ -18,6 +18,7 @@ _EXPECTED_ORDER = [
     'xingye',
     'nature',
     'qq_file',
+    'cnb',
     'cos',
     'bilibili',
     'qq_channel',
@@ -25,7 +26,7 @@ _EXPECTED_ORDER = [
 ]
 
 
-def _make_bed(tmp_path, public_base_url='https://img.example.com/api/ext/image-hosting'):
+def _make_bed(tmp_path, public_base_url='img.example.com'):
     bed = self_hosted_module.Bed(
         {
             'enabled': True,
@@ -58,13 +59,20 @@ def test_existing_config_is_reordered_and_retired_beds_are_removed():
     assert ordered['custom_bed'] == {'token': 'preserved'}
 
 
-def test_public_base_url_supports_auto_ip_domain_and_mapping(monkeypatch):
-    monkeypatch.setattr(self_hosted_module, '_detect_local_ip', lambda: '192.0.2.10')
+def test_public_base_url_supports_configured_values(monkeypatch):
+    monkeypatch.setattr(self_hosted_module, '_detect_public_ip', lambda: '8.8.8.8')
     monkeypatch.setattr(self_hosted_module, '_server_port', lambda: 5200)
 
-    assert self_hosted_module._resolve_public_base_url('') == 'http://192.0.2.10:5200/api/ext/image-hosting'
+    assert self_hosted_module._resolve_public_base_url('') == 'http://8.8.8.8:5200/api/ext/image-hosting'
+    assert self_hosted_module._resolve_public_base_url('1.1.1.1:8080') == 'http://1.1.1.1:8080/api/ext/image-hosting'
     assert self_hosted_module._resolve_public_base_url('img.example.com') == 'http://img.example.com:5200/api/ext/image-hosting'
-    assert self_hosted_module._resolve_public_base_url('https://cdn.example.com/bot-images/') == 'https://cdn.example.com/bot-images'
+    assert self_hosted_module._resolve_public_base_url('img.example.com:8080') == 'http://img.example.com:8080/api/ext/image-hosting'
+
+
+@pytest.mark.parametrize('value', ['1.1.1.1', 'https://img.example.com', 'img.example.com/path', 'img.example.com:0'])
+def test_public_base_url_rejects_unsupported_values(value):
+    with pytest.raises(ValueError):
+        self_hosted_module._resolve_public_base_url(value)
 
 
 @pytest.mark.asyncio

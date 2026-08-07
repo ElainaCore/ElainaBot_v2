@@ -19,6 +19,7 @@
 - [8. Web 面板扩展](#8-web-面板扩展)
 - [9. 配置项与全量环境](#9-配置项与全量环境)
 - [10. 调试与最佳实践](#10-调试与最佳实践)
+- [11. 模块接入索引](#11-模块接入索引)
 
 ---
 
@@ -863,6 +864,32 @@ def test_sync(event, match):
 - **延迟导入**: 体积大的依赖在 handler 内 `import`, 加快插件加载
 - **冷却限流**: 高频指令加 `cooldown=N`
 - **大型插件**: 子模块放 `app/` / `mod/` 目录, 按需 import
+
+---
+
+## 11. 模块接入索引
+
+框架模块由 `ModuleManager` 统一管理。插件通过 `core.application.get_app()` 获取当前应用，再从 `app.module_manager` 读取已启用模块：
+
+```python
+from core.application import get_app
+
+app = get_app()
+renderer = app.module_manager.get("renderer") if app else None
+if renderer and renderer.playwright_available():
+    image_bytes = await renderer.playwright.screenshot_html("<h1>报告</h1>")
+```
+
+模块未启用或初始化失败时，`get()` 返回 `None`；插件应检查模块和子引擎的可用状态。模块实例由框架负责生命周期管理，插件不要主动调用模块的 `close()` / `teardown()`。
+
+| 模块 | 用途 | 接入文档 |
+| --- | --- | --- |
+| `datastore` | 异步 MySQL、Redis 连接池和 CRUD/缓存操作 | [Datastore 模块文档](modules/datastore/README.md) |
+| `renderer` | PIL 子进程渲染、Playwright 截图和 PDF | [Renderer 模块文档](modules/renderer/README.md) |
+| `image_hosting` | 多图床统一上传、状态查询和动态分发 | [Image Hosting 模块文档](modules/image_hosting/README.md) |
+| `onebot_adapter` | OneBot 11 网络连接、事件推送和标准 action | [OneBot Adapter 模块文档](modules/onebot_adapter/README.md) |
+
+各文档均包含配置文件位置、完整公开方法、返回值、依赖要求和插件示例。模块 API 以对应模块文档和源码中的公开方法为准，以下划线开头的成员属于内部实现，不保证兼容。
 
 ---
 

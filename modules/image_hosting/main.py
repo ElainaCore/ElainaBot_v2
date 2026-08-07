@@ -16,14 +16,17 @@
         url = await hosting.upload_xingye(image_bytes)
         url = await hosting.upload_nature(image_bytes)
         url = await hosting.upload_self_hosted(image_bytes, "test.png")
+        url = await hosting.upload_cnb(image_bytes, "test.png")
+        records = await hosting.list_cnb_assets(limit=10)
+        await hosting.delete_cnb(records[0])
 
 配置 (modules/image_hosting/data/config.yaml): 各图床一个配置段, 由各自的 Bed.defaults 提供
 """
 
 __module_meta__ = {
     'name': '图床服务',
-    'description': '统一图床上传 (ChatGLM / 星野 / Nature / QQ分片 / COS / B站 / QQ频道 / 自身图床)',
-    'version': '2.1.0',
+    'description': '统一图床上传 (CNB / ChatGLM / 星野 / Nature / QQ分片 / COS / B站 / QQ频道 / 自身图床)',
+    'version': '2.2.0',
     'author': 'ElainaBot',
 }
 
@@ -128,6 +131,15 @@ class ImageHosting:
             bed = self._beds.get(rest)
             if bed:
                 return bed.upload
+        # list_<name>_assets / delete_<name>
+        if attr.startswith('list_') and attr.endswith('_assets'):
+            bed = self._beds.get(attr[5:-7])
+            if bed and hasattr(bed, 'list_assets'):
+                return bed.list_assets
+        if attr.startswith('delete_'):
+            bed = self._beds.get(attr[7:])
+            if bed and hasattr(bed, 'delete'):
+                return bed.delete
         raise AttributeError(f"'{type(self).__name__}' object has no attribute '{attr}'")
 
     # ==================== 通用上传 ====================

@@ -3,15 +3,16 @@
 import hashlib
 import ipaddress
 import os
-import socket
 import tempfile
 from io import BytesIO
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.request import urlopen
 
 from ._common import BaseBed, log, run_sync
 
 _DEFAULT_ROUTE = '/api/ext/image-hosting'
+_PUBLIC_IP_URL = 'https://api.ipify.org'
 _IMAGE_FORMATS = (
     (lambda data: data.startswith(b'\x89PNG\r\n\x1a\n'), 'png'),
     (lambda data: data.startswith(b'\xff\xd8\xff'), 'jpg'),
@@ -38,7 +39,7 @@ class Bed(BaseBed):
     comments = {
         '__desc__': '自身图床 (复用框架 HTTP 服务，无需鉴权即可读取)',
         'enabled': '是否启用自身图床',
-        'public_base_url': ('公开链接端点；留空自动使用 http://本机IP:主端口/api/ext/image-hosting；可填写 IP、域名或完整映射 URL'),
+        'public_base_url': '公开地址；可填写 IP:端口、域名:端口或域名，留空自动探测公网 IP',
         'storage_dir': '图片存储目录；留空使用模块 data/self_hosted，支持绝对路径',
         'max_file_size': '单张图片最大大小 (字节)，默认 100MB',
         'permanent_cache': '是否允许浏览器/CDN 永久缓存图片映射；关闭时使用 no-store，服务器原图仍会保留',
@@ -150,48 +151,35 @@ def _server_port():
         return 5200
 
 
-def _detect_local_ip():
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+def _detect_public_ip():
     try:
-        sock.connect(('8.8.8.8', 80))
-        address = sock.getsockname()[0]
-        if address and not address.startswith('127.'):
-            return address
-    except OSError:
-        pass
-    finally:
-        sock.close()
-
-    try:
-        for address in socket.gethostbyname_ex(socket.gethostname())[2]:
-            if address and not address.startswith('127.'):
-                return address
-    except OSError:
-        pass
-    return '127.0.0.1'
+        with urlopen(_PUBLIC_IP_URL, timeout=3) as response:  # noqa: S310 - 固定的 HTTPS 地址。
+            address = response.read(64).decode('ascii').strip()
+        parsed = ipaddress.ip_address(address)
+        if parsed.is_global:
+            return parsed.compressed
+    except (OSError, UnicodeError, ValueError) as e:
+        raise ValueError('无法探测公网 IP，请填写 public_base_url') from e
+    raise ValueError('公网 IP 探测结果无效，请填写 public_base_url')
 
 
 def _resolve_public_base_url(value):
-    raw = str(value or '').strip().rstrip('/')
-    if raw and '://' in raw:
-        parsed = urlsplit(raw)
-        if parsed.scheme not in ('http', 'https') or not parsed.netloc:
-            raise ValueError('public_base_url 必须是有效的 HTTP(S) URL')
-        path = parsed.path.rstrip('/') or _DEFAULT_ROUTE
-        return urlunsplit((parsed.scheme, parsed.netloc, path, '', ''))
+    authority = str(value or '').strip()
+    if not authority:
+        authority = f'{_detect_public_ip()}:{_server_port()}'
+    elif '://' in authority or '/' in authority:
+        raise ValueError('public_base_url 仅支持 IP:端口、域名:端口或域名')
+    elif ':' not in authority:
+        try:
+            ipaddress.ip_address(authority)
+        except ValueError:
+            authority = f'{authority}:{_server_port()}'
+        else:
+            raise ValueError('IP 地址必须填写端口')
 
-    host = raw or _detect_local_ip()
-    try:
-        if ipaddress.ip_address(host).version == 6:
-            host = f'[{host}]'
-    except ValueError:
-        pass
-
-    # 显式 host:port 保留原端口；纯 IP/域名跟随框架主 HTTP 端口。
-    has_port = host.startswith('[') and ']:' in host
-    has_port = has_port or (not host.startswith('[') and host.count(':') == 1)
-    port = _server_port()
-    authority = host if has_port or port == 80 else f'{host}:{port}'
+    host, separator, port = authority.rpartition(':')
+    if not separator or not host or not port.isdigit() or not 1 <= int(port) <= 65535:
+        raise ValueError('public_base_url 仅支持 IP:端口、域名:端口或域名')
     return f'http://{authority}{_DEFAULT_ROUTE}'
 
 

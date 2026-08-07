@@ -63,6 +63,17 @@ ElainaBot_v2/
 
 详见 **[插件开发文档 (PLUGIN_DEVELOPMENT.md)](PLUGIN_DEVELOPMENT.md)** — 包含完整的装饰器、Event API、按钮构造、主动消息、Web 面板扩展等参考。
 
+## 🧩 模块接入
+
+插件可通过 `get_app().module_manager.get("模块名")` 获取已启用模块。各模块的公开 API、配置和示例见对应文档：
+
+| 模块 | 文档 |
+| --- | --- |
+| Datastore（MySQL + Redis） | [modules/datastore/README.md](modules/datastore/README.md) |
+| Renderer（PIL + Playwright） | [modules/renderer/README.md](modules/renderer/README.md) |
+| Image Hosting（统一图床） | [modules/image_hosting/README.md](modules/image_hosting/README.md) |
+| OneBot Adapter | [modules/onebot_adapter/README.md](modules/onebot_adapter/README.md) |
+
 ## 🛒 插件市场
 
 框架内置插件市场，从 [ElainaCore/Elaina-plugins](https://github.com/ElainaCore/Elaina-plugins) 获取插件列表。
@@ -135,5 +146,4 @@ git clone https://github.com/ElainaCore/ElainaBot_v2.git
 cd ElainaBot_v2
 docker compose -f docker-compose.build.yml up -d --build
 ```
-
 
