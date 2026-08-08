@@ -138,23 +138,52 @@ def _version_lt(local, remote):
 # ==================== 预览 ====================
 
 
-def _preview_zip(content):
+def _preview_markdown_zip(content, plugin_path=''):
+    """读取插件所在目录的 Markdown 文件，不暴露源码。"""
     try:
         with zipfile.ZipFile(io.BytesIO(content), 'r') as zf:
-            py_files = [f for f in zf.namelist() if f.endswith('.py') and not f.startswith('__') and '/__pycache__/' not in f]
+            names = zf.namelist()
+            roots = {name.split('/')[0] for name in names if '/' in name and name.split('/')[0]}
+            root_prefix = (next(iter(roots)) + '/') if len(roots) == 1 else ''
+
+            paths = _split_paths(plugin_path)
+            target = paths[0].replace('\\', '/').strip('/') if paths else ''
+            if target and any(name.startswith(f'{root_prefix}{target}/') for name in names):
+                directory = target
+            elif target:
+                directory = target.rsplit('/', 1)[0] if '/' in target else ''
+            else:
+                directory = ''
+
+            directory_prefix = f'{root_prefix}{directory}/' if directory else root_prefix
+            md_files = [
+                name
+                for name in names
+                if name.lower().endswith('.md')
+                and name.startswith(directory_prefix)
+                and '/' not in name[len(directory_prefix) :]
+            ]
             files = []
-            for pf in py_files[:10]:
+            for md_path in sorted(md_files, key=lambda path: (os.path.basename(path).lower() != 'readme.md', path.lower())):
                 try:
-                    fc = zf.read(pf).decode('utf-8', errors='replace')
-                    files.append({'name': pf, 'content': fc[:5000], 'size': len(fc)})
+                    content_text = zf.read(md_path).decode('utf-8', errors='replace')
+                    files.append(
+                        {
+                            'name': os.path.basename(md_path),
+                            'path': md_path[len(root_prefix) :],
+                            'content': content_text[:200000],
+                            'size': len(content_text.encode('utf-8')),
+                        }
+                    )
                 except Exception as e:
-                    log.debug(f'读取预览文件 {pf} 失败: {e}')
+                    log.debug(f'读取 Markdown 预览文件 {md_path} 失败: {e}')
             return web.json_response(
                 {
                     'success': True,
-                    'type': 'zip',
+                    'type': 'markdown',
                     'files': files,
-                    'total_files': len(py_files),
+                    'total_files': len(md_files),
+                    'directory': directory,
                 }
             )
     except Exception as e:
@@ -163,38 +192,19 @@ def _preview_zip(content):
 
 async def handle_market_preview(request: web.Request):
     body = await request.json()
-    url = body.get('url', '')
-    if not url:
-        return web.json_response({'success': False, 'message': '缺少 URL'}, status=400)
+    github = body.get('github', '')
+    branch = body.get('branch', 'main')
+    plugin_path = body.get('path', '')
+    if not github:
+        return web.json_response({'success': False, 'message': '缺少 GitHub 仓库地址'}, status=400)
 
-    url = _convert_github_url(url)
     try:
-        content = await _download_file(url)
+        content = await _download_repo_zip(github, branch, get_github_mirror())
         if content is None:
             return web.json_response({'success': False, 'message': '下载失败'})
-
-        if b'<!doctype html' in content[:100].lower() or b'<html' in content[:100].lower():
-            return web.json_response({'success': False, 'message': '下载链接无效'})
-
-        if content[:4] == b'PK\x03\x04':
-            return _preview_zip(content)
-
-        is_py = url.endswith('.py') or any(k in content[:500] for k in [b'import ', b'def ', b'class '])
-        if is_py:
-            code = content.decode('utf-8', errors='replace')
-            fname = url.split('/')[-1].split('?')[0]
-            if not fname.endswith('.py'):
-                fname = 'plugin.py'
-            return web.json_response(
-                {
-                    'success': True,
-                    'type': 'py',
-                    'filename': fname,
-                    'content': code,
-                    'size': len(code),
-                }
-            )
-        return web.json_response({'success': False, 'message': '不支持的文件类型'})
+        if content[:4] != b'PK\x03\x04':
+            return web.json_response({'success': False, 'message': '仓库下载内容无效'})
+        return _preview_markdown_zip(content, plugin_path)
     except Exception as e:
         return web.json_response({'success': False, 'message': str(e)})
 
