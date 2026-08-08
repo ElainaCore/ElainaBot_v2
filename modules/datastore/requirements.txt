@@ -1,2 +1,0 @@
-aiomysql>=0.2.0
-redis>=5.0.0
