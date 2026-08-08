@@ -46,7 +46,6 @@ class FrameworkUpdater:
         self.skip_files = self._load_skip_files()
         self.whitelist = self._load_setting('update_whitelist', None) or list(DEFAULT_WHITELIST)
         self.current_version = self._load_version()
-        self.custom_mirror = self._load_setting('custom_mirror', '')
         self.progress = {
             'stage': 'idle',
             'message': '',
@@ -139,9 +138,12 @@ class FrameworkUpdater:
 
     # ==================== 镜像管理 ====================
 
+    @property
+    def custom_mirror(self):
+        return self._load_setting('custom_mirror', '')
+
     def set_custom_mirror(self, mirror):
-        self.custom_mirror = mirror or ''
-        self._save_setting('custom_mirror', self.custom_mirror)
+        self._save_setting('custom_mirror', mirror or '')
 
     async def _pick_download_url(self, original_url):
         """从磁盘缓存的排名中选最快的镜像 URL"""

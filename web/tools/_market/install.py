@@ -14,11 +14,11 @@ from web.tools._market.fetch import (
 from web.tools._market.shared import (
     _convert_github_url,
     _github_to_archive,
-    _load_market_mirror,
     _modules_dir,
     _plugins_dir,
     _repo_raw_url,
     _safe_name,
+    get_github_mirror,
     log,
 )
 from web.tools._python_source import read_dict_assignment
@@ -488,7 +488,7 @@ async def handle_market_install(request: web.Request):
     file_path = body.get('path', '')
     alone = bool(body.get('alone', True))
     branch = body.get('branch', 'main')
-    mirror = body.get('mirror', '') or _load_market_mirror()
+    mirror = get_github_mirror()
     if not github_url:
         return web.json_response({'success': False, 'message': '缺少下载地址'}, status=400)
 

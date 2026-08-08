@@ -72,19 +72,3 @@ class TestMarketLocal:
     async def test_market_local(self, api_client, auth_cookies):
         resp = await api_client.get('/api/market/local', cookies=auth_cookies)
         assert resp.status in (200, 500)
-
-
-class TestMarketMirror:
-    """市场镜像接口测试"""
-
-    async def test_market_get_mirror(self, api_client, auth_cookies):
-        resp = await api_client.get('/api/market/mirror', cookies=auth_cookies)
-        assert resp.status in (200, 500)
-
-    async def test_market_set_mirror(self, api_client, auth_cookies):
-        resp = await api_client.post(
-            '/api/market/mirror',
-            json={'mirror': 'https://example.com'},
-            cookies=auth_cookies,
-        )
-        assert resp.status in (200, 500)
