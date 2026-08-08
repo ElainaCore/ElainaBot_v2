@@ -167,15 +167,21 @@ class Bed(BaseBed):
                     )
                     _raise_for_status(response, '读取资源列表', permission='repo-manage:r')
                     payload = response.json()
-                    batch = payload if isinstance(payload, list) else []
+                    if not isinstance(payload, list):
+                        raise RuntimeError(
+                            f'CNB 资源列表第 {page} 页响应类型错误: '
+                            f'{type(payload).__name__}'
+                        )
+                    batch = payload
                     signature = tuple(
                         str(item.get('id') or item.get('path') or '')
                         for item in batch
                         if isinstance(item, dict)
                     )
                     if signature in seen_pages:
-                        log.warning('CNB 资源列表分页重复，停止继续读取（已读取 %d 个）', len(records))
-                        break
+                        raise RuntimeError(
+                            f'CNB 资源列表第 {page} 页重复，仅读取到 {len(records)} 个资源'
+                        )
                     seen_pages.add(signature)
                     for record in batch[:page_size]:
                         item = dict(record)
@@ -193,7 +199,7 @@ class Bed(BaseBed):
     async def delete(self, resource):
         """按资源 ID、记录 dict、资源路径或公开 URL 删除附件。"""
         if not self.is_available():
-            return False
+            return (False, 'CNB 图床未开启或配置不完整')
         try:
             async with self._client() as client:
                 # UploadImgs 资源应使用 DeleteRepoImgs，以图片 URL 中的路径作为标识。
@@ -207,7 +213,10 @@ class Bed(BaseBed):
                     # 保留对其他资源记录（或旧版仅保存 ID）的兼容。
                     asset_id = await self._resolve_asset_id(resource)
                     if asset_id is None:
-                        return False
+                        return (
+                            False,
+                            '无法解析待删除的 CNB 资源，请提供资源 ID、list-assets 记录、资源路径或公开 URL',
+                        )
                     response = await client.delete(
                         self._api_url(f'assets/{quote(str(asset_id), safe="")}'),
                         headers=self._headers(),
@@ -215,8 +224,9 @@ class Bed(BaseBed):
                 _raise_for_status(response, '删除资源', permission='repo-manage:rw')
             return True
         except Exception as exc:
-            log.warning(f'CNB 资源删除失败: {exc}')
-            return False
+            reason = _exception_detail(exc, '删除资源')
+            log.warning(f'CNB 资源删除失败: {reason}')
+            return (False, reason)
 
     async def _resolve_asset_id(self, resource):
         if isinstance(resource, dict):
@@ -288,10 +298,43 @@ def _raise_for_status(response, operation, permission=None):
     if response.status_code < 400:
         return
     detail = ''
+    error_code = ''
     try:
         payload = response.json()
-        detail = payload.get('message') or payload.get('msg') or str(payload)
+        if isinstance(payload, dict):
+            error = payload.get('error')
+            if isinstance(error, dict):
+                detail = error.get('message') or error.get('msg') or str(error)
+                error_code = error.get('code') or ''
+            else:
+                detail = payload.get('message') or payload.get('msg') or error or str(payload)
+            error_code = error_code or payload.get('code') or payload.get('error_code') or ''
+        else:
+            detail = str(payload)
     except Exception:
-        detail = response.text[:300]
+        detail = response.text[:500]
+    detail = str(detail).strip() or '响应体为空'
+    if error_code:
+        detail = f'[{error_code}] {detail}'
     suffix = f'，请确认 token 具有 {permission} 权限' if response.status_code == 403 and permission else ''
-    raise RuntimeError(f'{operation}失败 (HTTP {response.status_code}): {detail}{suffix}')
+    request_id = (
+        response.headers.get('x-request-id')
+        or response.headers.get('x-cnb-request-id')
+        or response.headers.get('trace-id')
+    )
+    request_suffix = f'，request_id={request_id}' if request_id else ''
+    request = response.request
+    request_context = f'{request.method} {request.url}' if request else '未知请求'
+    raise RuntimeError(
+        f'{operation}失败 (HTTP {response.status_code}, {request_context}): '
+        f'{detail}{suffix}{request_suffix}'
+    )
+
+
+def _exception_detail(exc, operation):
+    detail = str(exc).strip()
+    if isinstance(exc, httpx.TimeoutException):
+        return f'{operation}请求超时 ({type(exc).__name__}): {detail or "未返回更多信息"}'
+    if isinstance(exc, httpx.RequestError):
+        return f'{operation}请求异常 ({type(exc).__name__}): {detail or "未返回更多信息"}'
+    return detail or f'{operation}失败 ({type(exc).__name__})'

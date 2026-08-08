@@ -349,8 +349,8 @@ def _clear_dir_except_data(dest_dir):
             os.remove(p)
 
 
-async def _install_module(github_url, module_name, branch='main', mirror=None):
-    """安装/更新模块: 官方仓库只提取 modules/<name>/ 子目录, 第三方整仓库安装"""
+async def _install_module(github_url, module_name, subdir_path='', branch='main', mirror=None):
+    """安装/更新模块。"""
     safe = _safe_name(module_name) or 'unknown'
     log.info(f'模块安装: {safe} ← {_github_to_archive(github_url, branch)}')
 
@@ -367,24 +367,14 @@ async def _install_module(github_url, module_name, branch='main', mirror=None):
             roots = {f.split('/')[0] for f in flist if '/' in f and f.split('/')[0]}
             root_prefix = (list(roots)[0] + '/') if len(roots) == 1 else ''
 
-            # 尝试匹配 modules/<name>/ (官方/框架内模块)
-            mod_prefix = f'{root_prefix}modules/{safe}/'
+            module_path = subdir_path or f'modules/{safe}'
+            mod_prefix = _resolve_subdir(flist, root_prefix, module_path)
+            if mod_prefix is None:
+                return {'success': False, 'message': f'仓库内未找到: {module_path}'}
             mod_files = [f for f in flist if f.startswith(mod_prefix) and not f.endswith('/')]
 
             if not mod_files:
-                # 判断是否为框架仓库 (精确匹配官方仓库)
-                is_framework = 'ElainaCore/ElainaBot_v2' in github_url
-                if is_framework:
-                    return {
-                        'success': False,
-                        'message': f'框架仓库中未找到 modules/{safe}/',
-                    }
-                # 第三方模块: 整个仓库就是模块内容
-                mod_prefix = root_prefix
-                mod_files = [f for f in flist if f.startswith(mod_prefix) and not f.endswith('/')]
-
-            if not mod_files:
-                return {'success': False, 'message': '仓库内容为空'}
+                return {'success': False, 'message': f'目录为空: {module_path}'}
 
             dest_dir = os.path.join(_modules_dir(), safe)
             _clear_dir_except_data(dest_dir)
@@ -503,9 +493,9 @@ async def handle_market_install(request: web.Request):
         return web.json_response({'success': False, 'message': '缺少下载地址'}, status=400)
 
     try:
-        # 模块: 从仓库 zip 提取 modules/<name>/ 子目录
+        # 模块
         if item_type == TYPE_MODULE:
-            return web.json_response(await _install_module(github_url, item_name, branch, mirror=mirror))
+            return web.json_response(await _install_module(github_url, item_name, file_path, branch, mirror))
 
         # 独立插件 (single)
         if item_type == TYPE_SINGLE:
