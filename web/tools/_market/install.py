@@ -284,11 +284,19 @@ def _resolve_subdir(flist, root_prefix, subdir_path):
     return None
 
 
-def _extract_zip_subset(content, plugin_name, subdir_path=''):
-    """从仓库 zip 解压到 plugins/<name>/, subdir_path 非空时仅解压该子目录"""
-    plugins_dir = _plugins_dir()
-    safe = _safe_name(plugin_name) or 'unknown'
-    dest_dir = os.path.join(plugins_dir, safe)
+def _extract_zip_subset(
+    content,
+    item_name,
+    subdir_path='',
+    *,
+    dest_root=None,
+    dest_label='plugins',
+    preserve_data=False,
+):
+    """从仓库 zip 中仅提取指定目录到插件或模块安装目录。"""
+    dest_root = dest_root or _plugins_dir()
+    safe = _safe_name(item_name) or 'unknown'
+    dest_dir = os.path.join(dest_root, safe)
     try:
         with zipfile.ZipFile(io.BytesIO(content), 'r') as zf:
             flist = zf.namelist()
@@ -303,6 +311,8 @@ def _extract_zip_subset(content, plugin_name, subdir_path=''):
                 return {'success': False, 'message': f'仓库内未找到: {subdir_path}'}
             selected = [f for f in flist if f.startswith(strip_prefix) and not f.endswith('/')]
 
+            if preserve_data:
+                _clear_dir_except_data(dest_dir)
             os.makedirs(dest_dir, exist_ok=True)
             extracted = []
             for fp in selected:
@@ -315,19 +325,26 @@ def _extract_zip_subset(content, plugin_name, subdir_path=''):
                 if not is_within(dest_dir, dest):
                     log.warning(f'跳过越界成员 (疑似路径穿越): {fp!r}')
                     continue
+                if preserve_data and rel.startswith('data/') and os.path.exists(dest):
+                    continue
                 os.makedirs(os.path.dirname(dest) or dest_dir, exist_ok=True)
                 with zf.open(fp) as src, open(dest, 'wb') as dst:
                     dst.write(src.read())
                 extracted.append(rel)
             if not extracted:
                 return {'success': False, 'message': '未找到要安装的文件'}
-            py_count = sum(1 for f in extracted if f.endswith('.py'))
             total = len(extracted)
-            log.info(f'插件 {safe} 安装完成: {total} 个文件 ({py_count} 个 .py)')
+            if dest_label == 'plugins':
+                py_count = sum(1 for path in extracted if path.endswith('.py'))
+                log.info(f'插件 {safe} 安装完成: {total} 个文件 ({py_count} 个 .py)')
+                message = f'已安装到 plugins/{safe}/ ({total} 个文件, {py_count} 个 Python)'
+            else:
+                log.info(f'模块 {safe} 安装完成: {total} 个文件')
+                message = f'已更新 {dest_label}/{safe}/ ({total} 个文件)'
             return {
                 'success': True,
-                'message': f'已安装到 plugins/{safe}/ ({total} 个文件, {py_count} 个 Python)',
-                'path': f'plugins/{safe}',
+                'message': message,
+                'path': f'{dest_label}/{safe}',
                 'files': total,
             }
     except Exception as e:
@@ -353,61 +370,21 @@ async def _install_module(github_url, module_name, subdir_path='', branch='main'
     """安装/更新模块。"""
     safe = _safe_name(module_name) or 'unknown'
     log.info(f'模块安装: {safe} ← {_github_to_archive(github_url, branch)}')
-
     content = await _download_repo_zip(github_url, branch, mirror)
     if content is None:
         return {'success': False, 'message': '下载失败, 请检查网络或镜像'}
     if content[:4] != b'PK\x03\x04':
         return {'success': False, 'message': '下载内容不是有效的 zip 文件'}
 
-    try:
-        with zipfile.ZipFile(io.BytesIO(content), 'r') as zf:
-            flist = zf.namelist()
-            # GitHub archive 根目录 (repo-branch/)
-            roots = {f.split('/')[0] for f in flist if '/' in f and f.split('/')[0]}
-            root_prefix = (list(roots)[0] + '/') if len(roots) == 1 else ''
-
-            module_path = subdir_path or f'modules/{safe}'
-            mod_prefix = _resolve_subdir(flist, root_prefix, module_path)
-            if mod_prefix is None:
-                return {'success': False, 'message': f'仓库内未找到: {module_path}'}
-            mod_files = [f for f in flist if f.startswith(mod_prefix) and not f.endswith('/')]
-
-            if not mod_files:
-                return {'success': False, 'message': f'目录为空: {module_path}'}
-
-            dest_dir = os.path.join(_modules_dir(), safe)
-            _clear_dir_except_data(dest_dir)
-            os.makedirs(dest_dir, exist_ok=True)
-
-            extracted = []
-            for fp in mod_files:
-                if '__pycache__' in fp or '/.git/' in fp:
-                    continue
-                rel = fp[len(mod_prefix) :]
-                if not rel:
-                    continue
-                dest = os.path.join(dest_dir, rel)
-                if not is_within(dest_dir, dest):
-                    log.warning(f'跳过越界成员 (疑似路径穿越): {fp!r}')
-                    continue
-                # 保留用户已有的 data/ 配置
-                if rel.startswith('data/') and os.path.exists(dest):
-                    continue
-                os.makedirs(os.path.dirname(dest), exist_ok=True)
-                with zf.open(fp) as src, open(dest, 'wb') as dst:
-                    dst.write(src.read())
-                extracted.append(rel)
-
-            log.info(f'模块 {safe} 安装完成: {len(extracted)} 个文件')
-            return {
-                'success': True,
-                'message': f'已更新 modules/{safe}/ ({len(extracted)} 个文件)',
-                'path': f'modules/{safe}',
-                'files': len(extracted),
-            }
-    except Exception as e:
-        return {'success': False, 'message': str(e)}
+    module_path = subdir_path or f'modules/{safe}'
+    return _extract_zip_subset(
+        content,
+        module_name,
+        subdir_path=module_path,
+        dest_root=_modules_dir(),
+        dest_label='modules',
+        preserve_data=True,
+    )
 
 
 async def _auto_enable_plugin(reload_name):
