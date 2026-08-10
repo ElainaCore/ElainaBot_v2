@@ -51,6 +51,21 @@ DAU_TABLE_SQL = """
     )
 """
 
+_GROUPS_USERS_COLUMNS = (
+    'group_id', 'group_name', 'users', 'group_member_num',
+    'is_admin', 'is_full_access', 'allow_proactive_msg', 'in_group',
+)
+_GROUPS_USERS_DEFINITION = """(
+            group_id TEXT PRIMARY KEY,
+            group_name TEXT DEFAULT '',
+            users TEXT DEFAULT '[]',
+            group_member_num INTEGER DEFAULT 0,
+            is_admin INTEGER DEFAULT 0,
+            is_full_access INTEGER DEFAULT 0,
+            allow_proactive_msg INTEGER DEFAULT 0,
+            in_group INTEGER DEFAULT 1
+        )"""
+
 # 表结构 (类型 -> CREATE TABLE SQL)
 _SCHEMAS = {
     'message': """
@@ -132,7 +147,7 @@ _SCHEMAS = {
             extra TEXT DEFAULT ''
         )
     """,
-    'data': """
+    'data': f"""
         CREATE TABLE IF NOT EXISTS users (
             user_id TEXT PRIMARY KEY,
             name TEXT DEFAULT '',
@@ -141,19 +156,7 @@ _SCHEMAS = {
         CREATE TABLE IF NOT EXISTS members (
             user_id TEXT PRIMARY KEY
         );
-        CREATE TABLE IF NOT EXISTS groups_users (
-            group_id TEXT PRIMARY KEY,
-            users TEXT DEFAULT '[]',
-            in_group INTEGER DEFAULT 1
-        );
-        CREATE TABLE IF NOT EXISTS full_access_groups (
-            group_id TEXT PRIMARY KEY,
-            first_seen TEXT DEFAULT ''
-        );
-        CREATE TABLE IF NOT EXISTS group_bot_admin (
-            group_id TEXT PRIMARY KEY,
-            updated_at TEXT DEFAULT ''
-        );
+        CREATE TABLE IF NOT EXISTS groups_users {_GROUPS_USERS_DEFINITION};
     """,
 }
 
@@ -216,17 +219,99 @@ _INDEXES = {
 
 _DATA_MIGRATIONS = [
     ('users', 'state', 'INTEGER DEFAULT 0'),
-    ('groups_users', 'in_group', 'INTEGER DEFAULT 1'),
 ]
 
-# data 库 schema 版本 (PRAGMA user_version); 新增迁移时 +1
-_DATA_SCHEMA_VERSION = 2
+# SQLite PRAGMA user_version 只能保存整数，因此 2.0.1 编码为 20001。
+_DATA_SCHEMA_VERSION = '2.0.1'
+_DATA_SCHEMA_USER_VERSION = 20001
+_FULL_ACCESS_INDEX = (
+    'CREATE INDEX IF NOT EXISTS idx_groups_full_access ON groups_users('
+    'is_full_access, group_id, group_name, group_member_num, in_group, allow_proactive_msg)'
+)
+
+
+def _table_exists(conn, name):
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
+    ).fetchone() is not None
+
+
+def _rebuild_groups_users(conn):
+    """将旧群数据表合并到 groups_users，并调整为指定列顺序。"""
+    current = [row[1] for row in conn.execute('PRAGMA table_info(groups_users)').fetchall()]
+    legacy_admin = _table_exists(conn, 'group_bot_admin')
+    legacy_full = _table_exists(conn, 'full_access_groups')
+    if tuple(current) == _GROUPS_USERS_COLUMNS and not legacy_admin and not legacy_full:
+        return
+    columns = set(current)
+    defaults = {
+        'group_name': "''",
+        'users': "'[]'",
+        'group_member_num': '0',
+        'is_admin': '0',
+        'is_full_access': '0',
+        'allow_proactive_msg': '0',
+        'in_group': '1',
+    }
+    values = {
+        name: f'COALESCE({name}, {default})' if name in columns else default
+        for name, default in defaults.items()
+    }
+    if legacy_admin:
+        conn.execute(
+            'INSERT OR IGNORE INTO groups_users (group_id) '
+            "SELECT group_id FROM group_bot_admin WHERE COALESCE(group_id, '') != ''"
+        )
+        values['is_admin'] = (
+            f"MAX({values['is_admin']}, EXISTS("
+            'SELECT 1 FROM group_bot_admin a WHERE a.group_id=groups_users.group_id))'
+        )
+    if legacy_full:
+        legacy_columns = {
+            row[1] for row in conn.execute('PRAGMA table_info(full_access_groups)').fetchall()
+        }
+        conn.execute(
+            'INSERT OR IGNORE INTO groups_users (group_id) '
+            "SELECT group_id FROM full_access_groups WHERE COALESCE(group_id, '') != ''"
+        )
+        values['is_full_access'] = (
+            f"MAX({values['is_full_access']}, EXISTS("
+            'SELECT 1 FROM full_access_groups f WHERE f.group_id=groups_users.group_id))'
+        )
+        if 'allow_proactive_msg' in legacy_columns:
+            values['allow_proactive_msg'] = (
+                f"MAX({values['allow_proactive_msg']}, COALESCE(("
+                'SELECT allow_proactive_msg FROM full_access_groups f '
+                'WHERE f.group_id=groups_users.group_id), 0))'
+            )
+    conn.executescript(
+        f"""
+        DROP TABLE IF EXISTS groups_users_new;
+        CREATE TABLE groups_users_new {_GROUPS_USERS_DEFINITION};
+        INSERT INTO groups_users_new (
+            group_id, group_name, users, group_member_num,
+            is_admin, is_full_access, allow_proactive_msg, in_group
+        )
+        SELECT
+            group_id, {values['group_name']}, {values['users']}, {values['group_member_num']},
+            {values['is_admin']}, {values['is_full_access']},
+            {values['allow_proactive_msg']}, {values['in_group']}
+        FROM groups_users;
+        DROP TABLE groups_users;
+        ALTER TABLE groups_users_new RENAME TO groups_users;
+        DROP TABLE IF EXISTS group_bot_admin;
+        DROP TABLE IF EXISTS full_access_groups;
+        """
+    )
+    log.info(f'自动迁移 data.db {_DATA_SCHEMA_VERSION}: 群管理员及全量权限已合并至 groups_users')
 
 
 def _migrate_data_tables(conn):
     """为 data 库的旧表补齐缺失列 (按 user_version 版本号跳过已迁移库)"""
     try:
-        if conn.execute('PRAGMA user_version').fetchone()[0] >= _DATA_SCHEMA_VERSION:
+        if conn.execute('PRAGMA user_version').fetchone()[0] >= _DATA_SCHEMA_USER_VERSION:
+            conn.execute(_FULL_ACCESS_INDEX)
+            conn.commit()
             return
     except sqlite3.Error:
         pass
@@ -240,14 +325,16 @@ def _migrate_data_tables(conn):
             log.info(f'自动迁移: {table} 表新增列 {col}')
         except Exception as e:
             log.warning(f'迁移列 {table}.{col} 失败: {e}')
-    with contextlib.suppress(Exception):
-        conn.execute('ALTER TABLE full_access_groups DROP COLUMN last_seen')
+    try:
+        _rebuild_groups_users(conn)
+        conn.execute(_FULL_ACCESS_INDEX)
         conn.commit()
+    except Exception as e:
+        conn.rollback()
+        log.warning(f'迁移群数据表失败: {e}')
+        return
     with contextlib.suppress(Exception):
-        conn.execute(f'PRAGMA user_version = {_DATA_SCHEMA_VERSION}')
-        conn.commit()
-    with contextlib.suppress(Exception):
-        conn.execute(f'PRAGMA user_version = {_DATA_SCHEMA_VERSION}')
+        conn.execute(f'PRAGMA user_version = {_DATA_SCHEMA_USER_VERSION}')
         conn.commit()
 
 

@@ -623,7 +623,78 @@ member = await event.sender.get_group_member(group_id, user_id)
 # 查询机器人自身在某群的成员信息 (返回 dict 或 None)
 bot_member = await event.sender.get_bot_member(group_id)
 is_admin = bot_member and bot_member.get('member_role') in ('admin', 'owner')
+
+# 群资料、入群申请和禁言管理，完整用法见下一节
+group_info = await event.sender.get_group_info(group_id)
+join_requests = await event.sender.get_group_join_requests(group_id)
+mute_setting = await event.sender.get_group_restrict_chat_setting(group_id)
 ```
+
+#### 群管理接口
+
+| 方法 | 用途 | 限制 | 返回值 |
+| --- | --- | --- | --- |
+| `get_group_info(group_id)` | 获取并保存群名称、人数 | 30 QPM | 数据或 `None` |
+| `get_group_bot_state(group_id)` | 获取并保存机器人身份、消息权限 | 30 QPM | 数据或 `None` |
+| `refresh_group_info(group_id)` | 同时调用上面两个接口 | 每个接口 30 QPM | 汇总字典 |
+| `get_group_join_requests(group_id, cursor='', limit=20)` | 分页查询入群申请 | 30 QPM | 分页数据或 `None` |
+| `review_group_join_request(...)` | 通过或拒绝入群申请 | 60 QPM | `(ok, response)` |
+| `get_group_restrict_chat_setting(group_id)` | 查询全员与成员禁言 | 30 QPM | 数据或 `None` |
+| `set_group_member_mute(group_id, members)` | 设置或解除成员禁言 | 60 QPM | `(ok, response)` |
+
+机器人需为群主或管理员才能调用申请审批和禁言接口。查询接口不要放在消息处理器中循环调用；批量刷新每次最多处理 25 个群，并逐群间隔调用。
+
+```python
+# 更新群资料与机器人状态
+result = await event.sender.refresh_group_info(group_id)
+print(result['group_info'], result['bot_state'], result['errors'])
+
+# 查询申请；next_cursor 为空表示已到最后一页
+page = await event.sender.get_group_join_requests(group_id, cursor='', limit=20)
+for item in page['list']:
+    print(item['username'], item['member_openid'], item['join_request_id'])
+cursor = page['next_cursor']
+
+# 通过申请；op 改为 decline 即为拒绝
+ok, response = await event.sender.review_group_join_request(
+    group_id, member_openid, 'approve', join_request_id=join_request_id)
+
+# 拒绝时可填写理由并加入群黑名单
+ok, response = await event.sender.review_group_join_request(
+    group_id, member_openid, 'decline',
+    join_request_id=join_request_id,
+    reject_reason='不符合入群要求',
+    add_to_member_blacklist=True,
+)
+
+# 查询禁言状态
+setting = await event.sender.get_group_restrict_chat_setting(group_id)
+print(setting['global_rule'], setting['members'])
+
+# add=增加、update=更新、del=解除；单次最多 10 人
+ok, response = await event.sender.set_group_member_mute(group_id, [{
+    'op': 'add',
+    'member_openid': member_openid,
+    'mute_expire_at': '2026-08-10T18:00:00+08:00',
+}])
+```
+
+入群申请包含申请 ID、成员 OpenID、昵称、来源、时间、安全提示及 `verify_info`；禁言状态包含 `global_rule` 和当前被禁言的 `members`。查询方法传入 `return_error=True` 时返回 `(数据, 原始错误 JSON)`。
+
+`refresh_group_info()` 返回 `removed`、`left_group` 和双接口 `errors`。当 `code` 或 `err_code` 为 `11255` 时删除无效群记录；当 `err_code=40011026` 时标记退群并清空权限。
+
+群数据统一存放在 `data.db` 的 `groups_users` 表，数据库版本为 `2.0.1`（`PRAGMA user_version=20001`）。旧的 `group_bot_admin`、`full_access_groups` 会自动迁移后删除。
+
+| 列 | 含义 |
+| --- | --- |
+| `group_id` / `group_name` | 群 OpenID / 群名称 |
+| `users` / `group_member_num` | 成员记录 / 群人数 |
+| `is_admin` | 机器人是否为群主或管理员 |
+| `is_full_access` | 是否接收全量消息 |
+| `allow_proactive_msg` | 是否允许主动推送 |
+| `in_group` | 机器人是否仍在群内 |
+
+示例插件提供：`刷新群信息`、`入群申请 [游标]`、`通过入群 <成员ID> <申请ID>`、`拒绝并拉黑 <成员ID> <申请ID>`、`群禁言状态`、`禁言成员 <成员ID> <分钟>`、`解除禁言 <成员ID>`。
 
 ---
 

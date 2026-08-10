@@ -35,7 +35,10 @@ from web.tools._message.shared import (
     _get_bot,
     _get_full_access_group_ids,
     _get_full_access_group_rows,
+    _get_group_metadata,
     _get_nickname,
+    _get_proactive_group_ids,
+    _invalidate_full_access_cache,
 )
 
 log = logging.getLogger('ElainaBot.web.message')
@@ -91,6 +94,24 @@ async def handle_get_nicknames_batch(request: web.Request):
     return web.json_response({'success': True, 'data': {'nicknames': result}})
 
 
+def _enrich_group_chat(chat, remarks, metadata, full_access_ids):
+    gid = str(chat.get('chat_id') or '')
+    meta = metadata.get((chat.get('appid', ''), gid), chat)
+    remark_value = remarks.get(gid)
+    remark = _remark_name(remark_value)
+    group_name = meta.get('group_name', '')
+    chat.update({
+        'nickname': remark or group_name or gid,
+        'group_name': group_name,
+        'group_member_num': meta.get('group_member_num', 0),
+        'in_group': meta.get('in_group', True),
+        'remark': remark,
+        'group_qq': _remark_qq(remark_value),
+        'is_full_access': chat.get('is_full_access', gid in full_access_ids),
+    })
+    return chat
+
+
 async def _build_chat_list(chat_type, appid_filter):
     """构建聊天列表 (阻塞聚合在专用线程池执行)"""
     loop = asyncio.get_running_loop()
@@ -98,19 +119,20 @@ async def _build_chat_list(chat_type, appid_filter):
         # 全量群/备注群直接从各 bot 的 data.db 获取
         bots = _shared._bot_manager._bots if _shared._bot_manager else {}
         remarks = _load_remarks()
+        fa_ids = _get_full_access_group_ids()
         if chat_type == 'remark':
-            fa_ids = _get_full_access_group_ids()
-            bot = next(iter(bots.values()), None)
+            metadata = _get_group_metadata(appid_filter)
             appid_default = next(iter(bots), '')
-            return [{
-                'chat_id': gid,
-                'appid': appid_filter or appid_default,
-                'bot_name': getattr(bot, 'name', appid_default) if bot else '',
-                'nickname': _remark_name(remarks.get(gid)) or f'群{gid[-6:]}',
-                'remark': _remark_name(remarks.get(gid)),
-                'group_qq': _remark_qq(remarks.get(gid)),
-                'is_full_access': gid in fa_ids,
-            } for gid in remarks]
+            result = []
+            for gid in remarks:
+                appid = appid_filter or appid_default
+                bot = bots.get(appid)
+                result.append(_enrich_group_chat({
+                    'chat_id': gid,
+                    'appid': appid,
+                    'bot_name': getattr(bot, 'name', appid_default) if bot else '',
+                }, remarks, metadata, fa_ids))
+            return result
         rows = _get_full_access_group_rows()
         if appid_filter:
             rows = [r for r in rows if r.get('appid') == appid_filter]
@@ -122,26 +144,24 @@ async def _build_chat_list(chat_type, appid_filter):
                 continue
             seen_gids.add(gid)
             appid = r.get('appid', '')
-            result.append({
+            result.append(_enrich_group_chat({
                 'chat_id': gid,
                 'appid': appid,
                 'bot_name': getattr(bots.get(appid), 'name', '') or appid,
-                'nickname': _remark_name(remarks.get(gid)) or f'群{gid[-6:]}',
-                'remark': _remark_name(remarks.get(gid)),
-                'group_qq': _remark_qq(remarks.get(gid)),
+                'group_name': r.get('group_name', ''),
+                'group_member_num': r.get('group_member_num', 0),
+                'in_group': r.get('in_group', True),
                 'is_full_access': True,
-            })
+                'allow_proactive_msg': bool(r.get('allow_proactive_msg')),
+            }, remarks, {}, fa_ids))
         return result
     chats = await loop.run_in_executor(_chat_executor, _aggregate_chats_sync, chat_type, appid_filter)
     if chat_type != 'user':
         fa_ids = _get_full_access_group_ids()
         remarks = _load_remarks()
+        metadata = _get_group_metadata(appid_filter)
         for c in chats:
-            r_val = remarks.get(c['chat_id'])
-            c['nickname'] = _remark_name(r_val) or f'群{c["chat_id"][-6:]}'
-            c['remark'] = _remark_name(r_val)
-            c['group_qq'] = _remark_qq(r_val)
-            c['is_full_access'] = c['chat_id'] in fa_ids
+            _enrich_group_chat(c, remarks, metadata, fa_ids)
     return chats
 
 
@@ -430,7 +450,7 @@ async def handle_send_message(request: web.Request):
         elif send_mode == 'custom_event_id':
             msg_id = ''
             event_id = custom_id
-        elif send_mode != 'passive' and chat_type == 'group' and chat_id in _get_full_access_group_ids():
+        elif send_mode != 'passive' and chat_type == 'group' and chat_id in _get_proactive_group_ids():
             # 全量群默认只用主动消息, 不需要被动消息 msg_id, 引用走 message_reference
             msg_id = ''
 
@@ -652,7 +672,7 @@ def _save_remarks(remarks: dict):
 
 def _invalidate_remark_caches():
     for key in list(_chat_list_cache):
-        if key[0] in ('remark', 'full_access'):
+        if key[0] != 'user':
             _chat_list_cache.pop(key, None)
 
 
@@ -694,6 +714,39 @@ async def handle_delete_remark(request: web.Request):
     _save_remarks(remarks)
     _invalidate_remark_caches()
     return web.json_response({'success': True, 'message': '备注已删除'})
+
+
+async def handle_refresh_group_info(request: web.Request):
+    """手动更新单群资料及机器人状态。"""
+    body = await request.json()
+    group_id = str(body.get('group_id') or '').strip()
+    appid = str(body.get('appid') or '').strip()
+    if not group_id:
+        return web.json_response({'success': False, 'message': '缺少 group_id'}, status=400)
+    bot = _get_bot(appid)
+    if not bot:
+        return web.json_response({'success': False, 'message': '无可用机器人'}, status=400)
+    try:
+        result = await bot.sender.refresh_group_info(group_id)
+    except Exception as e:
+        log.warning(f'更新群信息失败 {group_id}: {e}')
+        return web.json_response({'success': False, 'message': str(e)}, status=502)
+    group_info = result.get('group_info')
+    bot_state = result.get('bot_state')
+    _invalidate_full_access_cache()
+    _chat_list_cache.clear()
+    if group_info is None and bot_state is None:
+        return web.json_response(
+            {
+                'success': False,
+                'message': '群信息和机器人状态均获取失败',
+                'removed': bool(result.get('removed')),
+                'left_group': bool(result.get('left_group')),
+                'errors': result.get('errors', {}),
+            },
+            status=502,
+        )
+    return web.json_response({'success': True, 'message': '群信息已更新', 'data': result})
 
 
 # ==================== 群成员权限 (带缓存) ====================

@@ -1,7 +1,9 @@
-"""示例功能: 媒体、卡片、按钮、交互、引用、主动消息、Web 面板等 (仅主人可用)"""
+"""示例功能：媒体、卡片、按钮、群资料、群管理、引用、主动消息、Web 面板等（仅主人可用）。"""
 
 import asyncio
+import json
 import os
+from datetime import datetime, timedelta
 
 from aiohttp import web
 
@@ -261,6 +263,103 @@ async def query_bot_member(event, match):
         f"👮 是否管理员: {'是' if role in ('admin', 'owner') else '否'}")
 
 
+# ==================== 群管理 ====================
+# 查询接口限制 30 QPM，修改接口限制 60 QPM，请勿循环频繁调用。
+
+@handler(r'^刷新群信息$', name='刷新群信息', desc='更新当前群资料', owner_only=True, group_only=True)
+async def refresh_group_info(event, match):
+    result = await event.sender.refresh_group_info(event.group_id)
+    if not result['group_info'] and not result['bot_state']:
+        error = json.dumps(result['errors'], ensure_ascii=False)
+        return await event.reply(f"❌ 更新失败\n{error}")
+
+    info = result['group_info'] or {}
+    state = result['bot_state'] or {}
+    await event.reply(
+        f"✅ 更新成功\n"
+        f"群名称：{info.get('group_name', '未获取')}\n"
+        f"群人数：{info.get('group_member_num', '未获取')}\n"
+        f"机器人身份：{state.get('member_role', '未获取')}")
+
+
+@handler(r'^入群申请(?:\s+(\S+))?$', name='入群申请', desc='查看入群申请', owner_only=True, group_only=True)
+async def query_group_join_requests(event, match):
+    page = await event.sender.get_group_join_requests(
+        event.group_id, cursor=match.group(1) or '', limit=5)
+    if not page:
+        return await event.reply("❌ 获取入群申请失败")
+    if not page['list']:
+        return await event.reply("当前没有入群申请")
+
+    lines = []
+    for item in page['list']:
+        verify = item.get('verify_info') or {}
+        lines.append(
+            f"{item.get('username', '未知用户')}\n"
+            f"成员 ID：{item.get('member_openid', '')}\n"
+            f"申请 ID：{item.get('join_request_id', '')}\n"
+            f"验证消息：{verify.get('verify_message') or '无'}"
+        )
+    if page['next_cursor']:
+        lines.append(f"下一页：入群申请 {page['next_cursor']}")
+    await event.reply('\n\n'.join(lines))
+
+
+@handler(r'^通过入群\s+(\S+)\s+(\S+)$', name='通过入群', desc='通过入群申请', owner_only=True, group_only=True)
+async def approve_group_join_request(event, match):
+    member_id, request_id = match.group(1), match.group(2)
+    success, error = await event.sender.review_group_join_request(
+        event.group_id, member_id, 'approve', join_request_id=request_id)
+    await event.reply("✅ 已通过" if success else f"❌ 失败：{error}")
+
+
+@handler(r'^拒绝并拉黑\s+(\S+)\s+(\S+)$', name='拒绝并拉黑', desc='拒绝并拉黑申请人', owner_only=True, group_only=True)
+async def decline_group_join_request(event, match):
+    member_id, request_id = match.group(1), match.group(2)
+    success, error = await event.sender.review_group_join_request(
+        event.group_id,
+        member_id,
+        'decline',
+        join_request_id=request_id,
+        reject_reason='不符合入群要求',
+        add_to_member_blacklist=True,
+    )
+    await event.reply("✅ 已拒绝并拉黑" if success else f"❌ 失败：{error}")
+
+
+@handler(r'^群禁言状态$', name='群禁言状态', desc='查看群禁言状态', owner_only=True, group_only=True)
+async def query_group_mute(event, match):
+    setting = await event.sender.get_group_restrict_chat_setting(event.group_id)
+    if not setting:
+        return await event.reply("❌ 获取群禁言状态失败")
+
+    mode = {'none': '未开启', 'always': '始终禁言', 'schedule': '定时禁言'}
+    muted = setting.get('members') or []
+    names = '、'.join(item.get('username') or '未知用户' for item in muted) or '无'
+    await event.reply(
+        f"全员禁言：{mode.get(setting['global_rule']['mode'], '未知')}\n"
+        f"被禁言成员：{names}")
+
+
+@handler(r'^禁言成员\s+(\S+)\s+(\d+)$', name='禁言成员', desc='按分钟禁言成员', owner_only=True, group_only=True)
+async def mute_group_member(event, match):
+    member_id = match.group(1)
+    minutes = int(match.group(2))
+    expire_at = (datetime.now().astimezone() + timedelta(minutes=minutes)).isoformat(timespec='seconds')
+    success, error = await event.sender.set_group_member_mute(event.group_id, [{
+        'op': 'add', 'member_openid': member_id, 'mute_expire_at': expire_at,
+    }])
+    await event.reply(f"✅ 已禁言 {minutes} 分钟" if success else f"❌ 失败：{error}")
+
+
+@handler(r'^解除禁言\s+(\S+)$', name='解除禁言', desc='解除成员禁言', owner_only=True, group_only=True)
+async def unmute_group_member(event, match):
+    success, error = await event.sender.set_group_member_mute(event.group_id, [{
+        'op': 'del', 'member_openid': match.group(1),
+    }])
+    await event.reply("✅ 已解除禁言" if success else f"❌ 失败：{error}")
+
+
 # ==================== 召回 ====================
 
 @handler(r'^指定召回\s+(\S+)$', name='指定召回', desc='向指定用户发送召回消息', owner_only=True)
@@ -356,8 +455,6 @@ async def api_echo(request):
 
 @handler(r'^面板推送$', name='面板推送', desc='向 Web 面板推送一条自定义日志', owner_only=True)
 async def push_to_panel(event, match):
-    from datetime import datetime
-
     import web.ws as ws
     ws.push_log('framework', {
         'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
