@@ -13,6 +13,7 @@
 import array
 import asyncio
 import contextlib
+import importlib.util
 import multiprocessing
 import os
 import shutil
@@ -20,7 +21,7 @@ import subprocess
 import tempfile
 import threading
 from concurrent.futures import ProcessPoolExecutor
-from functools import partial
+from functools import lru_cache, partial
 
 from core.base.fork_utils import close_inherited_listen_sockets
 from core.base.logger import FRAMEWORK, get_logger
@@ -90,6 +91,12 @@ def _to_pcm(src, rate):
         ) from None
 
 
+@lru_cache(maxsize=1)
+def _decoder_available() -> bool:
+    """Return whether audio can be decoded before creating the process pool."""
+    return bool(_find_ffmpeg() or importlib.util.find_spec('soundfile'))
+
+
 # ==================== 转换 ====================
 
 
@@ -135,6 +142,7 @@ def _get_pool() -> ProcessPoolExecutor:
             _pool = ProcessPoolExecutor(
                 max_workers=1,
                 mp_context=multiprocessing.get_context('spawn'),
+                max_tasks_per_child=20,
                 initializer=close_inherited_listen_sockets,
             )
         return _pool
@@ -152,6 +160,9 @@ def shutdown_pool() -> None:
 async def convert_to_silk(data: bytes, rate: int = DEFAULT_RATE) -> bytes:
     """异步转换 (进程池执行, pilk.encode 编码期间不释放 GIL); 转换失败时回退原数据, 不阻断发送"""
     if is_silk(data):
+        return data
+    if not _decoder_available():
+        log.warning('未找到 imageio-ffmpeg / ffmpeg / soundfile, 跳过 silk 转换')
         return data
     try:
         return await asyncio.get_running_loop().run_in_executor(_get_pool(), partial(audio_to_silk, data, rate))
