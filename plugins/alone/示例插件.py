@@ -263,6 +263,21 @@ async def query_bot_member(event, match):
         f"👮 是否管理员: {'是' if role in ('admin', 'owner') else '否'}")
 
 
+@handler(r'^本地群信息$', name='本地群信息', desc='从数据库读取当前群完整信息', owner_only=True, group_only=True)
+async def query_group_record(event, match):
+    group = await event.get_group_record(event.group_id)
+    if not group:
+        return await event.reply("数据库中没有当前群记录")
+    await event.reply(
+        f"群名称：{group['group_name'] or '未获取'}\n"
+        f"群人数：{group['group_member_num']}\n"
+        f"已记录成员：{len(group['users'])}\n"
+        f"机器人管理员：{'是' if group['is_admin'] else '否'}\n"
+        f"全量消息：{'是' if group['is_full_access'] else '否'}\n"
+        f"允许主动推送：{'是' if group['allow_proactive_msg'] else '否'}\n"
+        f"仍在群内：{'是' if group['in_group'] else '否'}")
+
+
 # ==================== 群管理 ====================
 # 查询接口限制 30 QPM，修改接口限制 60 QPM，请勿循环频繁调用。
 

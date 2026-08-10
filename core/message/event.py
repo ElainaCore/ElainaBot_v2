@@ -175,6 +175,7 @@ _PROXY_METHODS = {
     'send_to_channel': False,
     'send_image': False,
     'send_wakeup': False,
+    'get_group_record': False,
 }
 
 

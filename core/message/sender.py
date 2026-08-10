@@ -400,6 +400,33 @@ class MessageSender(_HttpMixin, _MediaSendMixin, _SenderLogMixin):
             return data
         return None
 
+    async def get_group_record(self, group_id):
+        """从 data.db 读取完整群记录，不调用平台接口。"""
+        if not group_id or self._log_service is None:
+            return None
+        row = await self._log_service.db_fetch_one(
+            'SELECT group_id, group_name, users, group_member_num, is_admin, '
+            'is_full_access, allow_proactive_msg, in_group '
+            'FROM groups_users WHERE group_id=?',
+            (str(group_id),),
+        )
+        if not row:
+            return None
+        try:
+            users = json.loads(row.get('users') or '[]')
+        except (json.JSONDecodeError, TypeError):
+            users = []
+        return {
+            'group_id': str(row.get('group_id') or ''),
+            'group_name': str(row.get('group_name') or ''),
+            'users': users if isinstance(users, list) else [],
+            'group_member_num': int(row.get('group_member_num') or 0),
+            'is_admin': bool(row.get('is_admin')),
+            'is_full_access': bool(row.get('is_full_access')),
+            'allow_proactive_msg': bool(row.get('allow_proactive_msg')),
+            'in_group': bool(row.get('in_group')),
+        }
+
     async def _handle_group_error(self, group_id, error):
         state = _group_error_state(error)
         if not state or self._log_service is None:

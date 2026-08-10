@@ -628,12 +628,16 @@ is_admin = bot_member and bot_member.get('member_role') in ('admin', 'owner')
 group_info = await event.sender.get_group_info(group_id)
 join_requests = await event.sender.get_group_join_requests(group_id)
 mute_setting = await event.sender.get_group_restrict_chat_setting(group_id)
+
+# 读取 data.db 中该群的完整记录，不调用平台接口
+group = await event.get_group_record(group_id)
 ```
 
 #### 群管理接口
 
 | 方法 | 用途 | 限制 | 返回值 |
 | --- | --- | --- | --- |
+| `get_group_record(group_id)` | 从数据库读取完整群记录 | 无接口请求 | 字典或 `None` |
 | `get_group_info(group_id)` | 获取并保存群名称、人数 | 30 QPM | 数据或 `None` |
 | `get_group_bot_state(group_id)` | 获取并保存机器人身份、消息权限 | 30 QPM | 数据或 `None` |
 | `refresh_group_info(group_id)` | 同时调用上面两个接口 | 每个接口 30 QPM | 汇总字典 |
@@ -643,6 +647,22 @@ mute_setting = await event.sender.get_group_restrict_chat_setting(group_id)
 | `set_group_member_mute(group_id, members)` | 设置或解除成员禁言 | 60 QPM | `(ok, response)` |
 
 机器人需为群主或管理员才能调用申请审批和禁言接口。查询接口不要放在消息处理器中循环调用；批量刷新每次最多处理 25 个群，并逐群间隔调用。
+
+`get_group_record()` 读取当前机器人 `data.db` 中该群的完整记录，不会调用 QQ 接口，因此没有 QPM 限制。既可以通过 `event` 调用，也可以直接通过 `event.sender` 调用：
+
+```python
+group = await event.get_group_record(event.group_id)
+if group:
+    print(group['group_name'], group['group_member_num'])
+    print(group['is_admin'], group['is_full_access'])
+    print(group['allow_proactive_msg'], group['in_group'])
+    print(group['users'])
+
+# 等价写法
+group = await event.sender.get_group_record(group_id)
+```
+
+返回字典包含 `group_id`、`group_name`、`users`、`group_member_num`、`is_admin`、`is_full_access`、`allow_proactive_msg`、`in_group`。其中 `users` 已从数据库 JSON 转为列表，四个状态字段已转为布尔值；数据库没有该群记录时返回 `None`。该方法只读取本地已有数据，不会自动刷新数据。
 
 ```python
 # 更新群资料与机器人状态
@@ -694,7 +714,7 @@ ok, response = await event.sender.set_group_member_mute(group_id, [{
 | `allow_proactive_msg` | 是否允许主动推送 |
 | `in_group` | 机器人是否仍在群内 |
 
-示例插件提供：`刷新群信息`、`入群申请 [游标]`、`通过入群 <成员ID> <申请ID>`、`拒绝并拉黑 <成员ID> <申请ID>`、`群禁言状态`、`禁言成员 <成员ID> <分钟>`、`解除禁言 <成员ID>`。
+示例插件提供：`本地群信息`、`刷新群信息`、`入群申请 [游标]`、`通过入群 <成员ID> <申请ID>`、`拒绝并拉黑 <成员ID> <申请ID>`、`群禁言状态`、`禁言成员 <成员ID> <分钟>`、`解除禁言 <成员ID>`。
 
 ---
 
