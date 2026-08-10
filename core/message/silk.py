@@ -135,6 +135,15 @@ def _get_pool() -> ProcessPoolExecutor:
         return _pool
 
 
+def shutdown_pool() -> None:
+    """关闭语音转换进程池，避免框架重启时留下孤儿 worker。"""
+    global _pool
+    with _pool_lock:
+        pool, _pool = _pool, None
+    if pool:
+        pool.shutdown(wait=True, cancel_futures=True)
+
+
 async def convert_to_silk(data: bytes, rate: int = DEFAULT_RATE) -> bytes:
     """异步转换 (进程池执行, pilk.encode 编码期间不释放 GIL); 转换失败时回退原数据, 不阻断发送"""
     if is_silk(data):

@@ -238,7 +238,7 @@ class ModuleManager:
             sys.modules.pop(f'modules.{name}', None)
             if _persist:
                 self.set_module_enabled_persist(name, False)
-            get_logger(EXTENSION, info.display_name).info('❌ 已禁用')
+                log.info(f'模块 [{info.display_name or name}] 已禁用')
             return True
 
     async def reload(self, name):
@@ -335,5 +335,9 @@ class ModuleManager:
 
     async def shutdown(self):
         """关闭所有已启用模块 (不改变持久化状态, 重启后按用户设置恢复)"""
-        for name in [n for n, i in self._modules.items() if i.instance is not None]:
+        running = [n for n, i in self._modules.items() if i.instance is not None]
+        display_names = [self._modules[n].display_name or n for n in running]
+        for name in running:
             await self.disable(name, _persist=False)
+        if display_names:
+            log.info(f'已停止 {len(display_names)} 个模块: {", ".join(display_names)}')

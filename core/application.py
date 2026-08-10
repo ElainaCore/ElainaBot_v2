@@ -16,6 +16,7 @@ from core.base.logger import SYSTEM, get_logger
 from core.base.logger import setup as setup_logger
 from core.bot.event import EventHandlerMixin
 from core.bot.registry import BotRegistry
+from core.message.silk import shutdown_pool
 from core.module.hook import HookManager
 from core.module.manager import ModuleManager
 from core.plugin.manager import PluginManager
@@ -355,6 +356,8 @@ class Application(EventHandlerMixin):
                     await asyncio.wait_for(coro, timeout=3)
                 except TimeoutError:
                     log.warning(f'关闭超时(3s), 跳过: {coro}')
+
+        shutdown_pool()
 
         log.info('已关闭')
 
