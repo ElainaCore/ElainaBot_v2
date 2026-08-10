@@ -13,6 +13,7 @@
 import array
 import asyncio
 import contextlib
+import multiprocessing
 import os
 import shutil
 import subprocess
@@ -131,7 +132,11 @@ def _get_pool() -> ProcessPoolExecutor:
     global _pool
     with _pool_lock:
         if _pool is None:
-            _pool = ProcessPoolExecutor(max_workers=1, initializer=close_inherited_listen_sockets)
+            _pool = ProcessPoolExecutor(
+                max_workers=1,
+                mp_context=multiprocessing.get_context('spawn'),
+                initializer=close_inherited_listen_sockets,
+            )
         return _pool
 
 
