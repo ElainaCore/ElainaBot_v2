@@ -26,7 +26,8 @@ _MAX_SESSIONS = 10
 _MAX_FAIL_COUNT = 5
 _SESSION_DAYS = 7
 _MAX_IP_RECORDS = 10000
-SESSION_COOKIE = 'elaina_session'
+_SESSION_COOKIE_PREFIX = 'elaina_session'
+SESSION_COOKIE = _SESSION_COOKIE_PREFIX
 
 valid_sessions: dict = {}
 ip_access_data: dict = {}
@@ -35,26 +36,29 @@ _last_ip_cleanup = 0
 _data_dir = ''
 _ip_file = ''
 _session_file = ''
+_instance_file = ''
 _io_lock = threading.Lock()  # 串行化文件写入, 避免内容交错损坏
 
 
 def init(base_dir: str):
-    global _data_dir, _ip_file, _session_file
+    global _data_dir, _ip_file, _session_file, _instance_file, SESSION_COOKIE
     _data_dir = os.path.join(base_dir, 'data', 'web')
     os.makedirs(_data_dir, exist_ok=True)
     _ip_file = os.path.join(_data_dir, 'ip.json')
     _session_file = os.path.join(_data_dir, 'sessions.json')
+    _instance_file = os.path.join(_data_dir, 'instance_id')
+    SESSION_COOKIE = f'{_SESSION_COOKIE_PREFIX}_{_load_or_create_instance_id()}'
     _load_ip_data()
     _load_session_data()
 
 
-# ==================== 密码 hash ====================
+# ==================== 密码哈希 ====================
 
 _PWD_HASH_PREFIX = 'sha256:'
 
 
 def hash_password(plain: str) -> str:
-    """SHA-256 加盐 hash"""
+    """生成加盐密码哈希。"""
     salt = os.urandom(16)
     h = hashlib.sha256(salt + plain.encode('utf-8')).hexdigest()
     return _PWD_HASH_PREFIX + base64.b64encode(salt).decode() + ':' + h
@@ -79,7 +83,7 @@ def is_hashed(stored: str) -> bool:
     return stored.startswith(_PWD_HASH_PREFIX)
 
 
-# ==================== JSON IO ====================
+# ==================== JSON 文件读写 ====================
 
 
 def _read_json(path, default=None):
@@ -93,7 +97,7 @@ def _read_json(path, default=None):
 
 
 def _write_text_sync(path, text):
-    """同步写入文本 (在 executor 中调用)"""
+    """同步写入文本。"""
     with _io_lock:
         try:
             with open(path, 'w', encoding='utf-8') as f:
@@ -103,7 +107,7 @@ def _write_text_sync(path, text):
 
 
 def _write_json(path, data):
-    """异步友好的 JSON 写入: 主线程序列化 (一致性), executor 写盘 (不阻塞 loop)"""
+    """写入 JSON 文件。"""
     try:
         text = json.dumps(data, ensure_ascii=False, indent=2, default=str)
     except Exception:
@@ -115,7 +119,21 @@ def _write_json(path, data):
         _write_text_sync(path, text)
 
 
-# ==================== IP ====================
+def _load_or_create_instance_id() -> str:
+    """读取或创建框架实例标识。"""
+    try:
+        with open(_instance_file, encoding='utf-8') as f:
+            instance_id = f.read().strip()
+        if instance_id.isascii() and instance_id.isalnum():
+            return instance_id
+    except OSError:
+        pass
+    instance_id = uuid.uuid4().hex
+    _write_text_sync(_instance_file, instance_id)
+    return instance_id
+
+
+# ==================== IP 地址 ====================
 
 
 def _load_ip_data():
@@ -233,12 +251,12 @@ def cleanup_expired_ip_bans():
     _save_ip_data()
 
 
-# ==================== Token ====================
+# ==================== 令牌 ====================
 
 
 def _generate_token() -> str:
     return base64.urlsafe_b64encode(uuid.uuid4().bytes + uuid.uuid4().bytes).decode().rstrip('=')
-# ==================== Session ====================
+# ==================== 会话 ====================
 
 
 def _load_session_data():
@@ -281,7 +299,7 @@ def _cleanup_sessions():
 
 
 def create_session(request: web.Request) -> str:
-    """创建会话并返回 bearer token"""
+    """创建会话。"""
     _cleanup_sessions()
     if len(valid_sessions) >= _MAX_SESSIONS:
         oldest = sorted(valid_sessions, key=lambda t: valid_sessions[t]['created'])
@@ -301,19 +319,30 @@ def create_session(request: web.Request) -> str:
 
 
 def get_request_token(request: web.Request) -> str:
-    """从安全 Cookie 获取会话令牌。"""
+    """读取会话凭据。"""
     return request.cookies.get(SESSION_COOKIE, '')
 
 
 def set_session_cookie(response: web.StreamResponse, request: web.Request, token: str) -> None:
     secure = request.secure or request.headers.get('X-Forwarded-Proto', '').split(',')[0].strip() == 'https'
     response.set_cookie(
-        SESSION_COOKIE, token, httponly=True, secure=secure, samesite='Strict', max_age=_SESSION_DAYS * 86400, path='/'
+        SESSION_COOKIE,
+        token,
+        httponly=True,
+        secure=secure,
+        samesite='Strict',
+        max_age=_SESSION_DAYS * 86400,
+        path='/',
     )
 
 
+def delete_session_cookie(response: web.StreamResponse) -> None:
+    """清除会话凭据。"""
+    response.del_cookie(SESSION_COOKIE, path='/')
+
+
 def validate_token(request: web.Request) -> bool:
-    """验证 HttpOnly Cookie 中的会话令牌。"""
+    """验证会话凭据。"""
     _cleanup_sessions()
     token = get_request_token(request)
     if not token or token not in valid_sessions:
@@ -334,7 +363,7 @@ def revoke_session(request: web.Request) -> None:
 
 
 def is_same_origin(request: web.Request) -> bool:
-    """Cookie 鉴权时拒绝跨站写请求。"""
+    """拒绝跨站写请求。"""
     origin = request.headers.get('Origin')
     if not origin:
         return True
@@ -353,7 +382,7 @@ def authorize_request(request: web.Request):
 
 
 def require_auth(handler):
-    """aiohttp 路由装饰器: 要求登录 Cookie。"""
+    """要求请求已登录。"""
 
     @wraps(handler)
     async def wrapped(request):

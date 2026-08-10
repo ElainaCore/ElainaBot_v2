@@ -267,7 +267,7 @@ async def handle_login(request: web.Request):
 async def handle_auth_logout(request: web.Request):
     auth.revoke_session(request)
     response = ok()
-    response.del_cookie(auth.SESSION_COOKIE, path='/')
+    auth.delete_session_cookie(response)
     return response
 
 
