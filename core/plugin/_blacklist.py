@@ -1,8 +1,10 @@
 """黑名单/权限检查 — PluginManager 的 Mixin"""
 
+from typing import Any
+
 from core.base.config import cfg
 
-_BLACKLIST_CACHE = {}
+_BLACKLIST_CACHE: dict[tuple[str, str], tuple[object, dict[str, Any]]] = {}
 _EMPTY_BLACKLIST = ()
 
 
