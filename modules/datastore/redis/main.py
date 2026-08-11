@@ -1,0 +1,418 @@
+#!/usr/bin/env python
+"""Redis 异步客户端组件
+
+基于 redis.asyncio (redis-py 5.x), 完整迁移 function/redis_pool.py 所有能力。
+由 datastore 主模块统一管理生命周期, 不单独作为模块使用。
+
+完整操作: 基础 Key / Hash / List / Set / Sorted Set / Pipeline / 管理命令
+"""
+
+import asyncio
+import contextlib
+
+_DEFAULTS = {
+    'host': '127.0.0.1',
+    'port': 6379,
+    'password': '',
+    'db': 0,
+    'max_connections': 50,
+    'pool_timeout': 10,
+    'socket_timeout': 5,
+    'socket_connect_timeout': 5,
+    'health_check_interval': 30,
+    'retry_attempts': 2,
+    'decode_responses': True,
+}
+
+_COMMENTS = {
+    'host': 'Redis 服务器地址',
+    'port': 'Redis 端口号',
+    'password': '连接密码, 无密码留空',
+    'db': '数据库编号 (0-15)',
+    'max_connections': '最大连接数',
+    'pool_timeout': '连接池耗尽时等待空闲连接的超时 (秒)',
+    'socket_timeout': '读写超时 (秒)',
+    'socket_connect_timeout': '连接超时 (秒)',
+    'health_check_interval': '健康检查间隔 (秒)',
+    'retry_attempts': '超时/断连自动重试次数 (指数退避), 0 为不重试',
+    'decode_responses': '是否自动解码响应为字符串',
+}
+
+
+class RedisPool:
+    """Redis 异步客户端封装 — 完整能力"""
+
+    __slots__ = ('_cfg', '_client', '_available', '_log')
+
+    def __init__(self, cfg, log):
+        self._cfg = cfg
+        self._client = None
+        self._available = False
+        self._log = log
+
+    async def initialize(self):
+        try:
+            import redis as _redis_pkg
+            from redis.asyncio import BlockingConnectionPool, Redis
+            from redis.asyncio.retry import Retry
+            from redis.backoff import ExponentialBackoff
+            from redis.exceptions import ConnectionError as RedisConnectionError
+            from redis.exceptions import TimeoutError as RedisTimeoutError
+        except ImportError:
+            self._log.error('redis 未安装 (pip install redis>=5.0)')
+            return
+        try:
+            password = self._cfg.get('password') or None
+            retries = int(self._cfg.get('retry_attempts', 2))
+            pool = BlockingConnectionPool(
+                host=self._cfg.get('host', '127.0.0.1'),
+                port=int(self._cfg.get('port', 6379)),
+                password=password,
+                db=int(self._cfg.get('db', 0)),
+                max_connections=int(self._cfg.get('max_connections', 50)),
+                timeout=int(self._cfg.get('pool_timeout', 10)),
+                socket_timeout=int(self._cfg.get('socket_timeout', 5)),
+                socket_connect_timeout=int(self._cfg.get('socket_connect_timeout', 5)),
+                health_check_interval=int(self._cfg.get('health_check_interval', 30)),
+                retry=Retry(ExponentialBackoff(cap=1, base=0.05), retries),
+                retry_on_error=[RedisConnectionError, RedisTimeoutError],
+                decode_responses=bool(self._cfg.get('decode_responses', True)),
+                # 显式传入版本: 避免每次新建连接时 importlib.metadata 读盘 METADATA
+                # (该同步磁盘读在事件循环上执行, 内存紧张/磁盘慢时会卡住循环数秒)
+                lib_name='redis-py',
+                lib_version=getattr(_redis_pkg, '__version__', 'unknown'),
+            )
+            self._client = Redis(connection_pool=pool)
+            await self._client.ping()
+            self._available = True
+        except Exception as e:
+            self._log.error(f'Redis 初始化失败: {e}')
+            self._client = None
+            self._available = False
+
+    def is_available(self):
+        return self._available and self._client is not None
+
+    def get_client(self):
+        """获取底层 redis.asyncio.Redis 实例"""
+        return self._client if self.is_available() else None
+
+    async def close(self):
+        self._available = False
+        if self._client:
+            client, self._client = self._client, None
+            with contextlib.suppress(Exception):
+                await client.aclose()
+
+    # ==================== 内部 ====================
+
+    async def _safe(self, op, coro, default=None, key=None):
+        if not self.is_available():
+            return default
+        try:
+            return await coro
+        except Exception as e:
+            self._log.warning(f'{op} 失败 [{key}]: {e}' if key else f'{op} 失败: {e}')
+            return default
+
+    # ==================== 基础操作 ====================
+
+    async def get(self, key, default=None):
+        if not self.is_available():
+            return default
+        v = await self._safe('GET', self._client.get(key), default=default, key=key)
+        return v if v is not None else default
+
+    async def set(self, key, value, ex=None, px=None, nx=False, xx=False):
+        return bool(
+            await self._safe(
+                'SET',
+                self._client.set(key, value, ex=ex, px=px, nx=nx, xx=xx),
+                default=False,
+                key=key,
+            )
+        )
+
+    async def delete(self, *keys):
+        if not keys:
+            return 0
+        return await self._safe('DELETE', self._client.delete(*keys), default=0)
+
+    async def exists(self, *keys):
+        if not keys:
+            return 0
+        return await self._safe('EXISTS', self._client.exists(*keys), default=0)
+
+    async def expire(self, key, seconds):
+        return bool(await self._safe('EXPIRE', self._client.expire(key, seconds), default=False, key=key))
+
+    async def expireat(self, key, when):
+        """设置过期时间点 (Unix 时间戳)"""
+        return bool(await self._safe('EXPIREAT', self._client.expireat(key, when), default=False, key=key))
+
+    async def ttl(self, key):
+        return await self._safe('TTL', self._client.ttl(key), default=-2, key=key)
+
+    async def incr(self, key, amount=1):
+        return await self._safe('INCR', self._client.incrby(key, amount), default=None, key=key)
+
+    async def decr(self, key, amount=1):
+        return await self._safe('DECR', self._client.decrby(key, amount), default=None, key=key)
+
+    async def keys(self, pattern='*'):
+        return await self._safe('KEYS', self._client.keys(pattern), default=[])
+
+    async def scan_iter(self, match=None, count=None):
+        """扫描键 — 返回异步迭代器"""
+        if not self.is_available():
+            return
+        async for key in self._client.scan_iter(match=match, count=count):
+            yield key
+
+    # ==================== Hash ====================
+
+    async def hget(self, name, key, default=None):
+        if not self.is_available():
+            return default
+        v = await self._safe('HGET', self._client.hget(name, key), default=default, key=f'{name}.{key}')
+        return v if v is not None else default
+
+    async def hset(self, name, key=None, value=None, mapping=None):
+        return await self._safe(
+            'HSET',
+            self._client.hset(name, key=key, value=value, mapping=mapping),
+            default=0,
+            key=name,
+        )
+
+    async def hdel(self, name, *keys):
+        if not keys:
+            return 0
+        return await self._safe('HDEL', self._client.hdel(name, *keys), default=0, key=name)
+
+    async def hgetall(self, name):
+        return await self._safe('HGETALL', self._client.hgetall(name), default={}, key=name)
+
+    async def hexists(self, name, key):
+        return bool(
+            await self._safe(
+                'HEXISTS',
+                self._client.hexists(name, key),
+                default=False,
+                key=f'{name}.{key}',
+            )
+        )
+
+    async def hincrby(self, name, key, amount=1):
+        return await self._safe(
+            'HINCRBY',
+            self._client.hincrby(name, key, amount),
+            default=None,
+            key=f'{name}.{key}',
+        )
+
+    async def hkeys(self, name):
+        return await self._safe('HKEYS', self._client.hkeys(name), default=[], key=name)
+
+    async def hlen(self, name):
+        return await self._safe('HLEN', self._client.hlen(name), default=0, key=name)
+
+    # ==================== List ====================
+
+    async def lpush(self, name, *values):
+        if not values:
+            return 0
+        return await self._safe('LPUSH', self._client.lpush(name, *values), default=0, key=name)
+
+    async def rpush(self, name, *values):
+        if not values:
+            return 0
+        return await self._safe('RPUSH', self._client.rpush(name, *values), default=0, key=name)
+
+    async def lpop(self, name, count=None):
+        return await self._safe('LPOP', self._client.lpop(name, count), default=None, key=name)
+
+    async def rpop(self, name, count=None):
+        return await self._safe('RPOP', self._client.rpop(name, count), default=None, key=name)
+
+    async def lrange(self, name, start, end):
+        return await self._safe('LRANGE', self._client.lrange(name, start, end), default=[], key=name)
+
+    async def llen(self, name):
+        return await self._safe('LLEN', self._client.llen(name), default=0, key=name)
+
+    # ==================== Set ====================
+
+    async def sadd(self, name, *values):
+        if not values:
+            return 0
+        return await self._safe('SADD', self._client.sadd(name, *values), default=0, key=name)
+
+    async def srem(self, name, *values):
+        if not values:
+            return 0
+        return await self._safe('SREM', self._client.srem(name, *values), default=0, key=name)
+
+    async def smembers(self, name):
+        return await self._safe('SMEMBERS', self._client.smembers(name), default=set(), key=name)
+
+    async def sismember(self, name, value):
+        return bool(
+            await self._safe(
+                'SISMEMBER',
+                self._client.sismember(name, value),
+                default=False,
+                key=name,
+            )
+        )
+
+    async def scard(self, name):
+        return await self._safe('SCARD', self._client.scard(name), default=0, key=name)
+
+    # ==================== Sorted Set ====================
+
+    async def zadd(self, name, mapping, nx=False, xx=False):
+        return await self._safe('ZADD', self._client.zadd(name, mapping, nx=nx, xx=xx), default=0, key=name)
+
+    async def zrem(self, name, *values):
+        if not values:
+            return 0
+        return await self._safe('ZREM', self._client.zrem(name, *values), default=0, key=name)
+
+    async def zrange(self, name, start, end, withscores=False):
+        return await self._safe(
+            'ZRANGE',
+            self._client.zrange(name, start, end, withscores=withscores),
+            default=[],
+            key=name,
+        )
+
+    async def zrevrange(self, name, start, end, withscores=False):
+        return await self._safe(
+            'ZREVRANGE',
+            self._client.zrevrange(name, start, end, withscores=withscores),
+            default=[],
+            key=name,
+        )
+
+    async def zscore(self, name, value):
+        return await self._safe('ZSCORE', self._client.zscore(name, value), default=None, key=name)
+
+    async def zincrby(self, name, amount, value):
+        return await self._safe('ZINCRBY', self._client.zincrby(name, amount, value), default=None, key=name)
+
+    async def zcard(self, name):
+        return await self._safe('ZCARD', self._client.zcard(name), default=0, key=name)
+
+    # ==================== Lua 脚本 ====================
+
+    async def eval(self, script, numkeys, *keys_and_args):
+        """执行 Lua 脚本 (异常向调用方抛出, 便于降级处理)"""
+        if not self.is_available():
+            return None
+        return await self._client.eval(script, numkeys, *keys_and_args)
+
+    async def evalsha(self, sha, numkeys, *keys_and_args):
+        """按 SHA1 执行已缓存的 Lua 脚本"""
+        if not self.is_available():
+            return None
+        return await self._client.evalsha(sha, numkeys, *keys_and_args)
+
+    async def script_load(self, script):
+        """缓存 Lua 脚本, 返回 SHA1"""
+        if not self.is_available():
+            return None
+        return await self._client.script_load(script)
+
+    # ==================== Pipeline / 管理 ====================
+
+    def pipeline(self, transaction=True):
+        """获取管道对象 (async with pool.pipeline() as pipe)"""
+        if not self.is_available():
+            return None
+        return self._client.pipeline(transaction=transaction)
+
+    async def flushdb(self, asynchronous=False):
+        """清空当前数据库"""
+        return bool(
+            await self._safe(
+                'FLUSHDB',
+                self._client.flushdb(asynchronous=asynchronous),
+                default=False,
+            )
+        )
+
+    async def info(self, section=None):
+        """获取服务器信息"""
+        if section:
+            return await self._safe('INFO', self._client.info(section), default={})
+        return await self._safe('INFO', self._client.info(), default={})
+
+    async def dbsize(self):
+        """获取键数量"""
+        return await self._safe('DBSIZE', self._client.dbsize(), default=0)
+
+    async def ping(self):
+        """连通性测试"""
+        return bool(await self._safe('PING', self._client.ping(), default=False))
+
+
+# ==================== 跨模块重载存活的连接池持有器 ====================
+# reload 仅 pop `modules.datastore` 主模块, 本子模块留在 sys.modules 中,
+# 因此这里的全局持有器可跨 datastore 重载存活, 实现客户端平滑热更 (无重连空窗)。
+
+_holder = {'sig': None, 'pool': None, 'pending_close': None}
+
+_SIG_KEYS = (
+    'host', 'port', 'password', 'db', 'max_connections', 'pool_timeout',
+    'socket_timeout', 'socket_connect_timeout', 'health_check_interval',
+    'retry_attempts', 'decode_responses',
+)
+
+
+def _sig(cfg):
+    return tuple(str(cfg.get(k)) for k in _SIG_KEYS)
+
+
+async def get_pool(cfg, log):
+    """获取 Redis 客户端: 配置未变复用已连接客户端, 变则新建并关旧 (平滑热更)"""
+    pc = _holder['pending_close']
+    if pc is not None and not pc.done():
+        pc.cancel()
+    _holder['pending_close'] = None
+
+    sig = _sig(cfg)
+    if _holder['pool'] is not None and _holder['sig'] == sig and _holder['pool'].is_available():
+        return _holder['pool']
+
+    old = _holder['pool']
+    pool = RedisPool(cfg, log)
+    await pool.initialize()
+    _holder['sig'] = sig
+    _holder['pool'] = pool
+    if old is not None:
+        with contextlib.suppress(Exception):
+            await old.close()
+    return pool
+
+
+def schedule_close(delay=3):
+    """teardown 调用: 延迟关闭当前客户端; delay 内若再次 get_pool 则被取消"""
+    if _holder['pool'] is None:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+
+    async def _close():
+        await asyncio.sleep(delay)
+        pool = _holder['pool']
+        _holder['sig'] = None
+        _holder['pool'] = None
+        _holder['pending_close'] = None
+        if pool is not None:
+            with contextlib.suppress(Exception):
+                await pool.close()
+
+    _holder['pending_close'] = loop.create_task(_close())

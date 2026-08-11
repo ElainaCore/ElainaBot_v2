@@ -201,26 +201,14 @@ class Bed(BaseBed):
         if not self.is_available():
             return (False, 'CNB 图床未开启或配置不完整')
         try:
+            asset_id = await self._resolve_asset_id(resource)
+            if asset_id is None:
+                return False
             async with self._client() as client:
-                # UploadImgs 资源应使用 DeleteRepoImgs，以图片 URL 中的路径作为标识。
-                img_path = _image_path(resource)
-                if img_path:
-                    response = await client.delete(
-                        self._api_url(f'imgs/{quote(img_path, safe="/")}'),
-                        headers=self._headers(),
-                    )
-                else:
-                    # 保留对其他资源记录（或旧版仅保存 ID）的兼容。
-                    asset_id = await self._resolve_asset_id(resource)
-                    if asset_id is None:
-                        return (
-                            False,
-                            '无法解析待删除的 CNB 资源，请提供资源 ID、list-assets 记录、资源路径或公开 URL',
-                        )
-                    response = await client.delete(
-                        self._api_url(f'assets/{quote(str(asset_id), safe="")}'),
-                        headers=self._headers(),
-                    )
+                response = await client.delete(
+                    self._api_url(f'assets/{quote(str(asset_id), safe="")}'),
+                    headers=self._headers(),
+                )
                 _raise_for_status(response, '删除资源', permission='repo-manage:rw')
             return True
         except Exception as exc:
@@ -235,10 +223,7 @@ class Bed(BaseBed):
             return resource
 
         target = _resource_path(str(resource))
-        records = await self.list_all_assets(page_size=100)
-        if records is None:
-            return None
-        for record in records:
+        for record in await self.list_assets(limit=100):
             if _resource_path(str(record.get('path', ''))) == target:
                 return record.get('id')
         return None
@@ -275,23 +260,6 @@ def _repo_path(value):
 def _resource_path(value):
     parsed = urlsplit(value)
     return unquote(parsed.path if parsed.scheme and parsed.netloc else value).rstrip('/')
-
-
-def _image_path(resource):
-    """提取 DeleteRepoImgs 所需的 imgPath（支持记录 dict、路径和公开 URL）。"""
-    if isinstance(resource, dict):
-        value = resource.get('path') or resource.get('asset_path') or resource.get('url')
-    elif isinstance(resource, (int, float)):
-        return None
-    else:
-        value = resource
-    path = _resource_path(str(value or ''))
-    for marker in ('/-/imgs/', '/-/assets/'):
-        if marker in path:
-            suffix = path.split(marker, 1)[1].strip('/')
-            if suffix:
-                return suffix
-    return None
 
 
 def _raise_for_status(response, operation, permission=None):

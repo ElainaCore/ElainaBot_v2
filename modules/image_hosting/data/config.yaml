@@ -1,3 +1,17 @@
+# 智谱 ChatGLM 图床 (免费, 无需配置)
+chatglm:
+  enabled: false  # 是否启用 ChatGLM 图床
+# 星野图床 (免费, 无需配置)
+xingye:
+  enabled: false  # 是否启用星野图床
+# Nature 图床 (腾讯 COS 直传, 密钥内置, 仅图片; 临时图片可用, 不建议持久化)
+nature:
+  enabled: false  # 是否启用 Nature 图床 (默认开启)
+# QQ 分片文件图床 (官方分片上传, 返回 COS 预签名直链与 ttl)
+qq_file:
+  enabled: true  # 是否启用 QQ 分片文件图床 (默认开启)
+  target_type: group  # 默认上传作用域类型: group(群) / user(用户)
+  target_id: ''  # 默认上传作用域 ID (群 openid 或用户 openid), 留空则自动从数据库获取
 # 腾讯云 COS 对象存储配置
 cos:
   enabled: false  # 是否启用 COS 图床
@@ -18,15 +32,12 @@ bilibili:
 qq_channel:
   enabled: false  # 是否启用 QQ频道图床
   channel_id: ''  # 用于上传图片的子频道 ID
-# 智谱 ChatGLM 图床 (免费, 无需配置)
-chatglm:
-  enabled: false  # 是否启用 ChatGLM 图床
-# Ukaka 图床 (免费, 无需配置)
+# 自身图床 (复用框架 HTTP 服务，无需鉴权即可读取)
+self_hosted:
+  enabled: false  # 是否启用自身图床
+  public_base_url: ''  # 公开地址；可填写 IP:端口、域名:端口或域名，留空自动探测公网 IP
+  storage_dir: ''  # 图片存储目录；留空使用模块 data/self_hosted，支持绝对路径
+  max_file_size: 104857600  # 单张图片最大大小 (字节)，默认 100MB
+  permanent_cache: true  # 是否允许浏览器/CDN 永久缓存图片映射；关闭时使用 no-store，服务器原图仍会保留
 ukaka:
-  enabled: false  # 是否启用 Ukaka 图床
-# 星野图床 (免费, 无需配置)
-xingye:
-  enabled: false  # 是否启用星野图床
-# Nature 图床 (腾讯 COS 直传, 密钥内置, 仅图片)
-nature:
-  enabled: false  # 是否启用 Nature 图床
+  enabled: false
