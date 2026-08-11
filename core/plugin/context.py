@@ -1,7 +1,5 @@
 """插件上下文、数据模型与辅助函数"""
 
-import asyncio
-
 from core.base.context import BaseContext
 from core.base.logger import PLUGIN
 
@@ -62,21 +60,19 @@ def _make_reply_log_cb(plugin_name, log_service):
 
     def cb(text, uid, gid, raw_message='', message_id='', context=None, reference_id=''):
         if log_service:
-            asyncio.ensure_future(
-                log_service.add(
-                    'message',
-                    {
-                        'message_id': message_id,
-                        'reference_id': reference_id,
-                        'user_id': uid,
-                        'group_id': gid,
-                        'content': text,
-                        'plugin_name': plugin_name,
-                        'raw_message': raw_message,
-                        'direction': 'send',
-                        'context': context if context is not None else '',
-                    },
-                )
+            log_service.add_sync(
+                'message',
+                {
+                    'message_id': message_id,
+                    'reference_id': reference_id,
+                    'user_id': uid,
+                    'group_id': gid,
+                    'content': text,
+                    'plugin_name': plugin_name,
+                    'raw_message': raw_message,
+                    'direction': 'send',
+                    'context': context if context is not None else '',
+                },
             )
 
     return cb

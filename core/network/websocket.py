@@ -74,12 +74,16 @@ class WSClient:
         self._closed = False
         self._reconnect_count = 0
         self._gateway_url = None
-        # 背压: 限制并发处理事件数, 避免下游慢导致任务堆积
+        # 固定 worker 消化事件，避免每条事件创建一个等待信号量的 Task。
+        self._event_queue = asyncio.Queue()
+        self._event_workers = []
+        # 交互事件仍单独走信号量路径，保证 ACK 倒计时不被普通消息队列阻塞。
         self._event_sem = asyncio.Semaphore(_MAX_INFLIGHT_EVENTS)
 
     async def connect(self):
         """连接并开始接收事件"""
         self._closed = False
+        self._ensure_event_workers()
         while not self._closed:
             try:
                 url = await self._get_gateway_url()
@@ -107,8 +111,31 @@ class WSClient:
         self._closed = True
         if self._heartbeat_task and not self._heartbeat_task.done():
             self._heartbeat_task.cancel()
+        workers, self._event_workers = self._event_workers, []
+        for worker in workers:
+            worker.cancel()
+        if workers:
+            await asyncio.gather(*workers, return_exceptions=True)
         if self._ws:
             await self._ws.close()
+
+    def _ensure_event_workers(self):
+        if any(not worker.done() for worker in self._event_workers):
+            return
+        self._event_workers = [
+            asyncio.create_task(self._event_worker())
+            for _ in range(_MAX_INFLIGHT_EVENTS)
+        ]
+
+    async def _event_worker(self):
+        while True:
+            event = await self._event_queue.get()
+            try:
+                await self._on_event(event)
+            except Exception as e:
+                log.error(f'[{self._appid}] 事件回调异常: {e}')
+            finally:
+                self._event_queue.task_done()
 
     async def _handle_connection(self):
         """处理 WS 消息循环"""
@@ -172,7 +199,8 @@ class WSClient:
                 task.add_done_callback(lambda t, ev=event: ev.finish_dispatch())
                 spawn(self._ack_interaction_when_ready(event))
             else:
-                spawn(self._dispatch_with_backpressure(event))
+                self._ensure_event_workers()
+                await self._event_queue.put(event)
         except Exception as e:
             log.error(f'[{self._appid}] 事件处理异常: {e}')
 

@@ -4,6 +4,7 @@
 import asyncio
 import json
 import time
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from itertools import islice
@@ -154,6 +155,7 @@ class EventHandlerMixin:
         # 用户追踪后台队列 (有界, 背压): 替代每条消息 create_task 无界堆积
         self._track_queue = None
         self._track_workers = []
+        self._track_pending = deque()
         self._track_recent = {}  # {去重键: 过期时间} 同键短时跳过
         self._track_recent_purge = 0.0
         self._track_jobs = {}  # {(appid, uid, gid): 轻量合并任务}
@@ -211,11 +213,12 @@ class EventHandlerMixin:
         except asyncio.QueueFull:
             self._track_overflow_count += 1
             if self._track_overflow_count % 1000 == 1:
-                waiting = sum(not job.queued for job in self._track_jobs.values())
+                waiting = len(self._track_pending)
                 log.warning(
                     f'[用户追踪] 队列已满({_TRACK_QUEUE_MAX}), 转入合并缓冲 '
                     f'(累计 {self._track_overflow_count} 键, 待回灌 {waiting} 键, 不丢弃)'
                 )
+            self._track_pending.append(item)
             self._ensure_track_drainer()
 
     def _ensure_track_drainer(self):
@@ -224,16 +227,15 @@ class EventHandlerMixin:
 
     async def _drain_track_pending(self):
         """队列有空位时把合并缓冲回灌 (阻塞式 put, 保证最终全部处理)"""
-        while True:
-            job = next((job for job in self._track_jobs.values() if not job.queued), None)
-            if job is None:
-                return
+        while self._track_pending:
+            job = self._track_pending[0]
             job.queued = True
             try:
                 await self._track_queue.put(job)
             except BaseException:
                 job.queued = False
                 raise
+            self._track_pending.popleft()
 
     async def _track_worker(self):
         q = self._track_queue
@@ -275,20 +277,21 @@ class EventHandlerMixin:
             'at_bot': at_bot,
         }
 
-    def _message_web_data(self, bot, event, appid, content, raw_json):
-        return {
-            **self._message_log_data(event, content, raw_json),
-            'appid': appid,
-            'bot_name': bot.name,
-            'bot_qq': getattr(bot, 'robot_qq', '') or '',
-            'event_type': event.event_type,
-        }
-
     def _record_message_event(self, bot, event, appid):
         content = self._message_content(event)
         raw_json = json.dumps(event.raw, ensure_ascii=False)
-        bot.log_service.add_sync('message', self._message_log_data(event, content, raw_json))
-        self._push_web_log('message', self._message_web_data(bot, event, appid, content, raw_json))
+        log_data = self._message_log_data(event, content, raw_json)
+        bot.log_service.add_sync('message', log_data)
+        self._push_web_log(
+            'message',
+            {
+                **log_data,
+                'appid': appid,
+                'bot_name': bot.name,
+                'bot_qq': getattr(bot, 'robot_qq', '') or '',
+                'event_type': event.event_type,
+            },
+        )
 
     # ==================== 事件入口 ====================
 

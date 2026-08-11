@@ -1,6 +1,5 @@
 """消息发送日志与失败处理 Mixin"""
 
-import asyncio
 import contextlib
 import contextvars
 import json
@@ -106,21 +105,19 @@ class _SenderLogMixin:
                 )
         if self._log_service:
             with contextlib.suppress(Exception):
-                asyncio.ensure_future(
-                    self._log_service.add(
-                        'message',
-                        {
-                            'message_id': message_id,
-                            'reference_id': reference_id,
-                            'user_id': user_id,
-                            'group_id': group_id,
-                            'content': text,
-                            'raw_message': raw_msg,
-                            'direction': 'send',
-                            'plugin_name': plugin_name or log_type,
-                            'context': context if context is not None else '',
-                        },
-                    )
+                self._log_service.add_sync(
+                    'message',
+                    {
+                        'message_id': message_id,
+                        'reference_id': reference_id,
+                        'user_id': user_id,
+                        'group_id': group_id,
+                        'content': text,
+                        'raw_message': raw_msg,
+                        'direction': 'send',
+                        'plugin_name': plugin_name or log_type,
+                        'context': context if context is not None else '',
+                    },
                 )
 
     async def _send_with_error_handling(self, endpoint, payload, event, content=None, *, media_label=''):

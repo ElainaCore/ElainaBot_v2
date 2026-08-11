@@ -15,10 +15,11 @@ def _get_cached_blacklist_map(appid, kind):
     if cached is not None and cached[0] is source:
         return cached[1]
 
-    if isinstance(raw, dict):
-        normalized = {str(k): v for k, v in raw.items()}
-    else:
-        normalized = {str(x): None for x in (raw or ())}
+    normalized = (
+        {str(k): v for k, v in raw.items()}
+        if isinstance(raw, dict)
+        else {str(x): None for x in raw or ()}
+    )
     _BLACKLIST_CACHE[key] = (source, normalized)
     return normalized
 

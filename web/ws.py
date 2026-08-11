@@ -83,10 +83,8 @@ class WSBroadcast:
         if not self.has_clients():
             return
         current_loop = None
-        try:
+        with contextlib.suppress(RuntimeError):
             current_loop = asyncio.get_running_loop()
-        except RuntimeError:
-            pass
         loop = self._loop or current_loop
         if loop is None or loop.is_closed():
             return

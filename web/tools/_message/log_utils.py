@@ -1,6 +1,5 @@
 """消息管理 — 日志记录辅助"""
 
-import asyncio
 import json
 import logging
 
@@ -39,21 +38,19 @@ def _log_sent_message(bot, chat_type, chat_id, display, bot_appid, bot_name, bot
     try:
         log_service = getattr(bot, 'log_service', None)
         if log_service:
-            asyncio.ensure_future(
-                log_service.add(
-                    'message',
-                    {
-                        'message_id': message_id,
-                        'reference_id': reference_id,
-                        'user_id': user_id,
-                        'group_id': group_id,
-                        'content': display,
-                        'plugin_name': 'WebPanel',
-                        'raw_message': raw,
-                        'direction': 'send',
-                        'context': resp_data if resp_data is not None else '',
-                    },
-                )
+            log_service.add_sync(
+                'message',
+                {
+                    'message_id': message_id,
+                    'reference_id': reference_id,
+                    'user_id': user_id,
+                    'group_id': group_id,
+                    'content': display,
+                    'plugin_name': 'WebPanel',
+                    'raw_message': raw,
+                    'direction': 'send',
+                    'context': resp_data if resp_data is not None else '',
+                },
             )
     except Exception as e:
         log.debug(f'写消息日志失败: {e}')
