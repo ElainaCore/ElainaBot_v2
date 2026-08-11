@@ -4,7 +4,9 @@
 import asyncio
 import json
 import time
+from dataclasses import dataclass
 from datetime import datetime, timedelta
+from itertools import islice
 
 from core.base.config import cfg
 from core.base.logger import FRAMEWORK, get_logger, report_error
@@ -38,6 +40,8 @@ _DIRTY_FLUSH_THRESHOLD = 500  # 脏群数超过此阈值提前刷写
 _TRACK_WORKERS = 8  # 用户追踪后台 worker 数
 _TRACK_QUEUE_MAX = 5000  # 用户追踪队列上限, 满则转入合并缓冲 (不丢弃)
 _TRACK_DEDUP_TTL = 60  # 同键群消息追踪去重窗口(秒): 追踪任务对同键幂等, 短时重复直接跳过
+_CACHE_PRUNE_INTERVAL = 1.0
+_CACHE_PRUNE_BATCH = 2048
 
 
 _today_cache = ('', 0.0)  # (date_str, valid_until_epoch)
@@ -64,6 +68,46 @@ def _new_user_entry(uid, today, member_role='', is_bot=False):
     return entry
 
 
+def _prune_expired_entries(cache, now, limit, expires_at):
+    """轮转扫描有限条目，避免一次性重建整个缓存。"""
+    keys = list(islice(cache, limit))
+    for key in keys:
+        value = cache.pop(key)
+        if expires_at(value) > now:
+            cache[key] = value
+
+
+@dataclass(slots=True)
+class _TrackItem:
+    """用户追踪所需的最小状态；插件仍使用原始 Event。"""
+
+    bot: object
+    appid: str
+    uid: str
+    gid: str
+    username: str
+    member_role: str
+    is_bot: bool
+    is_direct: bool
+    reply_event: object | None
+    queued: bool = False
+    version: int = 0
+
+    def merge(self, newer):
+        """合并积压更新，保留最新状态以及仍需执行的副作用。"""
+        self.bot = newer.bot
+        self.username = newer.username or self.username
+        self.member_role = newer.member_role or self.member_role
+        self.is_bot = self.is_bot or newer.is_bot
+        self.is_direct = self.is_direct or newer.is_direct
+        self.reply_event = newer.reply_event or self.reply_event
+        self.version += 1
+
+    @property
+    def key(self):
+        return self.appid, self.uid, self.gid
+
+
 class _EventDedup:
     """轻量 TTL 去重"""
 
@@ -75,9 +119,11 @@ class _EventDedup:
 
     def is_dup(self, *ids) -> bool:
         now = time.time()
-        if now > self._next_purge or len(self._seen) > 5000:
-            self._seen = {k: v for k, v in self._seen.items() if v > now}
-            self._next_purge = now + 60
+        if now > self._next_purge:
+            _prune_expired_entries(
+                self._seen, now, _CACHE_PRUNE_BATCH, lambda value: value
+            )
+            self._next_purge = now + _CACHE_PRUNE_INTERVAL
         unique = dict.fromkeys(eid for eid in ids if eid)
         for eid in unique:
             if eid in self._seen:
@@ -104,7 +150,7 @@ class EventHandlerMixin:
         self._track_workers = []
         self._track_recent = {}  # {去重键: 过期时间} 同键短时跳过
         self._track_recent_purge = 0.0
-        self._track_pending = {}  # {(appid, uid, gid): 任务} 队列满时的合并缓冲
+        self._track_jobs = {}  # {(appid, uid, gid): 轻量合并任务}
         self._track_drainer = None
         self._track_overflow_count = 0
 
@@ -120,6 +166,7 @@ class EventHandlerMixin:
     def _enqueue_track(self, bot, event, appid):
         """投递用户追踪任务: 群消息同键短时去重削峰; 队列满时转入合并缓冲, 不丢弃"""
         self._ensure_track_workers()
+        uid = str(event.user_id or '')
         gid = event.group_id or ''
         if event.event_type == GROUP_MESSAGE_CREATE and gid:
             # 追踪对同(用户/群/角色/当天)幂等, 同键短时重复无新信息, 跳过以削减洪峰任务量
@@ -127,21 +174,41 @@ class EventHandlerMixin:
                    bool(getattr(event, 'username', '')), bool(getattr(event, 'is_bot', False)))
             now = time.time()
             if now > self._track_recent_purge:
-                self._track_recent_purge = now + 60
-                self._track_recent = {k: v for k, v in self._track_recent.items() if v > now}
+                self._track_recent_purge = now + _CACHE_PRUNE_INTERVAL
+                _prune_expired_entries(
+                    self._track_recent, now, _CACHE_PRUNE_BATCH, lambda value: value
+                )
             if self._track_recent.get(key, 0) > now:
                 return
             self._track_recent[key] = now + _TRACK_DEDUP_TTL
+
+        item = _TrackItem(
+            bot=bot,
+            appid=str(appid),
+            uid=uid,
+            gid=gid,
+            username=getattr(event, 'username', '') or '',
+            member_role=event.member_role or '',
+            is_bot=bool(getattr(event, 'is_bot', False)),
+            is_direct=bool(event.is_direct),
+            # 全量群消息不会触发新用户欢迎，不必为回复保留完整事件树。
+            reply_event=None if event.event_type == GROUP_MESSAGE_CREATE else event,
+        )
+        job = self._track_jobs.get(item.key)
+        if job is not None:
+            job.merge(item)
+            return
+        self._track_jobs[item.key] = item
         try:
-            self._track_queue.put_nowait((bot, event, appid))
+            self._track_queue.put_nowait(item)
+            item.queued = True
         except asyncio.QueueFull:
-            # 同键合并缓冲 (追踪幂等, 合并无损), 由 drainer 在队列腾出空位后回灌
-            self._track_pending[(appid, event.user_id, gid)] = (bot, event, appid)
             self._track_overflow_count += 1
             if self._track_overflow_count % 1000 == 1:
+                waiting = sum(not job.queued for job in self._track_jobs.values())
                 log.warning(
                     f'[用户追踪] 队列已满({_TRACK_QUEUE_MAX}), 转入合并缓冲 '
-                    f'(累计 {self._track_overflow_count} 条, 待回灌 {len(self._track_pending)} 键, 不丢弃)'
+                    f'(累计 {self._track_overflow_count} 键, 待回灌 {waiting} 键, 不丢弃)'
                 )
             self._ensure_track_drainer()
 
@@ -151,20 +218,35 @@ class EventHandlerMixin:
 
     async def _drain_track_pending(self):
         """队列有空位时把合并缓冲回灌 (阻塞式 put, 保证最终全部处理)"""
-        while self._track_pending:
-            key = next(iter(self._track_pending))
-            item = self._track_pending.pop(key)
-            await self._track_queue.put(item)
+        while True:
+            job = next((job for job in self._track_jobs.values() if not job.queued), None)
+            if job is None:
+                return
+            job.queued = True
+            try:
+                await self._track_queue.put(job)
+            except BaseException:
+                job.queued = False
+                raise
 
     async def _track_worker(self):
         q = self._track_queue
         while True:
-            bot, event, appid = await q.get()
+            job = await q.get()
             try:
-                await self._track_user(bot, event, appid)
-            except Exception as e:
-                report_error(FRAMEWORK, '用户追踪', e, context={'appid': appid})
+                while True:
+                    version = job.version
+                    try:
+                        await self._track_user(job)
+                    except Exception as e:
+                        report_error(
+                            FRAMEWORK, '用户追踪', e,
+                            context={'appid': job.appid},
+                        )
+                    if version == job.version:
+                        break
             finally:
+                self._track_jobs.pop(job.key, None)
                 q.task_done()
 
     def _message_content(self, event):
@@ -513,43 +595,75 @@ class EventHandlerMixin:
 
     # ==================== 用户/群组追踪 ====================
 
-    async def _run_side_tasks(self, bot, event, gid):
+    async def _run_side_tasks(self, item):
         """wakeup + 群组记录 (复用)"""
         tasks = []
-        if event.is_direct:
-            tasks.append(bot.log_service.wakeup_update(event.user_id))
-        if gid and gid != 'c2c':
-            tasks.append(self._add_user_to_group(bot, gid, event.user_id, event.member_role or '', getattr(event, 'is_bot', False)))
+        if item.is_direct:
+            tasks.append(item.bot.log_service.wakeup_update(item.uid))
+        if item.gid and item.gid != 'c2c':
+            tasks.append(
+                self._add_user_to_group(
+                    item.bot, item.gid, item.uid, item.member_role, item.is_bot
+                )
+            )
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
-    async def _track_user(self, bot, event, appid):
-        uid = event.user_id
-        gid = event.group_id or ''
-        username = getattr(event, 'username', '') or ''
+    def _prune_event_caches(self, now):
+        if now < self._cache_clean_ts:
+            return
+        self._cache_clean_ts = now + _CACHE_PRUNE_INTERVAL
+        _prune_expired_entries(
+            self._known_users, now, _CACHE_PRUNE_BATCH, lambda value: value
+        )
+        _prune_expired_entries(
+            self._full_access_cache, now, _CACHE_PRUNE_BATCH, lambda value: value
+        )
+        self._prune_group_caches(now)
+
+    def _prune_group_caches(self, now):
+        # LRU 的头部是最冷的缓存，每次只检查有限数量，避免整表重建。
+        for group_id in list(islice(self._group_users_cache, _CACHE_PRUNE_BATCH)):
+            cached = self._group_users_cache.get(group_id)
+            if cached and cached[0] <= now and group_id not in self._dirty_groups:
+                self._group_users_cache.pop(group_id, None)
+                lock = self._group_locks.get(group_id)
+                if (
+                    lock is not None
+                    and not lock.locked()
+                    and not getattr(lock, '_waiters', None)
+                ):
+                    self._group_locks.pop(group_id, None)
+
+        # 没有对应缓存的失败/空查询也可能留下群锁，分批清除。
+        for group_id in list(islice(self._group_locks, _CACHE_PRUNE_BATCH)):
+            lock = self._group_locks.get(group_id)
+            if (
+                group_id not in self._group_users_cache
+                and lock is not None
+                and not lock.locked()
+                and not getattr(lock, '_waiters', None)
+            ):
+                self._group_locks.pop(group_id, None)
+
+    async def _track_user(self, item):
+        uid = item.uid
+        bot = item.bot
         now = time.time()
 
-        # 定期清理过期缓存
-        if now - self._cache_clean_ts > 600:
-            self._cache_clean_ts = now
-            self._known_users = {k: v for k, v in self._known_users.items() if v > now}
-            self._full_access_cache = {k: v for k, v in self._full_access_cache.items() if v > now}
-            # 清理过期群缓存 (expire_ts < now), 避免不活跃群的 user_map 一直占用内存
-            active = {k: v for k, v in self._group_users_cache.items() if v[0] > now}
-            self._group_users_cache = active
-            self._group_locks = {k: v for k, v in self._group_locks.items() if k in active}
+        self._prune_event_caches(now)
 
-        if username:
+        if item.username:
             bot.log_service.db_queue(
                 'INSERT INTO users (user_id, name) VALUES (?, ?) '
                 'ON CONFLICT(user_id) DO UPDATE SET name=excluded.name '
                 "WHERE users.name = '' OR users.name IS NULL",
-                (uid, username),
+                (uid, item.username),
             )
 
         # 已知用户: 跳过 DB 查询
         if uid in self._known_users:
-            await self._run_side_tasks(bot, event, gid)
+            await self._run_side_tasks(item)
             return
 
         # 新用户判定
@@ -558,20 +672,23 @@ class EventHandlerMixin:
             bot.log_service.db_queue('INSERT OR IGNORE INTO users (user_id) VALUES (?)', (uid,))
 
         self._known_users[uid] = now + _USER_CACHE_TTL
-        await self._run_side_tasks(bot, event, gid)
+        await self._run_side_tasks(item)
 
         # 新用户欢迎 (全量群环境不发送)
-        if not existing and event.event_type != GROUP_MESSAGE_CREATE \
-                and cfg.get_bot_setting(appid, 'welcome.new_user_welcome', False):
+        if (
+            not existing
+            and item.reply_event is not None
+            and cfg.get_bot_setting(item.appid, 'welcome.new_user_welcome', False)
+        ):
             try:
                 total = await bot.log_service.db_fetch_value('SELECT COUNT(*) FROM users', default=1)
                 await bot.sender.reply(
-                    event,
+                    item.reply_event,
                     template_name='user_welcome',
                     template_vars={'user_id': uid, 'user_count': str(total)},
                 )
             except Exception as e:
-                report_error(FRAMEWORK, '新用户欢迎', e, context={'appid': appid})
+                report_error(FRAMEWORK, '新用户欢迎', e, context={'appid': item.appid})
 
     # ==================== 群组成员记录 ====================
 
@@ -747,6 +864,12 @@ class EventHandlerMixin:
 
     def _set_group_cache(self, group_id, user_map):
         if len(self._group_users_cache) >= _GROUP_CACHE_MAX and group_id not in self._group_users_cache:
-            oldest = next(iter(self._group_users_cache))
-            del self._group_users_cache[oldest]
-        self._group_users_cache[group_id] = (self._tomorrow_ts(), user_map)
+            # 脏群必须等批量写回后再淘汰；优先移除最老的干净缓存。
+            oldest = next(
+                (gid for gid in self._group_users_cache if gid not in self._dirty_groups),
+                None,
+            )
+            if oldest is not None:
+                del self._group_users_cache[oldest]
+        expire = self._tomorrow_ts()
+        self._group_users_cache[group_id] = (expire, user_map)

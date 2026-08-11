@@ -32,10 +32,12 @@ log = get_logger(SYSTEM, '启动器')
 
 
 def _tune_gc():
-    """调优循环 GC: 启动完成后冻结存量对象 + 提高阈值, 避免 gen2 全量回收秒级冻结事件循环"""
+    """冻结启动对象并限制单次循环 GC 的扫描规模。"""
     gc.collect()
     gc.freeze()  # 启动期对象 (模块/类/插件) 移出 GC 扫描集, 大幅缩短每次回收耗时
-    gc.set_threshold(50000, 25, 25)  # 默认 (2000,10,10) 在高分配速率下触发过于频繁
+    # 高峰期会快速产生 Future/Event 等循环引用。阈值过高会积攒十万级对象，
+    # 将回收延迟集中成数百毫秒到秒级暂停；小批回收更适合事件循环服务。
+    gc.set_threshold(5000, 10, 10)
     log.info(f'GC 已调优: freeze {gc.get_freeze_count()} 个启动期对象, 阈值 {gc.get_threshold()}')
 
 

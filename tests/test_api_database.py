@@ -1,9 +1,14 @@
 """API 测试: 数据库浏览模块 (database/*)"""
 
+import json
+import sqlite3
+import threading
+
 import pytest
 
 from tests.helpers import assert_success_response
-from web.tools._database.browser import _is_sqlite_path
+from web.tools._database import browser as database_browser
+from web.tools._database.browser import _is_sqlite_path, _query_table_sync
 
 
 @pytest.mark.parametrize(
@@ -73,6 +78,42 @@ class TestDatabaseQuery:
             cookies=auth_cookies,
         )
         assert resp.status in (400, 403)
+
+    def test_query_helper_preserves_paging_and_default_order(self, tmp_path):
+        db_path = tmp_path / 'records.db'
+        with sqlite3.connect(db_path) as conn:
+            conn.execute('CREATE TABLE records (name TEXT)')
+            conn.executemany('INSERT INTO records (name) VALUES (?)', [('first',), ('second',), ('third',)])
+
+        result = _query_table_sync(str(db_path), 'records', page=1, page_size=2, order_by='', order_dir='DESC')
+
+        assert result['total'] == 3
+        assert result['page'] == 1
+        assert result['page_size'] == 2
+        assert [row['name'] for row in result['rows']] == ['third', 'second']
+        assert result['columns'] == [{'name': 'name', 'type': 'TEXT'}]
+
+    async def test_query_runs_sqlite_work_in_worker_thread(self, monkeypatch):
+        main_thread = threading.get_ident()
+        worker_threads = []
+
+        class Request:
+            async def json(self):
+                return {'path': 'records.db', 'table': 'records'}
+
+        def query_stub(*args):
+            worker_threads.append(threading.get_ident())
+            return {'rows': [], 'columns': [], 'total': 0, 'page': 1, 'page_size': 50}
+
+        monkeypatch.setattr(database_browser, '_validate_db_path', lambda path: (True, path))
+        monkeypatch.setattr(database_browser, '_query_table_sync', query_stub)
+
+        response = await database_browser.handle_query_table(Request())
+        payload = json.loads(response.text)
+
+        assert response.status == 200
+        assert payload['success'] is True
+        assert worker_threads and worker_threads[0] != main_thread
 
 
 class TestDatabaseSQL:

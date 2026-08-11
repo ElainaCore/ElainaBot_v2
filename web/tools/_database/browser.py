@@ -1,5 +1,6 @@
 """数据库浏览器 — 查询/浏览/删除/搜索/挂载"""
 
+import asyncio
 import contextlib
 import json
 import logging
@@ -164,6 +165,99 @@ def _open_readwrite(db_path):
     return conn
 
 
+def _list_tables_sync(db_path):
+    """读取数据库表结构和行数。"""
+    with contextlib.closing(_open_readonly(db_path)) as conn:
+        tables = []
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"):
+            tname = row['name']
+            count_row = conn.execute(f'SELECT COUNT(*) as c FROM "{tname}"').fetchone()
+            count = count_row['c'] if count_row else 0
+            columns = [
+                {
+                    'name': col['name'],
+                    'type': col['type'],
+                    'notnull': bool(col['notnull']),
+                    'pk': bool(col['pk']),
+                }
+                for col in conn.execute(f'PRAGMA table_info("{tname}")')
+            ]
+            tables.append({'name': tname, 'count': count, 'columns': columns})
+    return tables
+
+
+def _query_table_sync(db_path, table, page, page_size, order_by, order_dir):
+    """执行分页查询。"""
+    with contextlib.closing(_open_readonly(db_path)) as conn:
+        total = conn.execute(f'SELECT COUNT(*) as c FROM "{table}"').fetchone()['c']
+        order_clause = f'ORDER BY "{order_by}" {order_dir}' if order_by else 'ORDER BY rowid DESC'
+        offset = (page - 1) * page_size
+        rows = conn.execute(
+            f'SELECT rowid AS _rowid, * FROM "{table}" {order_clause} LIMIT ? OFFSET ?',
+            (page_size, offset),
+        ).fetchall()
+        data = [dict(r) for r in rows]
+        columns = [{'name': col['name'], 'type': col['type']} for col in conn.execute(f'PRAGMA table_info("{table}")')]
+    return {'rows': data, 'columns': columns, 'total': total, 'page': page, 'page_size': page_size}
+
+
+def _execute_sql_sync(db_path, sql, is_read):
+    """执行数据库 SQL。"""
+    with contextlib.closing(_open_readwrite(db_path)) as conn:
+        statements = [s.strip() for s in sql.split(';') if s.strip()]
+        if len(statements) > 1 and not is_read:
+            conn.executescript(sql)
+            return {'affected': -1}, f'已执行 {len(statements)} 条语句'
+
+        cursor = conn.execute(sql)
+        if is_read:
+            rows = cursor.fetchall()
+            columns = [{'name': desc[0], 'type': ''} for desc in cursor.description] if cursor.description else []
+            return {'rows': [dict(r) for r in rows], 'columns': columns, 'total': len(rows)}, ''
+
+        affected = cursor.rowcount
+        conn.commit()
+        return {'affected': affected}, f'执行成功, 影响 {affected} 行'
+
+
+def _search_database_sync(db_path, keyword, limit):
+    """执行全库模糊搜索。"""
+    escaped = keyword.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+    pattern = f'%{escaped}%'
+    with contextlib.closing(_open_readonly(db_path)) as conn:
+        results = []
+        table_rows = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").fetchall()
+        for trow in table_rows:
+            tname = trow['name']
+            columns = [{'name': col['name'], 'type': col['type']} for col in conn.execute(f'PRAGMA table_info("{tname}")')]
+            if not columns:
+                continue
+            conds = ' OR '.join('CAST("{}" AS TEXT) LIKE ? ESCAPE \'\\\''.format(c['name']) for c in columns)
+            params = [pattern] * len(columns)
+            try:
+                total = conn.execute(f'SELECT COUNT(*) as c FROM "{tname}" WHERE {conds}', params).fetchone()['c']
+                if not total:
+                    continue
+                rows = conn.execute(
+                    f'SELECT rowid AS _rowid, * FROM "{tname}" WHERE {conds} ORDER BY rowid DESC LIMIT ?',
+                    params + [limit],
+                ).fetchall()
+            except sqlite3.Error:
+                continue
+            results.append({'table': tname, 'columns': columns, 'data': [dict(r) for r in rows], 'total': total})
+    return results
+
+
+def _delete_rows_sync(db_path, table, rowids):
+    """删除指定 rowid。"""
+    with contextlib.closing(_open_readwrite(db_path)) as conn:
+        placeholders = ','.join('?' * len(rowids))
+        cursor = conn.execute(f'DELETE FROM "{table}" WHERE rowid IN ({placeholders})', rowids)
+        deleted = cursor.rowcount
+        conn.commit()
+    return deleted
+
+
 # ==================== API handlers ====================
 
 
@@ -185,31 +279,7 @@ async def handle_list_tables(request: web.Request):
         return error('无效路径', status=403)
 
     try:
-        with contextlib.closing(_open_readonly(abs_path)) as conn:
-            tables = []
-            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"):
-                tname = row['name']
-                count_row = conn.execute(f'SELECT COUNT(*) as c FROM "{tname}"').fetchone()
-                count = count_row['c'] if count_row else 0
-
-                # 获取列信息
-                columns = [
-                    {
-                        'name': col['name'],
-                        'type': col['type'],
-                        'notnull': bool(col['notnull']),
-                        'pk': bool(col['pk']),
-                    }
-                    for col in conn.execute(f'PRAGMA table_info("{tname}")')
-                ]
-
-                tables.append(
-                    {
-                        'name': tname,
-                        'count': count,
-                        'columns': columns,
-                    }
-                )
+        tables = await asyncio.to_thread(_list_tables_sync, abs_path)
         return ok({'tables': tables})
     except Exception as e:
         log.warning(f'列出表失败: {e}')
@@ -240,34 +310,12 @@ async def handle_query_table(request: web.Request):
     if order_dir.upper() not in ('ASC', 'DESC'):
         order_dir = 'DESC'
 
+    if order_by and not re.match(r'^[\w]+$', order_by):
+        order_by = ''
+
     try:
-        with contextlib.closing(_open_readonly(abs_path)) as conn:
-            # 总数
-            total = conn.execute(f'SELECT COUNT(*) as c FROM "{table}"').fetchone()['c']
-
-            # 排序 (默认按 rowid 倒序)
-            order_clause = f'ORDER BY "{order_by}" {order_dir}' if order_by and re.match(r'^[\w]+$', order_by) else 'ORDER BY rowid DESC'
-
-            offset = (page - 1) * page_size
-            rows = conn.execute(
-                f'SELECT rowid AS _rowid, * FROM "{table}" {order_clause} LIMIT ? OFFSET ?',
-                (page_size, offset),
-            ).fetchall()
-
-            data = [dict(r) for r in rows]
-
-            # 列信息
-            columns = [{'name': col['name'], 'type': col['type']} for col in conn.execute(f'PRAGMA table_info("{table}")')]
-
-        return ok(
-            {
-                'rows': data,
-                'columns': columns,
-                'total': total,
-                'page': page,
-                'page_size': page_size,
-            }
-        )
+        result = await asyncio.to_thread(_query_table_sync, abs_path, table, page, page_size, order_by, order_dir)
+        return ok(result)
     except Exception as e:
         log.warning(f'查询表失败: {e}')
         return error(str(e), status=500)
@@ -293,25 +341,8 @@ async def handle_execute_sql(request: web.Request):
         sql = sql.rstrip(';') + ' LIMIT 1000'
 
     try:
-        with contextlib.closing(_open_readwrite(abs_path)) as conn:
-            # 多语句 (含分号分割) 用 executescript (无结果集)
-            statements = [s.strip() for s in sql.split(';') if s.strip()]
-            if len(statements) > 1 and not is_read:
-                conn.executescript(sql)
-                return ok({'affected': -1}, message=f'已执行 {len(statements)} 条语句')
-
-            cursor = conn.execute(sql)
-
-            if is_read:
-                rows = cursor.fetchall()
-                columns = [{'name': desc[0], 'type': ''} for desc in cursor.description] if cursor.description else []
-                data = [dict(r) for r in rows]
-                return ok({'rows': data, 'columns': columns, 'total': len(data)})
-
-            # 写操作: 返回影响行数
-            affected = cursor.rowcount
-            conn.commit()
-            return ok({'affected': affected}, message=f'执行成功, 影响 {affected} 行')
+        data, message = await asyncio.to_thread(_execute_sql_sync, abs_path, sql, bool(is_read))
+        return ok(data, message=message)
     except Exception as e:
         return error(str(e), status=400)
 
@@ -330,38 +361,8 @@ async def handle_search_database(request: web.Request):
     if not valid:
         return error('无效路径', status=403)
 
-    escaped = keyword.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
-    pattern = f'%{escaped}%'
-
     try:
-        with contextlib.closing(_open_readonly(abs_path)) as conn:
-            results = []
-            table_rows = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").fetchall()
-            for trow in table_rows:
-                tname = trow['name']
-                columns = [{'name': col['name'], 'type': col['type']} for col in conn.execute(f'PRAGMA table_info("{tname}")')]
-                if not columns:
-                    continue
-                conds = ' OR '.join('CAST("{}" AS TEXT) LIKE ? ESCAPE \'\\\''.format(c['name']) for c in columns)
-                params = [pattern] * len(columns)
-                try:
-                    total = conn.execute(f'SELECT COUNT(*) as c FROM "{tname}" WHERE {conds}', params).fetchone()['c']
-                    if not total:
-                        continue
-                    rows = conn.execute(
-                        f'SELECT rowid AS _rowid, * FROM "{tname}" WHERE {conds} ORDER BY rowid DESC LIMIT ?',
-                        params + [limit],
-                    ).fetchall()
-                except sqlite3.Error:
-                    continue
-                results.append(
-                    {
-                        'table': tname,
-                        'columns': columns,
-                        'data': [dict(r) for r in rows],
-                        'total': total,
-                    }
-                )
+        results = await asyncio.to_thread(_search_database_sync, abs_path, keyword, limit)
         return ok({'results': results, 'keyword': keyword})
     except Exception as e:
         log.warning(f'全库搜索失败: {e}')
@@ -455,11 +456,7 @@ async def handle_delete_rows(request: web.Request):
         return error('无效路径', status=403)
 
     try:
-        with contextlib.closing(_open_readwrite(abs_path)) as conn:
-            placeholders = ','.join('?' * len(rowids))
-            cursor = conn.execute(f'DELETE FROM "{table}" WHERE rowid IN ({placeholders})', rowids)
-            deleted = cursor.rowcount
-            conn.commit()
+        deleted = await asyncio.to_thread(_delete_rows_sync, abs_path, table, rowids)
         return ok({'deleted': deleted})
     except Exception as e:
         log.warning(f'删除数据失败: {e}')
