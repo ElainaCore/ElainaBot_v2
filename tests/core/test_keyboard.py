@@ -69,7 +69,7 @@ class TestBuildKeyboardBasic:
         assert b['action']['unsupport_tips'] == '不支持时提示'
 
     def test_multiple_rows(self):
-        """多行按钮"""
+        """多行按钮的自动 ID 在整张键盘内保持唯一"""
         rows_input = [
             [{'text': 'A', 'data': 'a'}, {'text': 'B', 'data': 'b'}],
             [{'text': 'C', 'data': 'c'}],
@@ -81,6 +81,11 @@ class TestBuildKeyboardBasic:
         assert len(rows[1]['buttons']) == 1
         assert rows[0]['buttons'][0]['render_data']['label'] == 'A'
         assert rows[1]['buttons'][0]['render_data']['label'] == 'C'
+        assert [
+            button['id']
+            for row in rows
+            for button in row['buttons']
+        ] == ['0', '1', '2']
 
     def test_row_as_dict_buttons_key(self):
         """行以 dict 传入, 使用 buttons 键"""
@@ -117,6 +122,19 @@ class TestBuildKeyboardDefaults:
         assert buttons[0]['id'] == '0'
         assert buttons[1]['id'] == '1'
         assert buttons[2]['id'] == '2'
+
+    def test_explicit_id_is_preserved(self):
+        """插件提供 ID 时原样使用，其他按钮继续按全局位置编号"""
+        result = build_keyboard([
+            [{'text': 'A'}, {'id': 'custom_button', 'text': 'B'}],
+            [{'text': 'C'}],
+        ])
+        ids = [
+            button['id']
+            for row in result['content']['rows']
+            for button in row['buttons']
+        ]
+        assert ids == ['0', 'custom_button', '2']
 
     def test_style_default(self):
         """未提供 style 时默认为 1"""

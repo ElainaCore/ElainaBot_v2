@@ -15,6 +15,7 @@ def build_keyboard(button_rows, appid=None, *, font_size=None, style=None):
         button_rows = button_rows.get('rows') or button_rows.get('buttons') or button_rows.get('btns') or []
 
     rows = []
+    next_button_id = 0
     for row in button_rows:
         buttons = []
         if isinstance(row, dict):
@@ -25,8 +26,12 @@ def build_keyboard(button_rows, appid=None, *, font_size=None, style=None):
             action = btn.get('action') or {}
             action.setdefault('type', btn.get('type', 2))
             action.setdefault('data', btn.get('data', ''))
+            button_id = btn.get('id')
+            if button_id in (None, ''):
+                button_id = str(next_button_id)
+            next_button_id += 1
             b = {
-                'id': btn.get('id') or str(len(buttons)),
+                'id': str(button_id),
                 'render_data': r_data,
                 'action': action,
             }
