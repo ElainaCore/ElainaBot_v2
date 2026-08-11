@@ -111,11 +111,12 @@ class _TrackItem:
 class _EventDedup:
     """轻量 TTL 去重"""
 
-    __slots__ = ('_seen', '_next_purge')
+    __slots__ = ('_seen', '_next_purge', '_next_size_purge')
 
     def __init__(self):
         self._seen = {}
         self._next_purge = 0
+        self._next_size_purge = 0
 
     def is_dup(self, *ids) -> bool:
         now = time.time()
@@ -124,6 +125,11 @@ class _EventDedup:
                 self._seen, now, _CACHE_PRUNE_BATCH, lambda value: value
             )
             self._next_purge = now + _CACHE_PRUNE_INTERVAL
+        if len(self._seen) > 5000 and now >= self._next_size_purge:
+            for eid, expire in list(self._seen.items()):
+                if expire <= now:
+                    self._seen.pop(eid, None)
+            self._next_size_purge = now + 60
         unique = dict.fromkeys(eid for eid in ids if eid)
         for eid in unique:
             if eid in self._seen:
@@ -168,7 +174,7 @@ class EventHandlerMixin:
         self._ensure_track_workers()
         uid = str(event.user_id or '')
         gid = event.group_id or ''
-        if event.event_type == GROUP_MESSAGE_CREATE and gid:
+        if event.is_group and gid:
             # 追踪对同(用户/群/角色/当天)幂等, 同键短时重复无新信息, 跳过以削减洪峰任务量
             key = (appid, event.user_id, gid, event.member_role or '',
                    bool(getattr(event, 'username', '')), bool(getattr(event, 'is_bot', False)))
@@ -666,29 +672,45 @@ class EventHandlerMixin:
             await self._run_side_tasks(item)
             return
 
-        # 新用户判定
-        existing = await bot.log_service.db_fetch_one('SELECT user_id FROM users WHERE user_id=?', (uid,))
-        if not existing:
-            bot.log_service.db_queue('INSERT OR IGNORE INTO users (user_id) VALUES (?)', (uid,))
+        # 只有开启欢迎且保留了原始事件时才需要查询 existing。
+        welcome_enabled = bool(
+            item.reply_event is not None
+            and cfg.get_bot_setting(item.appid, 'welcome.new_user_welcome', False)
+        )
+        existing = True
+        if welcome_enabled:
+            existing = await bot.log_service.db_fetch_one(
+                'SELECT user_id FROM users WHERE user_id=?',
+                (uid,),
+            )
+
+        # 没有昵称时直接幂等建档，避免额外 SELECT。
+        if not item.username:
+            bot.log_service.db_queue(
+                'INSERT OR IGNORE INTO users (user_id) VALUES (?)',
+                (uid,),
+            )
 
         self._known_users[uid] = now + _USER_CACHE_TTL
-        await self._run_side_tasks(item)
 
-        # 新用户欢迎 (全量群环境不发送)
-        if (
-            not existing
-            and item.reply_event is not None
-            and cfg.get_bot_setting(item.appid, 'welcome.new_user_welcome', False)
-        ):
-            try:
+        if not welcome_enabled:
+            await self._run_side_tasks(item)
+            return
+
+        # 群成员写回在后台并行进行，不阻塞新用户欢迎。
+        side_task = asyncio.create_task(self._run_side_tasks(item))
+        try:
+            if not existing:
                 total = await bot.log_service.db_fetch_value('SELECT COUNT(*) FROM users', default=1)
                 await bot.sender.reply(
                     item.reply_event,
                     template_name='user_welcome',
                     template_vars={'user_id': uid, 'user_count': str(total)},
                 )
-            except Exception as e:
-                report_error(FRAMEWORK, '新用户欢迎', e, context={'appid': item.appid})
+        except Exception as e:
+            report_error(FRAMEWORK, '新用户欢迎', e, context={'appid': item.appid})
+        finally:
+            await side_task
 
     # ==================== 群组成员记录 ====================
 

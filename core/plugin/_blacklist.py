@@ -2,18 +2,37 @@
 
 from core.base.config import cfg
 
+_BLACKLIST_CACHE = {}
+_EMPTY_BLACKLIST = ()
+
+
+def _get_cached_blacklist_map(appid, kind):
+    """读取并缓存规范化后的黑名单，避免每条消息复制整张字典。"""
+    key = (str(appid), kind)
+    raw = cfg.get_bot_setting(appid, f'blacklist.{kind}_list', {})
+    source = raw if raw else _EMPTY_BLACKLIST
+    cached = _BLACKLIST_CACHE.get(key)
+    if cached is not None and cached[0] is source:
+        return cached[1]
+
+    if isinstance(raw, dict):
+        normalized = {str(k): v for k, v in raw.items()}
+    else:
+        normalized = {str(x): None for x in (raw or ())}
+    _BLACKLIST_CACHE[key] = (source, normalized)
+    return normalized
+
 
 def get_blacklist_map(appid, kind):
-    """读取黑名单 {ID: 理由} 映射"""
-    raw = cfg.get_bot_setting(appid, f'blacklist.{kind}_list', {}) or {}
-    if isinstance(raw, dict):
-        return {str(k): v for k, v in raw.items()}
-    return {str(x): None for x in raw}
+    """读取黑名单 {ID: 理由} 映射 (返回副本, 供管理命令修改)."""
+    return dict(_get_cached_blacklist_map(appid, kind))
 
 
 def set_blacklist_map(appid, kind, mapping):
     """写回黑名单 {ID: 理由} 映射"""
-    return cfg.set_bot_setting(appid, f'blacklist.{kind}_list', dict(sorted(mapping.items())))
+    result = cfg.set_bot_setting(appid, f'blacklist.{kind}_list', dict(sorted(mapping.items())))
+    _BLACKLIST_CACHE.pop((str(appid), kind), None)
+    return result
 
 
 def migrate_blacklist_config():
@@ -39,7 +58,7 @@ class _BlacklistMixin:
         for kind, value in (('user', event.user_id), ('group', event.group_id)):
             if not value:
                 continue
-            bl = get_blacklist_map(appid, kind)
+            bl = _get_cached_blacklist_map(appid, kind)
             if str(value) in bl:
                 return kind, str(bl[str(value)] or '未指明原因')
         return None

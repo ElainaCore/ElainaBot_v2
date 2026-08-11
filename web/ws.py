@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import json
 import logging
+from collections import deque
 from datetime import datetime
 
 from aiohttp import WSMsgType, web
@@ -12,6 +13,8 @@ import web.auth as auth
 from core.base.tasks import spawn
 
 log = logging.getLogger('ElainaBot.web.ws')
+
+_BROADCAST_QUEUE_MAX = 2048
 
 
 # ==================== WSBroadcast ====================
@@ -24,6 +27,8 @@ class WSBroadcast:
         self._clients: set = set()
         self._sse_queues: set = set()
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._pending = deque()
+        self._drain_task = None
 
     @property
     def clients(self):
@@ -54,37 +59,66 @@ class WSBroadcast:
             with contextlib.suppress(Exception):
                 q.put_nowait(payload)
 
-    def schedule_broadcast(self, msg_type: str, data: dict):
-        """安全调度广播任务 (非事件循环线程转发到主 loop, 无可用 loop 时静默忽略)"""
+    def _enqueue(self, msg_type: str, data: dict):
         if not self.has_clients():
             return
+        if len(self._pending) >= _BROADCAST_QUEUE_MAX:
+            self._pending.popleft()
+        self._pending.append((msg_type, data))
+        if self._drain_task is None or self._drain_task.done():
+            self._drain_task = asyncio.create_task(self._drain())
+
+    async def _drain(self):
         try:
-            asyncio.get_running_loop()
+            while self._pending and self.has_clients():
+                msg_type, data = self._pending.popleft()
+                await self.broadcast(msg_type, data)
+        finally:
+            if not self.has_clients():
+                self._pending.clear()
+            self._drain_task = None
+
+    def schedule_broadcast(self, msg_type: str, data: dict):
+        """把广播放入单一有界发送队列，避免每条日志创建一个 Task。"""
+        if not self.has_clients():
+            return
+        current_loop = None
+        try:
+            current_loop = asyncio.get_running_loop()
         except RuntimeError:
             pass
-        else:
-            spawn(self.broadcast(msg_type, data))
-            return
-        loop = self._loop
+        loop = self._loop or current_loop
         if loop is None or loop.is_closed():
             return
-        with contextlib.suppress(RuntimeError):
-            asyncio.run_coroutine_threadsafe(self.broadcast(msg_type, data), loop)
+        if self._loop is None:
+            self._loop = loop
+        if current_loop is loop:
+            self._enqueue(msg_type, data)
+        else:
+            with contextlib.suppress(RuntimeError):
+                loop.call_soon_threadsafe(self._enqueue, msg_type, data)
 
     def push_log(self, log_type: str, entry: dict):
-        """实时推送日志到面板 (不缓存, 仅广播)"""
+        """实时推送日志到面板 (进入有界发送队列)"""
+        if not self.has_clients():
+            return
         if 'timestamp' not in entry:
             entry['timestamp'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         self.schedule_broadcast('new_log', {'log_type': log_type, **entry})
 
     def push_system_info(self, data: dict):
         """推送系统信息更新"""
+        if not self.has_clients():
+            return
         self.schedule_broadcast('system_info', data)
 
     def clear(self):
         """清理所有连接 (用于测试隔离)"""
+        if self._drain_task and not self._drain_task.done():
+            self._drain_task.cancel()
         self._clients.clear()
         self._sse_queues.clear()
+        self._pending.clear()
 
     def shutdown(self):
         """服务器关闭时主动断开所有面板连接, 避免阻塞 runner.shutdown()"""
@@ -93,6 +127,9 @@ class WSBroadcast:
                 spawn(ws.close(code=1001, message=b'Server shutdown'))
         self._clients.clear()
         self._sse_queues.clear()
+        self._pending.clear()
+        if self._drain_task and not self._drain_task.done():
+            self._drain_task.cancel()
 
 
 # 模块级单例
