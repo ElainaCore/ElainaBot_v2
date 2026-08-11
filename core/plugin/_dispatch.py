@@ -86,10 +86,10 @@ class _DispatchMixin:
             else:
                 any_et.append(h)
         self._handlers_any_et = any_et
-        # 预合并: 每个 event_type → 完整排序列表 (避免 dispatch 时重复归并)
-        self._et_merged: dict[str, list[dict[str, Any]]] = {}
-        for et, specific in by_et.items():
-            self._et_merged[et] = list(_merge_by_priority(any_et, specific))
+        self._et_merged = {
+            et: list(_merge_by_priority(any_et, specific))
+            for et, specific in by_et.items()
+        }
 
     def _handlers_for(self, et: str) -> list[dict[str, Any]]:
         """返回该事件类型的 handler 列表 (预合并, O(1) 查找)"""
@@ -189,17 +189,29 @@ class _DispatchMixin:
             except Exception as e:
                 report_error(PLUGIN, ic.get('_plugin', '?'), e)
 
-        # 处理器匹配
+        # 普通处理器先完成原文和斜杠兼容匹配，均未命中才进入 fallback。
         scene = _event_scene(event)
         handlers = self._handlers_for(et)
         handler_content = content
         if is_group_msg and _get(appid, 'non_at_message.strip_bot_name_at', False):
             handler_content = _strip_leading_bot_name_at(content, getattr(sender, '_bot_name', '') or '')
 
-        if self._match_handlers(handlers, handler_content, event, appid, is_non_at, non_at_ok, scene, user_id, et, content, skip_at_other):
+        if self._match_handlers(
+            handlers, handler_content, event, appid, is_non_at, non_at_ok,
+            scene, user_id, et, content, skip_at_other, fallback_stage=False,
+        ):
             return True
         alt = handler_content[1:] if handler_content[:1] == '/' else '/' + handler_content
-        if self._match_handlers(handlers, alt, event, appid, is_non_at, non_at_ok, scene, user_id, et, content, skip_at_other):
+        if self._match_handlers(
+            handlers, alt, event, appid, is_non_at, non_at_ok,
+            scene, user_id, et, content, skip_at_other, fallback_stage=False,
+        ):
+            return True
+
+        if self._match_handlers(
+            handlers, handler_content, event, appid, is_non_at, non_at_ok,
+            scene, user_id, et, content, skip_at_other, fallback_stage=True,
+        ):
             return True
 
         # 无匹配 → 默认回复
@@ -223,10 +235,13 @@ class _DispatchMixin:
         et: str,
         content: str,
         skip_at_other: bool = False,
+        fallback_stage: bool | None = None,
     ) -> bool:
         """内循环: 收集命中的 handler, 遇到 block=True 即停止, 随后顺序执行"""
         matched: list[tuple[dict[str, Any], re.Match[str]]] = []
         for h in handlers:
+            if fallback_stage is not None and _fallback_enabled(h, event) != fallback_stage:
+                continue
             # 快速过滤: bot 白名单
             ab = h['_allowed_bots']
             if ab is not None and appid not in ab:
@@ -353,6 +368,18 @@ class _DispatchMixin:
             _DispatchMixin._cached_app = app
         bot = app.get_bot(event.appid)
         return bot.log_service if bot else None
+
+
+def _fallback_enabled(h: dict[str, Any], event: Event) -> bool:
+    """Resolve a static fallback flag or a per-event configuration predicate."""
+    value = h.get('fallback', False)
+    if not callable(value):
+        return bool(value)
+    try:
+        return bool(value(event))
+    except Exception as error:
+        report_error(PLUGIN, h.get('_plugin', '?'), error)
+        return True
 
 
 def _merge_by_priority(

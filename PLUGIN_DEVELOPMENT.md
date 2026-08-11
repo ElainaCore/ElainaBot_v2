@@ -99,7 +99,8 @@ from core.plugin.decorators import handler, on_load, on_unload, interceptor
 ```python
 @handler(pattern, *, name='', desc='', priority=0, owner_only=False,
          group_only=False, direct_only=False, channel_only=False,
-         event_types=None, cooldown=0, ignore_at_check=False, block=False)
+         event_types=None, cooldown=0, ignore_at_check=False, block=False,
+         fallback=False)
 ```
 
 | 参数 | 类型 | 默认 | 说明 |
@@ -116,6 +117,7 @@ from core.plugin.decorators import handler, on_load, on_unload, interceptor
 | `cooldown` | `int` | `0` | 冷却时间 (秒, 0 = 无冷却) |
 | `ignore_at_check` | `bool` | `False` | 全量模式: 不需@机器人也触发 |
 | `block` | `bool` | `False` | 命中后是否拦截后续处理器 (见 3.1.1) |
+| `fallback` | `bool \| Callable[[Event], bool]` | `False` | 为真时仅在普通处理器完成原文和斜杠兼容匹配后仍未命中时参与；函数形式可按事件和动态配置决定阶段 |
 
 **事件类型常量** (`event_types` 可选值):
 
@@ -145,7 +147,16 @@ async def admin(event, match):
 @handler(r'^签到$', name='签到', ignore_at_check=True)  # 无需@即可触发
 async def check_in(event, match):
     await event.reply("✅ 签到成功!")
+
+
+@handler(r'(?s)^(.+)$', name='自然对话', priority=-50, fallback=True)
+async def chat(event, match):
+    await event.reply(await ask_model(match.group(1)))
 ```
+
+`fallback=True` 适用于 AI 对话等兜底处理器。框架会先让普通处理器依次匹配原文和加/去 `/` 后的兼容文本；两轮均未命中时，兜底处理器才使用原始消息匹配。不要仅用低 `priority` 模拟兜底，否则宽泛正则仍可能抢先命中带 `/` 的指令。
+
+需要运行时开关时，可传入接收 `Event` 的判断函数，例如 `fallback=lambda event: load_config()['fallback_only']`。配置变化会在下一条消息生效，不需要重载插件。
 
 #### 3.1.1 `block` 放行 / 拦截
 

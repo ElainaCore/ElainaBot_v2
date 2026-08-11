@@ -58,13 +58,14 @@ def _make_manager(handlers):
 async def _dispatch_and_collect(pm, content='test'):
     sender = MockMessageSender(APPID)
     event = EventFactory.group_at_message(content, appid=APPID)
-    await pm.dispatch(event, sender)
+    handled = await pm.dispatch(event, sender)
     # 等待 fire-and-forget 的 handler 链执行完毕
     for _ in range(50):
         await asyncio.sleep(0.01)
         pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
         if not pending:
             break
+    return handled
 
 
 @pytest.mark.integration
@@ -85,3 +86,70 @@ async def test_block_true_intercepts_subsequent_plugins():
     pm = _make_manager(_build_two_handlers(sink, block_first=True))
     await _dispatch_and_collect(pm)
     assert sink == ['first']
+
+
+def _build_fallback_handlers(sink, fallback=True):
+    _pending_handlers.clear()
+
+    @handler(r'^ping$', name='Ping')
+    async def _ping(event, match):
+        sink.append(('command', match.group(0), event.content))
+
+    @handler(r'^/ai$', name='AI Help', block=True)
+    async def _ai_help(event, match):
+        sink.append(('ai_help', match.group(0), event.content))
+
+    @handler(r'(?s)^(.+)$', name='AI Chat', priority=-50, fallback=fallback)
+    async def _ai_chat(event, match):
+        sink.append(('fallback', match.group(0), event.content))
+
+    collected = list(_pending_handlers)
+    _pending_handlers.clear()
+    return collected
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('content', 'expected'),
+    [
+        ('ping', [('command', 'ping', 'ping')]),
+        ('/ping', [('command', 'ping', '/ping')]),
+        ('/ai', [('ai_help', '/ai', '/ai')]),
+        ('你好', [('fallback', '你好', '你好')]),
+        ('/不存在', [('fallback', '/不存在', '/不存在')]),
+    ],
+)
+async def test_fallback_dispatch(content, expected):
+    sink: list[tuple[str, str, str]] = []
+    pm = _make_manager(_build_fallback_handlers(sink))
+
+    handled = await _dispatch_and_collect(pm, content)
+
+    assert handled is True
+    assert sink == expected
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_dynamic_fallback_setting_takes_effect_without_rebuilding_index():
+    sink: list[tuple[str, str, str]] = []
+    settings = {'fallback_only': False}
+    pm = _make_manager(_build_fallback_handlers(
+        sink, lambda _event: settings['fallback_only'],
+    ))
+
+    await _dispatch_and_collect(pm, 'ping')
+    assert sink == [
+        ('command', 'ping', 'ping'),
+        ('fallback', 'ping', 'ping'),
+    ]
+
+    sink.clear()
+    settings['fallback_only'] = True
+    await _dispatch_and_collect(pm, 'ping')
+    assert sink == [('command', 'ping', 'ping')]
+
+    sink.clear()
+    await _dispatch_and_collect(pm, 'hello')
+    assert sink == [('fallback', 'hello', 'hello')]

@@ -24,8 +24,9 @@ def handler(
     cooldown=0,
     ignore_at_check=False,
     block=False,
+    fallback=False,
 ):
-    """注册消息处理器 (block=True 命中即拦截后续插件, 默认 False 放行)"""
+    """注册消息处理器。fallback 可为 bool 或接收 Event 的动态判断函数。"""
 
     def decorator(func):
         _pending_handlers.append(
@@ -45,6 +46,7 @@ def handler(
                 'cooldown': cooldown,
                 'ignore_at_check': ignore_at_check,
                 'block': block,
+                'fallback': fallback,
             }
         )
         return func
