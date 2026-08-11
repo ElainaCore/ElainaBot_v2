@@ -37,30 +37,26 @@ class AsyncHttpClient:
         *,
         base_url='',
         timeout=30.0,
-        max_connections=200,
-        max_keepalive=100,
-        keepalive_expiry=20.0,
-        pool_timeout=10.0,
         follow_redirects=True,
     ):
         self._is_httpx = HAS_HTTPX
         if self._is_httpx:
             self._client = httpx.AsyncClient(
                 base_url=base_url or '',
-                timeout=httpx.Timeout(timeout, connect=10.0, pool=pool_timeout),
+                timeout=httpx.Timeout(timeout, connect=10.0),
                 follow_redirects=follow_redirects,
                 limits=httpx.Limits(
-                    max_connections=max_connections,
-                    max_keepalive_connections=max_keepalive,
-                    keepalive_expiry=keepalive_expiry,
+                    max_connections=None,
+                    max_keepalive_connections=100,
+                    keepalive_expiry=20.0,
                 ),
             )
         else:
             _timeout = aiohttp.ClientTimeout(total=timeout, connect=10.0)
             _conn = aiohttp.TCPConnector(
-                limit=max_connections,
-                limit_per_host=max_keepalive,
-                keepalive_timeout=int(keepalive_expiry),
+                limit=0,
+                limit_per_host=0,
+                keepalive_timeout=20,
                 enable_cleanup_closed=True,
             )
             self._client = aiohttp.ClientSession(base_url=base_url or None, timeout=_timeout, connector=_conn)

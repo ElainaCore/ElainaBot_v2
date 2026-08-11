@@ -12,14 +12,6 @@ server:
 
 # 注: message/identity/welcome/maintenance/blacklist 已移至 bot.yaml (每个机器人可独立配置)
 
-# QQ API 网络连接池 (每个机器人独立, 修改后需重启生效)
-network:
-  timeout: 30                                # 请求总超时 (秒)
-  max_connections: 200                       # 连接池最大连接数
-  max_keepalive: 100                         # 最大保活连接数
-  pool_timeout: 10                           # 连接池耗尽时等待空闲连接的超时 (秒)
-  # max_concurrency: 200                     # 单个机器人同时在途请求上限, 超出排队; 不配置时跟随 max_connections (0=不限制)
-
 # Web 面板
 web:
   access_token: "admin"                         # URL 参数验证令牌

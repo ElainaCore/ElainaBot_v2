@@ -9,12 +9,12 @@ import secrets
 import time
 from urllib.parse import quote
 
-import aiohttp
 import yaml
 from aiohttp import web
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from core.base.config import cfg
+from core.network.access import DEFAULT_API_VERSION, TokenManager
 from web.response import error, ok
 from web.tools._bot.api import get_bot_api
 
@@ -291,20 +291,15 @@ def _decrypt_bind_secret(encrypted_b64: str, key_b64: str) -> str:
 async def _fetch_bot_profile(appid: str, secret: str) -> dict:
     """用绑定到的凭据请求 /users/@me, 提取机器人昵称和 QQ 号"""
     profile = {'name': '', 'robot_qq': ''}
-    timeout = aiohttp.ClientTimeout(total=10)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.post(
-            'https://bots.qq.com/app/getAppAccessToken',
-            json={'appId': appid, 'clientSecret': secret},
-        ) as r:
-            token = (await r.json(content_type=None)).get('access_token', '')
-        if not token:
-            return profile
-        async with session.get(
-            'https://api.sgroup.qq.com/users/@me',
-            headers={'Authorization': f'QQBot {token}'},
-        ) as r:
-            data = await r.json(content_type=None)
+    manager = TokenManager(appid, secret)
+    try:
+        await manager.ensure_token()
+        response = await (await manager.get_client()).get(
+            '/users/@me', headers={'Authorization': manager.authorization}
+        )
+        data = response.json() if response.status_code == 200 else {}
+    finally:
+        await manager.close()
     if not isinstance(data, dict):
         return profile
     profile['name'] = str(data.get('username', '') or '')
@@ -347,6 +342,7 @@ def _apply_bound_bot(appid: str, secret: str, robot_qq: str = '') -> bool:
                 'enabled': True,
                 'appid': appid,
                 'secret': secret,
+                'api_version': DEFAULT_API_VERSION,
                 'robot_qq': robot_qq,
                 'owner_ids': [],
                 'websocket': {'enabled': True},

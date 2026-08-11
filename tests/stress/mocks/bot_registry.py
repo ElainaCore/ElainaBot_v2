@@ -14,18 +14,19 @@ from tests.stress.mocks.message_sender import MockMessageSender
 @dataclass
 class MockBot:
     """Light-weight BotInstance stand-in for stress testing."""
+
     appid: str
-    name: str = ""
-    secret: str = "test_secret"
+    name: str = ''
+    secret: str = 'test_secret'
     owner_ids: list = field(default_factory=list)
-    robot_qq: str = ""
+    robot_qq: str = ''
 
     def __post_init__(self):
         self.sender = None
         self.log_service = None
         self.token_manager = None
-        self.bot_id = ""
-        self.avatar_url = ""
+        self.bot_id = ''
+        self.avatar_url = ''
 
 
 class MockBotRegistry:
@@ -42,11 +43,11 @@ class MockBotRegistry:
         self._appids = []
 
         for i in range(bot_count):
-            appid = f"102000{str(i + 1).zfill(3)}"
+            appid = f'102000{str(i + 1).zfill(3)}'
             self._add_bot(appid)
 
     def _add_bot(self, appid):
-        bot = MockBot(appid=appid, name=f"Bot_{appid}", robot_qq=appid)
+        bot = MockBot(appid=appid, name=f'Bot_{appid}', robot_qq=appid)
         bot.sender = self._sender_cls(appid, self._config)
         bot.log_service = MockLogService(appid, self._config)
         bot.sender.bind_instance(log_service=bot.log_service, bot_name=bot.name, bot_qq=bot.robot_qq)
@@ -79,7 +80,7 @@ class MockBotRegistry:
 
     def stats(self):
         return {
-            "bot_count": len(self._bots),
-            "senders": {aid: bot.sender.stats() for aid, bot in self._bots.items()},
-            "logs": {aid: bot.log_service.stats() for aid, bot in self._bots.items()},
+            'bot_count': len(self._bots),
+            'senders': {aid: bot.sender.stats() for aid, bot in self._bots.items()},
+            'logs': {aid: bot.log_service.stats() for aid, bot in self._bots.items()},
         }

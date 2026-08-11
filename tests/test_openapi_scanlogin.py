@@ -93,10 +93,10 @@ class TestParsePtuicb:
 
 class TestParsePtloginVersions:
     def test_current_xlogin_versions(self):
-        html = '''
+        html = """
             ptui_version:encodeURIComponent("26030415")
             var frags = "https://qq-web.cdn-go.cn/monorepo/b515fdc3".split('/');
-        '''
+        """
         assert parse_ptlogin_versions(html) == ('26030415', 'b515fdc3')
 
     def test_missing_versions_use_known_compatible_defaults(self):
@@ -139,43 +139,57 @@ class TestExtractLoginCreds:
 
 class TestParseLoginDevelopers:
     def test_current_grouped_response(self):
-        out = parse_login_developers({
-            'res': {'ret': 0},
-            'developers': [{
-                'type_id': 3,
-                'items': [{
-                    'id': 'developer-1',
-                    'status': 1,
-                    'name': '主体一',
-                    'reg_mail': 'developer@example.com',
-                    'type': 4,
-                }],
-            }],
-        })
-        assert out == [{
-            'id': 'developer-1',
-            'name': '主体一',
-            'email': 'developer@example.com',
-            'subject_type': 4,
-            'status': 1,
-            'verified': True,
-        }]
+        out = parse_login_developers(
+            {
+                'res': {'ret': 0},
+                'developers': [
+                    {
+                        'type_id': 3,
+                        'items': [
+                            {
+                                'id': 'developer-1',
+                                'status': 1,
+                                'name': '主体一',
+                                'reg_mail': 'developer@example.com',
+                                'type': 4,
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
+        assert out == [
+            {
+                'id': 'developer-1',
+                'name': '主体一',
+                'email': 'developer@example.com',
+                'subject_type': 4,
+                'status': 1,
+                'verified': True,
+            }
+        ]
 
     def test_legacy_response(self):
-        out = parse_login_developers({
-            'data': {
-                'developer_infos': [{
-                    'id': 'developer-2',
-                    'subject_name': '主体二',
-                    'subject_email': 'legacy@example.com',
-                    'subject_type': 1,
-                }],
-                'unverified_developer_infos': [{
-                    'developer_id': 'developer-3',
-                    'subject_name': '主体三',
-                }],
-            },
-        })
+        out = parse_login_developers(
+            {
+                'data': {
+                    'developer_infos': [
+                        {
+                            'id': 'developer-2',
+                            'subject_name': '主体二',
+                            'subject_email': 'legacy@example.com',
+                            'subject_type': 1,
+                        }
+                    ],
+                    'unverified_developer_infos': [
+                        {
+                            'developer_id': 'developer-3',
+                            'subject_name': '主体三',
+                        }
+                    ],
+                },
+            }
+        )
         assert [item['id'] for item in out] == ['developer-2', 'developer-3']
         assert [item['verified'] for item in out] == [True, False]
 
@@ -293,10 +307,7 @@ class TestQQScanLogin:
         async def check():
             session = FakeSession(["ptuiCB('66','0','','0','二维码未失效', '')"])
             scan = QQScanLogin()
-            scan.callback = (
-                'https://q.qq.com/qqbot/openclaw/entity-picker.html'
-                '?session_id=session-1&_wv=16777218'
-            )
+            scan.callback = 'https://q.qq.com/qqbot/openclaw/entity-picker.html?session_id=session-1&_wv=16777218'
             scan.ptqrtoken = 123
             scan.login_sig = 'login-sig'
             scan._client = lambda: FakeClientContext(session)
@@ -316,18 +327,22 @@ class TestQQScanLogin:
 
     def test_finish_notifies_confirming_before_reading_subjects(self):
         async def check():
-            session = FakeSession([
-                {'retcode': 0, 'msg': 'success'},
-                {
-                    'retcode': 0,
-                    'data': {
-                        'developer_infos': [{
-                            'id': 'developer-1',
-                            'subject_name': '主体一',
-                        }],
+            session = FakeSession(
+                [
+                    {'retcode': 0, 'msg': 'success'},
+                    {
+                        'retcode': 0,
+                        'data': {
+                            'developer_infos': [
+                                {
+                                    'id': 'developer-1',
+                                    'subject_name': '主体一',
+                                }
+                            ],
+                        },
                     },
-                },
-            ])
+                ]
+            )
             scan = QQScanLogin(auto_select=False)
             scan.session_id = 'session-1'
             scan._jar_cookies = lambda: {'skey': '@abc-123*'}
@@ -356,10 +371,12 @@ class TestQQScanLogin:
 
     def test_finish_propagates_subject_list_error(self):
         async def check():
-            session = FakeSession([
-                {'retcode': 0, 'msg': 'success'},
-                {'retcode': 1001, 'msg': '参数错误，登录鉴权参数异常'},
-            ])
+            session = FakeSession(
+                [
+                    {'retcode': 0, 'msg': 'success'},
+                    {'retcode': 1001, 'msg': '参数错误，登录鉴权参数异常'},
+                ]
+            )
             scan = QQScanLogin(auto_select=False)
             scan.session_id = 'session-1'
             scan._jar_cookies = lambda: {'skey': '@abc-123*'}
@@ -401,18 +418,20 @@ class TestQQScanLogin:
 
     def test_complete_login_sets_selected_subject_cookie_before_redirect(self):
         async def check():
-            session = FakeSession([
-                {'retcode': 0, 'msg': 'success'},
-                {
-                    'retcode': 0,
-                    'data': {
-                        'code': 0,
-                        'redirect': 'https://q.qq.com/bopen/callback?code=login-code',
-                        'developer_id': 'developer-1',
+            session = FakeSession(
+                [
+                    {'retcode': 0, 'msg': 'success'},
+                    {
+                        'retcode': 0,
+                        'data': {
+                            'code': 0,
+                            'redirect': 'https://q.qq.com/bopen/callback?code=login-code',
+                            'developer_id': 'developer-1',
+                        },
                     },
-                },
-                b'',
-            ])
+                    b'',
+                ]
+            )
             scan = QQScanLogin(auto_select=False)
             scan.session_id = 'session-1'
             scan.jar = aiohttp.CookieJar(unsafe=True, quote_cookie=False)
@@ -432,15 +451,17 @@ class TestQQScanLogin:
 
 class TestV2ProxyCredentials:
     def test_cookie_contains_all_ticket_variants(self):
-        cookie = _v2_cookie({
-            'uin': '2218872014',
-            'developer_id_lite': 'developer-1',
-            'b_token': 'BT',
-            'qticket_lite': 'QL',
-            'qticket': 'QT',
-            'skey': '@abc-123*',
-            'p_skey': 'P_SK',
-        })
+        cookie = _v2_cookie(
+            {
+                'uin': '2218872014',
+                'developer_id_lite': 'developer-1',
+                'b_token': 'BT',
+                'qticket_lite': 'QL',
+                'qticket': 'QT',
+                'skey': '@abc-123*',
+                'p_skey': 'P_SK',
+            }
+        )
         assert 'quin=2218872014' in cookie
         assert 'quid=developer-1' in cookie
         assert 'b-token=BT' in cookie
@@ -450,13 +471,15 @@ class TestV2ProxyCredentials:
         assert 'p_skey=P_SK' in cookie
 
     def test_ready_requires_current_dashboard_credentials(self):
-        assert _v2_ready({
-            'b_token': 'BT',
-            'qticket_lite': 'QL',
-            'developer_id_lite': 'developer-1',
-            'uin': '2218872014',
-            'skey': '@abc-123*',
-        })
+        assert _v2_ready(
+            {
+                'b_token': 'BT',
+                'qticket_lite': 'QL',
+                'developer_id_lite': 'developer-1',
+                'uin': '2218872014',
+                'skey': '@abc-123*',
+            }
+        )
         assert not _v2_ready({'b_token': 'BT', 'uin': '2218872014'})
 
     def test_current_developer_endpoint_is_allowed(self):

@@ -19,6 +19,7 @@
 - [8. Web 面板扩展](#8-web-面板扩展)
 - [9. 配置项与全量环境](#9-配置项与全量环境)
 - [10. 调试与最佳实践](#10-调试与最佳实践)
+- [11. 模块接入索引](#11-模块接入索引)
 
 ---
 
@@ -622,7 +623,98 @@ member = await event.sender.get_group_member(group_id, user_id)
 # 查询机器人自身在某群的成员信息 (返回 dict 或 None)
 bot_member = await event.sender.get_bot_member(group_id)
 is_admin = bot_member and bot_member.get('member_role') in ('admin', 'owner')
+
+# 群资料、入群申请和禁言管理，完整用法见下一节
+group_info = await event.sender.get_group_info(group_id)
+join_requests = await event.sender.get_group_join_requests(group_id)
+mute_setting = await event.sender.get_group_restrict_chat_setting(group_id)
+
+# 读取 data.db 中该群的完整记录，不调用平台接口
+group = await event.get_group_record(group_id)
 ```
+
+#### 群管理接口
+
+| 方法 | 用途 | 限制 | 返回值 |
+| --- | --- | --- | --- |
+| `get_group_record(group_id)` | 从数据库读取完整群记录 | 无接口请求 | 字典或 `None` |
+| `get_group_info(group_id)` | 获取并保存群名称、人数 | 30 QPM | 数据或 `None` |
+| `get_group_bot_state(group_id)` | 获取并保存机器人身份、消息权限 | 30 QPM | 数据或 `None` |
+| `refresh_group_info(group_id)` | 同时调用上面两个接口 | 每个接口 30 QPM | 汇总字典 |
+| `get_group_join_requests(group_id, cursor='', limit=20)` | 分页查询入群申请 | 30 QPM | 分页数据或 `None` |
+| `review_group_join_request(...)` | 通过或拒绝入群申请 | 60 QPM | `(ok, response)` |
+| `get_group_restrict_chat_setting(group_id)` | 查询全员与成员禁言 | 30 QPM | 数据或 `None` |
+| `set_group_member_mute(group_id, members)` | 设置或解除成员禁言 | 60 QPM | `(ok, response)` |
+
+机器人需为群主或管理员才能调用申请审批和禁言接口。查询接口不要放在消息处理器中循环调用；批量刷新每次最多处理 25 个群，并逐群间隔调用。
+
+`get_group_record()` 读取当前机器人 `data.db` 中该群的完整记录，不会调用 QQ 接口，因此没有 QPM 限制。既可以通过 `event` 调用，也可以直接通过 `event.sender` 调用：
+
+```python
+group = await event.get_group_record(event.group_id)
+if group:
+    print(group['group_name'], group['group_member_num'])
+    print(group['is_admin'], group['is_full_access'])
+    print(group['allow_proactive_msg'], group['in_group'])
+    print(group['users'])
+
+# 等价写法
+group = await event.sender.get_group_record(group_id)
+```
+
+返回字典包含 `group_id`、`group_name`、`users`、`group_member_num`、`is_admin`、`is_full_access`、`allow_proactive_msg`、`in_group`。其中 `users` 已从数据库 JSON 转为列表，四个状态字段已转为布尔值；数据库没有该群记录时返回 `None`。该方法只读取本地已有数据，不会自动刷新数据。
+
+```python
+# 更新群资料与机器人状态
+result = await event.sender.refresh_group_info(group_id)
+print(result['group_info'], result['bot_state'], result['errors'])
+
+# 查询申请；next_cursor 为空表示已到最后一页
+page = await event.sender.get_group_join_requests(group_id, cursor='', limit=20)
+for item in page['list']:
+    print(item['username'], item['member_openid'], item['join_request_id'])
+cursor = page['next_cursor']
+
+# 通过申请；op 改为 decline 即为拒绝
+ok, response = await event.sender.review_group_join_request(
+    group_id, member_openid, 'approve', join_request_id=join_request_id)
+
+# 拒绝时可填写理由并加入群黑名单
+ok, response = await event.sender.review_group_join_request(
+    group_id, member_openid, 'decline',
+    join_request_id=join_request_id,
+    reject_reason='不符合入群要求',
+    add_to_member_blacklist=True,
+)
+
+# 查询禁言状态
+setting = await event.sender.get_group_restrict_chat_setting(group_id)
+print(setting['global_rule'], setting['members'])
+
+# add=增加、update=更新、del=解除；单次最多 10 人
+ok, response = await event.sender.set_group_member_mute(group_id, [{
+    'op': 'add',
+    'member_openid': member_openid,
+    'mute_expire_at': '2026-08-10T18:00:00+08:00',
+}])
+```
+
+入群申请包含申请 ID、成员 OpenID、昵称、来源、时间、安全提示及 `verify_info`；禁言状态包含 `global_rule` 和当前被禁言的 `members`。查询方法传入 `return_error=True` 时返回 `(数据, 原始错误 JSON)`。
+
+`refresh_group_info()` 返回 `removed`、`left_group` 和双接口 `errors`。当 `code` 或 `err_code` 为 `11255` 时删除无效群记录；当 `err_code=40011026` 时标记退群并清空权限。
+
+群数据统一存放在 `data.db` 的 `groups_users` 表，数据库版本为 `2.0.1`（`PRAGMA user_version=20001`）。旧的 `group_bot_admin`、`full_access_groups` 会自动迁移后删除。
+
+| 列 | 含义 |
+| --- | --- |
+| `group_id` / `group_name` | 群 OpenID / 群名称 |
+| `users` / `group_member_num` | 成员记录 / 群人数 |
+| `is_admin` | 机器人是否为群主或管理员 |
+| `is_full_access` | 是否接收全量消息 |
+| `allow_proactive_msg` | 是否允许主动推送 |
+| `in_group` | 机器人是否仍在群内 |
+
+示例插件提供：`本地群信息`、`刷新群信息`、`入群申请 [游标]`、`通过入群 <成员ID> <申请ID>`、`拒绝并拉黑 <成员ID> <申请ID>`、`群禁言状态`、`禁言成员 <成员ID> <分钟>`、`解除禁言 <成员ID>`。
 
 ---
 
@@ -863,6 +955,32 @@ def test_sync(event, match):
 - **延迟导入**: 体积大的依赖在 handler 内 `import`, 加快插件加载
 - **冷却限流**: 高频指令加 `cooldown=N`
 - **大型插件**: 子模块放 `app/` / `mod/` 目录, 按需 import
+
+---
+
+## 11. 模块接入索引
+
+框架模块由 `ModuleManager` 统一管理。插件通过 `core.application.get_app()` 获取当前应用，再从 `app.module_manager` 读取已启用模块：
+
+```python
+from core.application import get_app
+
+app = get_app()
+renderer = app.module_manager.get("renderer") if app else None
+if renderer and renderer.playwright_available():
+    image_bytes = await renderer.playwright.screenshot_html("<h1>报告</h1>")
+```
+
+模块未启用或初始化失败时，`get()` 返回 `None`；插件应检查模块和子引擎的可用状态。模块实例由框架负责生命周期管理，插件不要主动调用模块的 `close()` / `teardown()`。
+
+| 模块 | 用途 | 接入文档 |
+| --- | --- | --- |
+| `datastore` | 异步 MySQL、Redis 连接池和 CRUD/缓存操作 | [Datastore 模块文档](modules/datastore/README.md) |
+| `renderer` | PIL 子进程渲染、Playwright 截图和 PDF | [Renderer 模块文档](modules/renderer/README.md) |
+| `image_hosting` | 多图床统一上传、状态查询和动态分发 | [Image Hosting 模块文档](modules/image_hosting/README.md) |
+| `onebot_adapter` | OneBot 11 网络连接、事件推送和标准 action | [OneBot Adapter 模块文档](modules/onebot_adapter/README.md) |
+
+各文档均包含配置文件位置、完整公开方法、返回值、依赖要求和插件示例。模块 API 以对应模块文档和源码中的公开方法为准，以下划线开头的成员属于内部实现，不保证兼容。
 
 ---
 

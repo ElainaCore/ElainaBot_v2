@@ -10,7 +10,6 @@ from core.base.config import cfg
 from core.base.logger import FRAMEWORK, report_error_raw
 from core.message import bot_openid
 from core.message._http import (
-    _API_BASE,
     MSG_TYPE_ARK,
     MSG_TYPE_CARD,
     MSG_TYPE_MARKDOWN,
@@ -46,6 +45,16 @@ def _unescape(text):
         text)
 
 
+def _group_error_state(error):
+    if not isinstance(error, dict):
+        return ''
+    if any(str(error.get(key, '')) == '11255' for key in ('code', 'err_code')):
+        return 'removed'
+    if str(error.get('err_code', '')) == '40011026':
+        return 'left_group'
+    return ''
+
+
 class MessageSender(_HttpMixin, _MediaSendMixin, _SenderLogMixin):
     """消息发送器 (每个机器人实例一个)"""
 
@@ -53,8 +62,6 @@ class MessageSender(_HttpMixin, _MediaSendMixin, _SenderLogMixin):
         '_token_mgr',
         '_appid',
         '_client',
-        '_base_url',
-        '_custom_api_base',
         '_web_log_cb',
         '_bot_name',
         '_bot_qq',
@@ -62,14 +69,11 @@ class MessageSender(_HttpMixin, _MediaSendMixin, _SenderLogMixin):
         '_log_service',
         '_reply_log_cb',
         '_reply_plugin_name',
-        '_send_sem',
     )
 
-    def __init__(self, token_manager, custom_api_base=''):
+    def __init__(self, token_manager):
         self._token_mgr = token_manager
         self._appid = token_manager.appid
-        self._custom_api_base = custom_api_base.rstrip('/') if custom_api_base else ''
-        self._base_url = self._custom_api_base or _API_BASE
         self._client = None
         self._web_log_cb = None
         self._bot_name = ''
@@ -78,7 +82,6 @@ class MessageSender(_HttpMixin, _MediaSendMixin, _SenderLogMixin):
         self._reply_log_cb = None
         self._reply_plugin_name = ''
         self._media_dir = ''
-        self._send_sem = None
 
     def bind_instance(self, *, log_service=None, bot_name='', bot_qq='', media_dir=''):
         """由 BotInstance 调用, 注入运行时依赖"""
@@ -397,6 +400,228 @@ class MessageSender(_HttpMixin, _MediaSendMixin, _SenderLogMixin):
             return data
         return None
 
+    async def get_group_record(self, group_id):
+        """从 data.db 读取完整群记录，不调用平台接口。"""
+        if not group_id or self._log_service is None:
+            return None
+        row = await self._log_service.db_fetch_one(
+            'SELECT group_id, group_name, users, group_member_num, is_admin, '
+            'is_full_access, allow_proactive_msg, in_group '
+            'FROM groups_users WHERE group_id=?',
+            (str(group_id),),
+        )
+        if not row:
+            return None
+        try:
+            users = json.loads(row.get('users') or '[]')
+        except (json.JSONDecodeError, TypeError):
+            users = []
+        return {
+            'group_id': str(row.get('group_id') or ''),
+            'group_name': str(row.get('group_name') or ''),
+            'users': users if isinstance(users, list) else [],
+            'group_member_num': int(row.get('group_member_num') or 0),
+            'is_admin': bool(row.get('is_admin')),
+            'is_full_access': bool(row.get('is_full_access')),
+            'allow_proactive_msg': bool(row.get('allow_proactive_msg')),
+            'in_group': bool(row.get('in_group')),
+        }
+
+    async def _handle_group_error(self, group_id, error):
+        state = _group_error_state(error)
+        if not state or self._log_service is None:
+            return
+        group_id = str(group_id)
+        if state == 'removed':
+            await self._log_service.db_execute('DELETE FROM groups_users WHERE group_id=?', (group_id,))
+        else:
+            await self._log_service.db_execute(
+                'INSERT INTO groups_users '
+                '(group_id, is_admin, is_full_access, allow_proactive_msg, in_group) '
+                'VALUES (?, 0, 0, 0, 0) ON CONFLICT(group_id) DO UPDATE SET '
+                'is_admin=0, is_full_access=0, allow_proactive_msg=0, in_group=0',
+                (group_id,),
+            )
+        action = '已清理群成员和全量群记录' if state == 'removed' else '已标记退群并移出全量群'
+        log.info(f'[{self._appid}] 群 {group_id} {action}')
+
+    async def _request_group(
+        self, group_id, endpoint, *, payload=None, params=None, handle_error=True,
+    ):
+        """请求群接口并统一处理错误，返回 (是否成功, 响应 JSON)。"""
+        if not group_id:
+            return False, {'message': '缺少 group_id', 'code': -1}
+        try:
+            url = f'/v2/groups/{group_id}/{endpoint}'
+            if payload is None:
+                success, data = await self.get_json(url, **({'params': params} if params else {}))
+            else:
+                success, data = await self.post_json(url, payload)
+        except Exception as e:
+            success, data = False, {'message': str(e), 'code': -1}
+        data = data if isinstance(data, dict) else {'message': str(data), 'code': -1}
+        if not success and handle_error:
+            await self._handle_group_error(group_id, data)
+        return success, data
+
+    async def get_group_info(self, group_id, *, return_error=False):
+        """获取群资料，写入 data.db，成功时返回接口数据。"""
+        success, data = await self._request_group(
+            group_id, 'info', handle_error=not return_error)
+        if not success:
+            return (None, data) if return_error else None
+        group_name = str(data.get('group_name') or '')
+        try:
+            member_num = max(0, int(data.get('group_member_num') or 0))
+        except (TypeError, ValueError):
+            member_num = 0
+        if self._log_service is not None:
+            await self._log_service.db_execute(
+                """
+                INSERT INTO groups_users (group_name, group_id, users, group_member_num, in_group)
+                VALUES (?, ?, '[]', ?, 1)
+                ON CONFLICT(group_id) DO UPDATE SET
+                    group_name=excluded.group_name,
+                    group_member_num=excluded.group_member_num,
+                    in_group=1
+                """,
+                (group_name, str(group_id), member_num),
+            )
+        return (data, None) if return_error else data
+
+    async def get_group_bot_state(self, group_id, *, return_error=False):
+        """获取机器人群状态，并同步 data.db 中的群权限字段。"""
+        success, data = await self._request_group(
+            group_id, 'bot_state', handle_error=not return_error)
+        if not success:
+            return (None, data) if return_error else None
+        if self._log_service is not None:
+            group_id = str(group_id)
+            role = str(data.get('member_role') or '')
+            is_full_access = data.get('recv_msg_setting') == 'all'
+            await self._log_service.db_execute(
+                """
+                INSERT INTO groups_users (
+                    group_id, is_admin, is_full_access, allow_proactive_msg, in_group
+                ) VALUES (?, ?, ?, ?, 1)
+                ON CONFLICT(group_id) DO UPDATE SET
+                    is_admin=excluded.is_admin,
+                    is_full_access=excluded.is_full_access,
+                    allow_proactive_msg=excluded.allow_proactive_msg,
+                    in_group=1
+                """,
+                (
+                    group_id,
+                    1 if role in ('admin', 'owner') else 0,
+                    1 if is_full_access else 0,
+                    1 if data.get('allow_proactive_msg') else 0,
+                ),
+            )
+        return (data, None) if return_error else data
+
+    async def refresh_group_info(self, group_id):
+        """同时刷新群资料和机器人群状态，并返回两个接口的结果。"""
+        (group_info, group_error), (bot_state, bot_state_error) = await asyncio.gather(
+            self.get_group_info(group_id, return_error=True),
+            self.get_group_bot_state(group_id, return_error=True),
+        )
+        states = {_group_error_state(error) for error in (group_error, bot_state_error)}
+        state = 'removed' if 'removed' in states else 'left_group' if 'left_group' in states else ''
+        if state:
+            source_error = group_error if _group_error_state(group_error) == state else bot_state_error
+            await self._handle_group_error(group_id, source_error)
+        return {
+            'group_info': group_info,
+            'bot_state': bot_state,
+            'removed': state == 'removed',
+            'left_group': state == 'left_group',
+            'errors': {
+                'group_info': {
+                    'endpoint': f'/v2/groups/{group_id}/info',
+                    'response': group_error,
+                }
+                if group_error
+                else None,
+                'bot_state': {
+                    'endpoint': f'/v2/groups/{group_id}/bot_state',
+                    'response': bot_state_error,
+                }
+                if bot_state_error
+                else None,
+            },
+        }
+
+    async def get_group_join_requests(self, group_id, *, cursor='', limit=20, return_error=False):
+        """分页获取入群申请；成功返回接口数据，失败返回 None。"""
+        try:
+            limit = max(1, min(int(limit), 100))
+        except (TypeError, ValueError):
+            limit = 20
+        params = {'limit': limit}
+        if cursor:
+            params['cursor'] = str(cursor)
+        success, data = await self._request_group(
+            group_id,
+            'join_request_list',
+            params=params,
+        )
+        if not success:
+            return (None, data) if return_error else None
+        data.setdefault('list', [])
+        data.setdefault('next_cursor', '')
+        return (data, None) if return_error else data
+
+    async def review_group_join_request(
+        self,
+        group_id,
+        member_openid,
+        op,
+        *,
+        join_request_id='',
+        reject_reason='',
+        add_to_member_blacklist=False,
+    ):
+        """审批入群申请；op 为 approve 或 decline，返回 (是否成功, 响应 JSON)。"""
+        op = str(op or '').strip().lower()
+        if op not in ('approve', 'decline'):
+            return False, {'message': 'op 只能为 approve 或 decline', 'code': -1}
+        if not member_openid:
+            return False, {'message': '缺少 member_openid', 'code': -1}
+        payload = {'op': op}
+        if join_request_id:
+            payload['join_request_id'] = str(join_request_id)
+        if op == 'decline':
+            if reject_reason:
+                payload['reject_reason'] = str(reject_reason)
+            if add_to_member_blacklist:
+                payload['add_to_member_blacklist'] = True
+        return await self._request_group(
+            group_id,
+            f'approval_join_request/{member_openid}',
+            payload=payload,
+        )
+
+    async def get_group_restrict_chat_setting(self, group_id, *, return_error=False):
+        """查询全员禁言规则与当前成员禁言列表。"""
+        success, data = await self._request_group(group_id, 'restrict_chat_setting')
+        if not success:
+            return (None, data) if return_error else None
+        return (data, None) if return_error else data
+
+    async def set_group_member_mute(self, group_id, members):
+        """批量增加、更新或解除成员禁言，单次最多处理 10 人。"""
+        if not isinstance(members, (list, tuple)):
+            return False, {'message': 'members 必须为列表', 'code': -1}
+        if len(members) > 10:
+            return False, {'message': '单次最多设置 10 个成员', 'code': -1}
+        if any(not isinstance(item, dict) for item in members):
+            return False, {'message': 'members 中的每一项都必须为字典', 'code': -1}
+        return await self._request_group(
+            group_id,
+            'restrict_chat_setting',
+            payload={'members': [dict(item) for item in members]},
+        )
+
     async def get_bot_member(self, group_id):
         """查询机器人自身在该群的成员信息, 返回 dict, 失败返回 None"""
         if not group_id:
@@ -469,4 +694,3 @@ class MessageSender(_HttpMixin, _MediaSendMixin, _SenderLogMixin):
             }
         payload.update(kwargs)
         return payload
-

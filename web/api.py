@@ -51,6 +51,7 @@ def get_routes() -> list:
     return [
         # ── 鉴权 ──
         web.post('/api/auth/login', handle_login),
+        web.post('/api/auth/logout', _(handle_auth_logout)),
         web.get('/api/auth/check', _(handle_auth_check)),
         web.get('/api/auth/password-status', _(handle_password_status)),
         # ── 机器人 ──
@@ -106,6 +107,7 @@ def get_routes() -> list:
         web.get('/api/message/remarks', _(message_handler.handle_get_remarks)),
         web.post('/api/message/remarks', _(message_handler.handle_set_remark)),
         web.post('/api/message/remarks/delete', _(message_handler.handle_delete_remark)),
+        web.post('/api/message/group-info/refresh', _(message_handler.handle_refresh_group_info)),
         web.post('/api/message/group-roles', _(message_handler.handle_get_group_roles)),
         # ── 统计 ──
         web.get('/api/statistics', _(statistics_handler.handle_get_statistics)),
@@ -142,9 +144,6 @@ def get_routes() -> list:
         web.get('/api/market/local', _(_market_local.handle_local_plugins)),
         web.post('/api/market/local/read', _(_market_local.handle_local_plugin_read)),
         web.post('/api/market/local/save', _(_market_local.handle_local_plugin_save)),
-        web.get('/api/market/mirror', _(_market_market.handle_market_get_mirror)),
-        web.post('/api/market/mirror', _(_market_market.handle_market_set_mirror)),
-        web.post('/api/market/mirror/test', _(_market_market.handle_market_test_mirror)),
         # ── OpenAPI ──
         web.post('/api/openapi/start-login', _(openapi_handler.handle_start_login)),
         web.post('/api/openapi/check-login', _(openapi_handler.handle_check_login)),
@@ -261,7 +260,16 @@ async def handle_login(request: web.Request):
     auth.record_ip_access(ip, 'success')
     token = auth.create_session(request)
     is_weak = password in _WEAK_PASSWORDS
-    return ok({'token': token, 'is_weak': is_weak})
+    response = ok({'is_weak': is_weak})
+    auth.set_session_cookie(response, request, token)
+    return response
+
+
+async def handle_auth_logout(request: web.Request):
+    auth.revoke_session(request)
+    response = ok()
+    auth.delete_session_cookie(response)
+    return response
 
 
 async def handle_auth_check(request: web.Request):
@@ -356,33 +364,35 @@ def _tag_lifecycle_extra(r):
         r['raw_message'] = r['extra']
 
 
-def _gather_recent_logs_sync(appid_filter):
-    """同步聚合所有日志查询 (在 executor 中执行, 避免阻塞事件循环)"""
-    messages = _query_bot_logs('message', appid_filter, _tag_direction)
-    lifecycle = _query_bot_logs('lifecycle', appid_filter, _tag_lifecycle_extra)
+_RECENT_LOG_TYPES = ('message', 'framework', 'error', 'lifecycle', 'console')
+_BOT_LOG_POST = {'message': _tag_direction, 'lifecycle': _tag_lifecycle_extra}
+
+
+def _query_recent_log(log_type, appid_filter):
+    if log_type in _BOT_LOG_POST:
+        return _query_bot_logs(log_type, appid_filter, _BOT_LOG_POST[log_type])
+    if log_type == 'console':
+        return _console.get_lines()
     shared = SharedLogService._instance
-    if shared:
-        framework = shared.query('framework', _LOG_SQL)
-        framework.reverse()
-        errors = shared.query('error', _LOG_SQL)
-        errors.reverse()
-    else:
-        framework = []
-        errors = []
-    return {
-        'message': messages,
-        'framework': framework,
-        'error': errors,
-        'lifecycle': lifecycle,
-        'console': _console.get_lines(),
-    }
+    rows = shared.query(log_type, _LOG_SQL) if shared else []
+    rows.reverse()
+    return rows
+
+
+def _gather_recent_logs_sync(appid_filter, log_type=''):
+    """同步聚合所有日志查询 (在 executor 中执行, 避免阻塞事件循环)"""
+    types = (log_type,) if log_type else _RECENT_LOG_TYPES
+    return {item: _query_recent_log(item, appid_filter) for item in types}
 
 
 async def handle_recent_logs(request: web.Request):
     """最近日志 — SQLite 同步查询放到 executor, 不阻塞事件循环"""
     appid_filter = request.query.get('appid', '')
+    log_type = request.query.get('type', '')
+    if log_type and log_type not in _RECENT_LOG_TYPES:
+        return error('无效日志类型', status=400)
     loop = asyncio.get_running_loop()
-    payload = await loop.run_in_executor(None, _gather_recent_logs_sync, appid_filter)
+    payload = await loop.run_in_executor(None, _gather_recent_logs_sync, appid_filter, log_type)
     return web.json_response(payload)
 
 
@@ -409,6 +419,7 @@ async def handle_ext_route(request: web.Request):
     entry = match_route(request.method, request.path)
     if entry is None:
         return web.json_response({'success': False, 'error': '路由不存在'}, status=404)
-    if entry['auth'] and not auth.validate_token(request):
-        return web.json_response({'success': False, 'error': '未登录或会话已过期'}, status=401)
+    denied = auth.authorize_request(request) if entry['auth'] else None
+    if denied is not None:
+        return denied
     return await entry['handler'](request)

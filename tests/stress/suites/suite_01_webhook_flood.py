@@ -19,7 +19,7 @@ class WebhookFloodTest(BaseStressTest):
 
     @property
     def suite_name(self):
-        return "webhook_flood"
+        return 'webhook_flood'
 
     async def setup(self, config: StressTestConfig) -> None:
         self._registry = MockBotRegistry(bot_count=1)
@@ -36,9 +36,9 @@ class WebhookFloodTest(BaseStressTest):
         self._event_idx = 0
         self._events = EventFactory.batch_group_messages(
             count=10000,
-            content_pattern="/stress_{i}",
-            group_ids=["group_001"],
-            user_ids=[f"user_{i:05d}" for i in range(1000)],
+            content_pattern='/stress_{i}',
+            group_ids=['group_001'],
+            user_ids=[f'user_{i:05d}' for i in range(1000)],
             appid=self._appid,
         )
 
@@ -50,14 +50,14 @@ class WebhookFloodTest(BaseStressTest):
         rate = config.rate_per_second
         users = config.concurrent_users
         dur = config.duration_seconds
-        suite_label = {"suite": self.suite_name}
+        suite_label = {'suite': self.suite_name}
 
         # Each "virtual user" fires events via _on_event directly
         # In webhook mode, each POST → create_task(_on_event) — no backpressure
 
         async def fire_events(user_idx):
             interval = 1.0 / max(rate, 1) if rate > 0 else 0
-            end_time = time.time() + dur if dur > 0 else float("inf")
+            end_time = time.time() + dur if dur > 0 else float('inf')
 
             while time.time() < end_time and not self._stop_event.is_set():
                 # Get next event (cycle through pool)
@@ -69,14 +69,14 @@ class WebhookFloodTest(BaseStressTest):
                     # Simulate webhook: fire-and-forget with create_task
                     # In the real webhook path, this is exactly what happens
                     await self._dispatch_event(event)
-                    self._metrics.counter("events_success", suite_label).inc()
+                    self._metrics.counter('events_success', suite_label).inc()
                 except Exception:
-                    self._metrics.counter("events_failed", suite_label).inc()
+                    self._metrics.counter('events_failed', suite_label).inc()
                     self._error_events += 1
                 finally:
                     dt = time.perf_counter() - t0
-                    self._metrics.counter("events_total", suite_label).inc()
-                    self._metrics.record_latency("dispatch_latency_seconds", dt, suite_label)
+                    self._metrics.counter('events_total', suite_label).inc()
+                    self._metrics.record_latency('dispatch_latency_seconds', dt, suite_label)
                     self._total_events += 1
 
                 if interval > 0:

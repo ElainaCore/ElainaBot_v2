@@ -5,13 +5,17 @@ import asyncio
 import logging
 import time
 
-from core.base.config import cfg
 from core.network.http_compat import AsyncHttpClient
 
 logger = logging.getLogger('ElainaBot.access')
 
-_TOKEN_URL = 'https://bots.qq.com/app/getAppAccessToken'
-_API_BASE = 'https://api.sgroup.qq.com'
+API_VERSION_NEW = 'new'
+API_VERSION_OLD = 'old'
+DEFAULT_API_VERSION = API_VERSION_NEW
+_API_HOSTS = {
+    API_VERSION_NEW: ('https://api.bot.qq.com', 'https://api.bot.qq.com'),
+    API_VERSION_OLD: ('https://api.sgroup.qq.com', 'https://bots.qq.com'),
+}
 
 _REFRESH_BUFFER = 60  # 提前刷新秒数
 _MAX_RETRIES = 3
@@ -31,12 +35,19 @@ class TokenManager:
         '_refresh_task',
         '_closed',
         '_api_base',
+        '_api_version',
+        '_access_token_url',
     )
 
-    def __init__(self, appid, secret, *, api_base=''):
+    def __init__(self, appid, secret, *, api_base='', api_version=DEFAULT_API_VERSION):
         self.appid = str(appid)
         self.secret = str(secret)
-        self._api_base = api_base.rstrip('/') if api_base else _API_BASE
+        self._api_version = str(api_version or DEFAULT_API_VERSION).strip().lower()
+        if self._api_version not in _API_HOSTS:
+            raise ValueError(f'无效的 api_version: {api_version!r} (可选: {", ".join(_API_HOSTS)})')
+        openapi_host, token_host = _API_HOSTS[self._api_version]
+        self._api_base = str(api_base or openapi_host).rstrip('/')
+        self._access_token_url = f'{token_host}/app/getAppAccessToken'
         # 提前校验: secret 为空或含未解析占位符时立即报错
         if not self.secret or '${' in self.secret:
             raise ValueError(
@@ -53,6 +64,10 @@ class TokenManager:
     @property
     def api_base(self):
         return self._api_base
+
+    @property
+    def api_version(self):
+        return self._api_version
 
     @property
     def authorization(self):
@@ -84,14 +99,7 @@ class TokenManager:
     async def get_client(self):
         """获取 HTTP 客户端 (延迟创建, Sender 共享此实例)"""
         if self._client is None or self._client.is_closed:
-            net = cfg.get('settings', 'network') or {}
-            self._client = AsyncHttpClient(
-                base_url=self._api_base,
-                timeout=float(net.get('timeout', 30.0)),
-                max_connections=int(net.get('max_connections', 200)),
-                max_keepalive=int(net.get('max_keepalive', 100)),
-                pool_timeout=float(net.get('pool_timeout', 10.0)),
-            )
+            self._client = AsyncHttpClient(base_url=self._api_base, timeout=30.0)
         return self._client
 
     _ensure_client = get_client  # 内部兼容
@@ -102,7 +110,7 @@ class TokenManager:
         last_error = None
         for i in range(_MAX_RETRIES):
             try:
-                resp = await client.post(_TOKEN_URL, json=payload, timeout=10)
+                resp = await client.post(self._access_token_url, json=payload, timeout=10)
                 data = resp.json()
                 if resp.status_code == 200 and 'access_token' in data:
                     self._token = data['access_token']

@@ -15,14 +15,18 @@
         url = await hosting.upload_chatglm(image_bytes)
         url = await hosting.upload_xingye(image_bytes)
         url = await hosting.upload_nature(image_bytes)
+        url = await hosting.upload_self_hosted(image_bytes, "test.png")
+        url = await hosting.upload_cnb(image_bytes, "test.png")
+        records = await hosting.list_cnb_assets(limit=10)
+        await hosting.delete_cnb(records[0])
 
 配置 (modules/image_hosting/data/config.yaml): 各图床一个配置段, 由各自的 Bed.defaults 提供
 """
 
 __module_meta__ = {
     'name': '图床服务',
-    'description': '统一图床上传 (COS / B站 / QQ频道 / QQ分片文件 / ChatGLM / 星野 / Nature)',
-    'version': '2.0.0',
+    'description': '统一图床上传 (CNB / ChatGLM / 星野 / Nature / QQ分片 / COS / B站 / QQ频道 / 自身图床)',
+    'version': '2.2.0',
     'author': 'ElainaBot',
 }
 
@@ -30,6 +34,7 @@ import inspect
 
 from core.base.logger import EXTENSION, get_logger
 
+from . import public_server
 from .beds import discover_beds
 from .beds._common import init_executor, parse_dimensions_from_filename, shutdown_executor  # noqa: F401
 
@@ -48,7 +53,6 @@ _LEGACY_METHODS = {
 
 
 # ==================== 模块入口 ====================
-
 async def setup(ctx):
     global _instance
     init_executor()
@@ -56,20 +60,28 @@ async def setup(ctx):
     defaults = {cls.name: dict(cls.defaults) for cls in bed_classes}
     comments = {cls.name: dict(cls.comments) for cls in bed_classes}
     cfg = ctx.ensure_config(defaults, comments=comments)
+    retired_changed = _remove_retired_cnb_config(cfg)
+    ordered_cfg = _order_bed_config(cfg, bed_classes)
+    if retired_changed or list(ordered_cfg) != list(cfg):
+        ctx.save_config(ordered_cfg, comments=comments)
+        cfg = ordered_cfg
+        log.info('图床配置已更新')
     beds = {cls.name: cls(cfg.get(cls.name, {})) for cls in bed_classes}
     _instance = ImageHosting(cfg, ctx, beds)
     _instance.initialize()
+    public_server.attach(_instance)
     return _instance
 
 
 async def teardown():
     global _instance
+    if _instance is not None:
+        public_server.detach(_instance)
     _instance = None
     shutdown_executor()
 
 
 # ==================== 统一图床服务 ====================
-
 class ImageHosting:
     """统一图床上传门面: 自动发现 beds/ 下的图床实现并按名称分发"""
 
@@ -120,6 +132,15 @@ class ImageHosting:
             bed = self._beds.get(rest)
             if bed:
                 return bed.upload
+        # list_<name>_assets / delete_<name>
+        if attr.startswith('list_') and attr.endswith('_assets'):
+            bed = self._beds.get(attr[5:-7])
+            if bed and hasattr(bed, 'list_assets'):
+                return bed.list_assets
+        if attr.startswith('delete_'):
+            bed = self._beds.get(attr[7:])
+            if bed and hasattr(bed, 'delete'):
+                return bed.delete
         raise AttributeError(f"'{type(self).__name__}' object has no attribute '{attr}'")
 
     # ==================== 通用上传 ====================
@@ -154,3 +175,24 @@ def _call_with_supported_kwargs(fn, image_bytes, **kwargs):
     except (TypeError, ValueError):
         kwargs = {}
     return fn(image_bytes, **kwargs)
+
+
+def _order_bed_config(cfg, bed_classes):
+    """按图床优先级重排配置，同时保留第三方扩展配置段。"""
+    ordered = {cls.name: cfg.get(cls.name, {}) for cls in bed_classes}
+    retired = {'qiniu', 'xinyew'}
+    ordered.update((name, value) for name, value in cfg.items() if name not in ordered and name not in retired)
+    return ordered
+
+
+def _remove_retired_cnb_config(cfg):
+    """Remove CNB endpoint overrides; the service endpoints are fixed constants."""
+    cnb_cfg = cfg.get('cnb') if isinstance(cfg, dict) else None
+    if not isinstance(cnb_cfg, dict):
+        return False
+    changed = False
+    for key in ('api_base', 'asset_base'):
+        if key in cnb_cfg:
+            del cnb_cfg[key]
+            changed = True
+    return changed

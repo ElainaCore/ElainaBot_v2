@@ -405,10 +405,7 @@ class TestBuildKeyboardLimitTips:
     def test_unsupport_tips(self):
         btn = {'text': 'btn', 'tips': '当前版本不支持此功能'}
         result = build_keyboard([[btn]])
-        assert (
-            result['content']['rows'][0]['buttons'][0]['action']['unsupport_tips']
-            == '当前版本不支持此功能'
-        )
+        assert result['content']['rows'][0]['buttons'][0]['action']['unsupport_tips'] == '当前版本不支持此功能'
 
     def test_no_tips(self):
         """无 tips 字段时不包含 unsupport_tips 键"""
@@ -425,12 +422,17 @@ class TestBuildKeyboardModalSubscribe:
 
     def test_modal_and_subscribe(self):
         """subscribe 自动 type=4 并生成 subscribe_data (含 '_' 为自定义模板), modal 任意按钮可用"""
-        btns = [[
-            {'text': '订阅', 'subscribe': ['12345', '102722993_1769091467'],
-             'modal': {'content': '确认订阅？', 'confirm_text': '✔️确认', 'cancel_text': '❌取消'}},
-            {'text': '回调', 'data': 'cb', 'type': 1, 'modal': '确认执行？'},
-            {'text': '原生', 'subscribe_data': {'template_ids': [{'template_id': '999'}]}},
-        ]]
+        btns = [
+            [
+                {
+                    'text': '订阅',
+                    'subscribe': ['12345', '102722993_1769091467'],
+                    'modal': {'content': '确认订阅？', 'confirm_text': '✔️确认', 'cancel_text': '❌取消'},
+                },
+                {'text': '回调', 'data': 'cb', 'type': 1, 'modal': '确认执行？'},
+                {'text': '原生', 'subscribe_data': {'template_ids': [{'template_id': '999'}]}},
+            ]
+        ]
         sub_btn, cb_btn, raw_btn = build_keyboard(btns)['content']['rows'][0]['buttons']
         assert sub_btn['action']['type'] == 4
         assert sub_btn['action']['subscribe_data'] == {

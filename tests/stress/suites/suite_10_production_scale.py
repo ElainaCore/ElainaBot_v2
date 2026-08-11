@@ -136,21 +136,23 @@ class ProductionScaleTest(BaseStressTest):
                 await asyncio.sleep(0)  # 让出事件循环, 模拟极轻处理
 
             pat = rf'^/cmd_{i}\b' if i < count - 1 else r'(.|\n)*'
-            handlers.append({
-                'name': f'scale_h_{i:04d}',
-                'func': handler_fn,
-                'pattern': pat,
-                'compiled': re.compile(pat),
-                'priority': 100 - i,
-                'is_coro': True,
-                'event_types': [],
-                'group_only': False,
-                'direct_only': False,
-                'channel_only': False,
-                'owner_only': False,
-                'ignore_at_check': True,
-                '_allowed_bots': None,
-            })
+            handlers.append(
+                {
+                    'name': f'scale_h_{i:04d}',
+                    'func': handler_fn,
+                    'pattern': pat,
+                    'compiled': re.compile(pat),
+                    'priority': 100 - i,
+                    'is_coro': True,
+                    'event_types': [],
+                    'group_only': False,
+                    'direct_only': False,
+                    'channel_only': False,
+                    'owner_only': False,
+                    'ignore_at_check': True,
+                    '_allowed_bots': None,
+                }
+            )
         self._pm._all_handlers = handlers
         self._pm._all_interceptors = []
         self._pm._plugin_bots = {}
@@ -195,7 +197,8 @@ class ProductionScaleTest(BaseStressTest):
             dt = time.perf_counter() - t0
             self._metrics.counter('events_total', {'suite': self.suite_name}).inc()
             self._metrics.record_latency(
-                'dispatch_latency_seconds', dt,
+                'dispatch_latency_seconds',
+                dt,
                 {'suite': self.suite_name, 'scenario': scenario},
             )
         return dt
@@ -205,8 +208,7 @@ class ProductionScaleTest(BaseStressTest):
         rate = self._peak_rate
         interval = 1.0 / rate
         end = time.time() + self._sustained_seconds
-        print(f'    [sustained] {rate} msg/s for {self._sustained_seconds}s '
-              f'(groups={self._groups} users={self._users}) ...')
+        print(f'    [sustained] {rate} msg/s for {self._sustained_seconds}s (groups={self._groups} users={self._users}) ...')
         i = 0
         max_lag = 0.0
         next_t = time.perf_counter()
@@ -232,8 +234,7 @@ class ProductionScaleTest(BaseStressTest):
         # 记录持续相位结束时的追踪丢弃数 (50 msg/s 下应为 0)
         self._sustained_track_drops = getattr(self._harness, '_track_drop_count', 0)
         backlog = 'NONE' if max_lag < interval else f'{max_lag * 1000:.1f}ms'
-        print(f'      processed={i} max_schedule_lag={max_lag * 1000:.2f}ms backlog={backlog} '
-              f'sustained_track_drops={self._sustained_track_drops}')
+        print(f'      processed={i} max_schedule_lag={max_lag * 1000:.2f}ms backlog={backlog} sustained_track_drops={self._sustained_track_drops}')
 
     async def _run_ceiling(self):
         """有界并发尽力灌入, 测单进程吞吐上限。"""
@@ -255,14 +256,18 @@ class ProductionScaleTest(BaseStressTest):
 
     def _print_store_stats(self):
         s = self._bot.log_service.stats()
-        print(f'    [store] known_users={s["known_users"]} known_groups={s["known_groups"]} '
-              f'group_selects={s["group_select_count"]} group_writes={s["group_write_count"]} '
-              f'user_fetches={s["user_fetch_count"]}')
-        print(f'    [cache] group_cache={len(self._harness._group_users_cache)} '
-              f'known_users_cache={len(self._harness._known_users)} '
-              f'dirty_groups={len(self._harness._dirty_groups)} '
-              f'track_dropped={getattr(self._harness, "_track_drop_count", 0)} '
-              f'track_queue={self._harness._track_queue.qsize() if self._harness._track_queue else 0}')
+        print(
+            f'    [store] known_users={s["known_users"]} known_groups={s["known_groups"]} '
+            f'group_selects={s["group_select_count"]} group_writes={s["group_write_count"]} '
+            f'user_fetches={s["user_fetch_count"]}'
+        )
+        print(
+            f'    [cache] group_cache={len(self._harness._group_users_cache)} '
+            f'known_users_cache={len(self._harness._known_users)} '
+            f'dirty_groups={len(self._harness._dirty_groups)} '
+            f'track_dropped={getattr(self._harness, "_track_drop_count", 0)} '
+            f'track_queue={self._harness._track_queue.qsize() if self._harness._track_queue else 0}'
+        )
 
     def _compute_verdict(self):
         """生产稳态 SLO 判定 (覆盖基类基于内存增量的判定)。
@@ -284,14 +289,16 @@ class ProductionScaleTest(BaseStressTest):
         if r.error_rate >= (getattr(self._config, 'fail_on_error_rate', 0.01) or 0.01):
             reasons.append(f'error rate {r.error_rate:.1%}')
 
-        r.custom_metrics.update({
-            'sustained_max_lag_ms': round(self._sustained_max_lag_ms, 2),
-            'sustained_count': self._sustained_count,
-            'sustained_track_drops': self._sustained_track_drops,
-            'ceiling_count': self._ceiling_count,
-            'task_peak': r.task_count_peak,
-            'verdict_reasons': reasons,
-        })
+        r.custom_metrics.update(
+            {
+                'sustained_max_lag_ms': round(self._sustained_max_lag_ms, 2),
+                'sustained_count': self._sustained_count,
+                'sustained_track_drops': self._sustained_track_drops,
+                'ceiling_count': self._ceiling_count,
+                'task_peak': r.task_count_peak,
+                'verdict_reasons': reasons,
+            }
+        )
         r.verdict = 'FAIL' if reasons else 'PASS'
         if reasons:
             print(f'    [verdict] FAIL: {"; ".join(reasons)}')
@@ -308,4 +315,5 @@ class ProductionScaleTest(BaseStressTest):
             if not w.done():
                 w.cancel()
         from core.plugin._dispatch import _DispatchMixin
+
         _DispatchMixin._cached_app = None

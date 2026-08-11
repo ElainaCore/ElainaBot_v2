@@ -119,6 +119,20 @@ def _build_mirror_url(original_url, mirror):
     return mirror.rstrip('/') + '/' + original_url
 
 
+def _github_mirror_settings_path(base_dir):
+    return os.path.join(str(base_dir), 'data', 'update_settings.json')
+
+
+def load_github_mirror(base_dir):
+    """读取框架更新与插件市场共用的 GitHub 镜像偏好。"""
+    settings_path = _github_mirror_settings_path(base_dir)
+    try:
+        with open(settings_path, encoding='utf-8') as f:
+            return json.load(f).get('custom_mirror', '') or ''
+    except (OSError, TypeError, ValueError):
+        return ''
+
+
 # 默认跳过的路径
 DEFAULT_SKIP = ['config/', 'data/', 'plugins/', 'modules/', '.git/', '__pycache__/', 'tests/', '.github/', '.gitignore', 'README.md']
 # 白名单: 即使父目录在 skip 列表, 这些路径仍然正常更新

@@ -1,11 +1,14 @@
 """插件市场 — 全局状态, 镜像配置, URL/目录辅助"""
 
-import json
 import logging
 import os
 import re
 
-from web.tools._updater.shared import _build_mirror_url, _load_mirror_cache
+from web.tools._updater.shared import (
+    _build_mirror_url,
+    _load_mirror_cache,
+    load_github_mirror,
+)
 
 log = logging.getLogger('ElainaBot.web.market')
 
@@ -27,36 +30,9 @@ def set_context(base_dir: str, appid: str = '', robot_qq: str = ''):
     _base_dir = base_dir
 
 
-# ==================== 市场镜像偏好 ====================
-
-
-def _market_mirror_path():
-    return os.path.join(
-        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-        'data',
-        'market_mirror.json',
-    )
-
-
-def _load_market_mirror():
-    try:
-        p = _market_mirror_path()
-        if os.path.isfile(p):
-            with open(p, encoding='utf-8') as f:
-                return json.load(f).get('mirror', '')
-    except (OSError, ValueError):
-        pass
-    return ''
-
-
-def _save_market_mirror(mirror):
-    try:
-        p = _market_mirror_path()
-        os.makedirs(os.path.dirname(p), exist_ok=True)
-        with open(p, 'w', encoding='utf-8') as f:
-            json.dump({'mirror': mirror}, f)
-    except (OSError, TypeError, ValueError):
-        pass
+def get_github_mirror():
+    """读取插件市场与框架更新共用的 GitHub 镜像。"""
+    return load_github_mirror(_base_dir)
 
 
 def _plugins_dir():
@@ -71,12 +47,16 @@ def _modules_dir():
 
 
 def _ranked_mirror_urls(raw_url):
-    """按磁盘缓存排名生成 URL 列表, 缓存为空时用兜底镜像"""
+    """按全局偏好和测速排名生成 URL 列表。"""
+    preferred = get_github_mirror()
     cached = _load_mirror_cache()
     if cached:
         urls = [_build_mirror_url(raw_url, m['mirror'] if isinstance(m, dict) else m) for m in cached]
     else:
         urls = [_build_mirror_url(raw_url, p) for p in _FALLBACK_MIRROR_PREFIXES]
+    if preferred:
+        preferred_url = _build_mirror_url(raw_url, preferred)
+        urls = [preferred_url, *[url for url in urls if url != preferred_url]]
     if raw_url not in urls:
         urls.append(raw_url)
     return urls

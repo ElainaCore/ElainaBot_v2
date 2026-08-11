@@ -9,7 +9,7 @@ _SIGN_ORIGIN = 'https://bed.vercel.0013107.xyz'
 class Bed(BaseBed):
     name = 'xingye'
     display_name = '星野'
-    priority = 50
+    priority = 20
     defaults = {
         'enabled': False,
     }

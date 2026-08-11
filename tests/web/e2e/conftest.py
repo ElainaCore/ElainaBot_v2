@@ -26,27 +26,6 @@ def dist_dir():
     pytest.skip('No SPA dist found')
 
 
-@pytest.fixture(scope='session')
-def any_available_browser_name():
-    """返回可用的浏览器名称 (chromium > firefox > webkit)"""
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError:
-        return None
-
-    try:
-        with sync_playwright() as p:
-            for name in ('chromium', 'firefox', 'webkit'):
-                try:
-                    p[name].launch()
-                    return name
-                except Exception:
-                    continue
-    except Exception:
-        pass
-    return None
-
-
 _SPA_MIME = {
     '.js': 'application/javascript',
     '.css': 'text/css',
@@ -117,13 +96,6 @@ async def e2e_app(dist_dir, api_config_dir):
     app.router.add_get('/web', _redirect_web)
     app.router.add_get('/web/{path:.*}', spa_handler)
 
-    # 测试辅助 API: /api/test/token — 生成测试 token
-    async def test_token(request: web.Request):
-        token = _auth.create_session(request)
-        return web.json_response({'token': token})
-
-    app.router.add_post('/api/test/token', test_token)
-
     # 媒体文件
     media_dir = os.path.join(api_config_dir, 'data', 'media')
     os.makedirs(media_dir, exist_ok=True)
@@ -144,11 +116,3 @@ async def e2e_client(e2e_app):
     yield client
     await client.close()
     await server.close()
-
-
-@pytest.fixture
-async def e2e_token(e2e_client):
-    """获取 E2E 测试 token"""
-    resp = await e2e_client.post('/api/test/token')
-    data = await resp.json()
-    return data['token']

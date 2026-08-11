@@ -1,12 +1,11 @@
 """API 测试: 系统信息模块 (system/info)"""
 
 
-
 class TestSystemInfo:
     """系统信息接口测试"""
 
-    async def test_system_info(self, api_client, auth_headers):
-        resp = await api_client.get('/api/system/info', headers=auth_headers)
+    async def test_system_info(self, api_client, auth_cookies):
+        resp = await api_client.get('/api/system/info', cookies=auth_cookies)
         assert resp.status == 200
         data = await resp.json()
         assert 'cpu_percent' in data
@@ -14,9 +13,9 @@ class TestSystemInfo:
         assert 'uptime' in data
         assert 'system_version' in data
 
-    async def test_system_info_fields(self, api_client, auth_headers):
+    async def test_system_info_fields(self, api_client, auth_cookies):
         """验证所有期望字段存在"""
-        resp = await api_client.get('/api/system/info', headers=auth_headers)
+        resp = await api_client.get('/api/system/info', cookies=auth_cookies)
         data = await resp.json()
 
         expected_fields = [
@@ -40,8 +39,8 @@ class TestSystemInfo:
         for field in expected_fields:
             assert field in data, f'Missing field: {field}'
 
-    async def test_system_info_disk_fields(self, api_client, auth_headers):
-        resp = await api_client.get('/api/system/info', headers=auth_headers)
+    async def test_system_info_disk_fields(self, api_client, auth_cookies):
+        resp = await api_client.get('/api/system/info', cookies=auth_cookies)
         data = await resp.json()
         disk = data.get('disk_info', {})
         assert 'total' in disk
@@ -57,8 +56,8 @@ class TestSystemInfo:
 class TestSystemDependencies:
     """依赖版本接口测试"""
 
-    async def test_dependencies(self, api_client, auth_headers):
-        resp = await api_client.get('/api/system/dependencies', headers=auth_headers)
+    async def test_dependencies(self, api_client, auth_cookies):
+        resp = await api_client.get('/api/system/dependencies', cookies=auth_cookies)
         assert resp.status == 200
         data = await resp.json()
         assert 'python' in data

@@ -11,14 +11,15 @@ from enum import Enum
 
 
 class MetricType(Enum):
-    COUNTER = "counter"
-    GAUGE = "gauge"
-    HISTOGRAM = "histogram"
+    COUNTER = 'counter'
+    GAUGE = 'gauge'
+    HISTOGRAM = 'histogram'
 
 
 @dataclass
 class MetricValue:
     """Single metric with optional labels."""
+
     name: str
     type: MetricType
     labels: dict = field(default_factory=dict)
@@ -46,25 +47,25 @@ class MetricValue:
             self._count += 1
 
     def snapshot(self):
-        base = {"name": self.name, "type": self.type.value, "labels": dict(self.labels)}
+        base = {'name': self.name, 'type': self.type.value, 'labels': dict(self.labels)}
         if self.type == MetricType.HISTOGRAM:
             obs = sorted(self._observations)
-            base["count"] = self._count
-            base["sum"] = round(self._sum, 6)
-            base["min"] = round(obs[0], 6) if obs else 0.0
-            base["max"] = round(obs[-1], 6) if obs else 0.0
-            base["avg"] = round(self._sum / self._count, 6) if self._count else 0.0
+            base['count'] = self._count
+            base['sum'] = round(self._sum, 6)
+            base['min'] = round(obs[0], 6) if obs else 0.0
+            base['max'] = round(obs[-1], 6) if obs else 0.0
+            base['avg'] = round(self._sum / self._count, 6) if self._count else 0.0
             if obs:
-                base["p50"] = round(_percentile(obs, 50.0), 6)
-                base["p90"] = round(_percentile(obs, 90.0), 6)
-                base["p95"] = round(_percentile(obs, 95.0), 6)
-                base["p99"] = round(_percentile(obs, 99.0), 6)
+                base['p50'] = round(_percentile(obs, 50.0), 6)
+                base['p90'] = round(_percentile(obs, 90.0), 6)
+                base['p95'] = round(_percentile(obs, 95.0), 6)
+                base['p99'] = round(_percentile(obs, 99.0), 6)
             else:
-                base["p50"] = base["p90"] = base["p95"] = base["p99"] = 0.0
+                base['p50'] = base['p90'] = base['p95'] = base['p99'] = 0.0
             if self._buckets:
-                base["buckets"] = _histogram_buckets(obs, self._buckets)
+                base['buckets'] = _histogram_buckets(obs, self._buckets)
         else:
-            base["value"] = self._value
+            base['value'] = self._value
         return base
 
 
@@ -89,8 +90,8 @@ def _histogram_buckets(sorted_data, buckets):
     for b in sorted(buckets):
         while idx < len(sorted_data) and sorted_data[idx] <= b:
             idx += 1
-        result[f"le_{b}"] = idx
-    result["le_+Inf"] = len(sorted_data)
+        result[f'le_{b}'] = idx
+    result['le_+Inf'] = len(sorted_data)
     return result
 
 
@@ -104,8 +105,8 @@ class MetricsCollector:
 
     def _make_key(self, name, labels=None):
         if labels:
-            label_parts = ",".join(f'{k}="{v}"' for k, v in sorted(labels.items()))
-            return f"{name}{{{label_parts}}}"
+            label_parts = ','.join(f'{k}="{v}"' for k, v in sorted(labels.items()))
+            return f'{name}{{{label_parts}}}'
         return name
 
     def counter(self, name, labels=None):

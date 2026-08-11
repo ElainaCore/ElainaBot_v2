@@ -19,6 +19,11 @@ _base_dir = ''
 
 # 判断是否为返回结果集的查询
 _READ_PATTERN = re.compile(r'^\s*(SELECT|PRAGMA|EXPLAIN|WITH)\b', re.IGNORECASE)
+_SQLITE_EXTENSIONS = ('.db', '.db3', '.s3db', '.sl3', '.sqlite', '.sqlite3')
+
+
+def _is_sqlite_path(path):
+    return os.fspath(path).lower().endswith(_SQLITE_EXTENSIONS)
 
 
 def set_context(bot_manager, base_dir: str):
@@ -57,7 +62,7 @@ def _log_base_dir():
 
 
 def _find_databases():
-    """扫描所有机器人的 .db 文件, 返回 [{appid, name, path, size, date}]"""
+    """扫描所有机器人的 SQLite 文件, 返回 [{appid, name, path, size, date}]"""
     log_base = _log_base_dir()
     result = []
     if not os.path.isdir(log_base):
@@ -111,10 +116,10 @@ def _mounted_databases():
 
 
 def _collect_db_files(result, directory, base, date):
-    """扫描目录下的 .db 文件并追加到 result"""
+    """扫描目录下的 SQLite 文件并追加到 result"""
     for f in sorted(os.listdir(directory)):
         fpath = os.path.join(directory, f)
-        if f.endswith('.db') and os.path.isfile(fpath):
+        if _is_sqlite_path(f) and os.path.isfile(fpath):
             result.append(
                 {
                     **base,
@@ -127,9 +132,9 @@ def _collect_db_files(result, directory, base, date):
 
 
 def _validate_db_path(db_path):
-    """校验路径为 log 目录下或已挂载的 .db 文件"""
+    """校验路径为 log 目录下或已挂载的 SQLite 文件"""
     abs_path = os.path.abspath(db_path)
-    if not abs_path.endswith('.db'):
+    if not _is_sqlite_path(abs_path):
         return False, ''
     if not os.path.isfile(abs_path):
         return False, ''
@@ -364,7 +369,7 @@ async def handle_search_database(request: web.Request):
 
 
 async def handle_browse_files(request: web.Request):
-    """浏览框架目录下的文件夹与 .db 文件 (用于挂载选择)"""
+    """浏览框架目录下的文件夹与 SQLite 文件 (用于挂载选择)"""
     body = await request.json()
     rel_dir = str(body.get('dir', '') or '').strip().strip('/')
 
@@ -383,7 +388,7 @@ async def handle_browse_files(request: web.Request):
             fpath = os.path.join(target, f)
             if os.path.isdir(fpath):
                 dirs.append({'name': f, 'type': 'dir'})
-            elif f.endswith('.db') and os.path.isfile(fpath):
+            elif _is_sqlite_path(f) and os.path.isfile(fpath):
                 files.append({'name': f, 'type': 'db', 'size': os.path.getsize(fpath), 'path': fpath.replace('\\', '/')})
     except OSError as e:
         return error(str(e), status=500)
@@ -393,7 +398,7 @@ async def handle_browse_files(request: web.Request):
 
 
 async def handle_mount_database(request: web.Request):
-    """挂载一个框架目录下的 .db 文件 (永久保留)"""
+    """挂载一个框架目录下的 SQLite 文件 (永久保留)"""
     body = await request.json()
     db_path = str(body.get('path', '') or '').strip()
     if not db_path:
@@ -403,8 +408,8 @@ async def handle_mount_database(request: web.Request):
     base_abs = os.path.abspath(_base_dir)
     if not abs_path.startswith(base_abs + os.sep):
         return error('只能挂载框架目录下的数据库', status=403)
-    if not abs_path.endswith('.db') or not os.path.isfile(abs_path):
-        return error('不是有效的 .db 文件', status=400)
+    if not _is_sqlite_path(abs_path) or not os.path.isfile(abs_path):
+        return error('不是支持的 SQLite 数据库文件', status=400)
 
     mounted = _load_mounted()
     norm = abs_path.replace('\\', '/')

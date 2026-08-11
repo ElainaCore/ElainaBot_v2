@@ -107,9 +107,9 @@ class TestCleanupExpired:
             today = datetime.now()
             keep = []
             # 应保留的目录
-            keep.append(_mkdir(tmpdir, '1020123456'))       # 10 位 appid
-            keep.append(_mkdir(tmpdir, '102012345'))        # 9 位 appid
-            keep.append(_mkdir(tmpdir, 'some_other'))       # 非数字目录
+            keep.append(_mkdir(tmpdir, '1020123456'))  # 10 位 appid
+            keep.append(_mkdir(tmpdir, '102012345'))  # 9 位 appid
+            keep.append(_mkdir(tmpdir, 'some_other'))  # 非数字目录
             keep.append(_mkdir(tmpdir, (today - timedelta(days=1)).strftime('%Y-%m-%d')))  # 昨天
             keep.append(_mkdir(tmpdir, (today - timedelta(days=3)).strftime('%Y-%m-%d')))  # 边界
 
@@ -134,6 +134,7 @@ class TestCleanupExpired:
 
             # 模拟已有连接锁
             import threading
+
             svc._conn_locks[db_path] = threading.Lock()
 
             await svc._cleanup_expired()

@@ -90,7 +90,7 @@ _FA_CACHE_TTL = 120
 
 
 def _get_full_access_group_rows():
-    """返回所有全量群记录 [{group_id, appid, first_seen}] (带 120s 内存缓存)"""
+    """返回所有全量群记录 [{group_id, appid, allow_proactive_msg}] (带 120s 内存缓存)"""
     global _fa_rows_cache, _fa_cache_ts
     now = time.time()
     if _fa_rows_cache is not None and now - _fa_cache_ts < _FA_CACHE_TTL:
@@ -108,3 +108,44 @@ def _get_full_access_group_rows():
 def _get_full_access_group_ids():
     """返回所有全量群 group_id 集合"""
     return {r['group_id'] for r in _get_full_access_group_rows() if r.get('group_id')}
+
+
+def _get_proactive_group_ids():
+    """返回允许机器人主动推送的全量群 group_id 集合。"""
+    return {
+        r['group_id']
+        for r in _get_full_access_group_rows()
+        if r.get('group_id') and r.get('allow_proactive_msg')
+    }
+
+
+def _get_group_metadata(appid_filter=''):
+    """批量返回群名称、人数和在群状态。"""
+    if not _bot_manager:
+        return {}
+    result = {}
+    for appid, inst in _bot_manager._bots.items():
+        if appid_filter and appid != appid_filter:
+            continue
+        try:
+            rows = inst.log_service.query_data(
+                'SELECT group_id, group_name, group_member_num, in_group FROM groups_users'
+            )
+        except Exception as e:
+            log.debug(f'查询群资料失败 {appid}: {e}')
+            continue
+        for row in rows:
+            gid = str(row.get('group_id') or '')
+            if not gid:
+                continue
+            result[(appid, gid)] = {
+                'group_name': str(row.get('group_name') or ''),
+                'group_member_num': int(row.get('group_member_num') or 0),
+                'in_group': bool(row.get('in_group', 1)),
+            }
+    return result
+
+
+def _invalidate_full_access_cache():
+    global _fa_rows_cache
+    _fa_rows_cache = None

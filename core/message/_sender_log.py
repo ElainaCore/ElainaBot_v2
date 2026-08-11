@@ -192,7 +192,7 @@ class _SenderLogMixin:
                 if handled and not ctx['failed']:
                     return True  # 插件已处理且补救成功, 不发模板
             if _is_rate_limited(data):
-                return False  # 限频错误不回发报错模板 (重发已节流, 再发模板只会加剧限频)
+                return False  # 限频错误不回发报错模板 (再发模板只会加剧限频)
             if tpl.get_raw('api_error', self._appid) is None:
                 return False
             content, buttons = tpl.render_error(

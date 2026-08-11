@@ -11,7 +11,7 @@ from ._common import BaseBed, detect_mime, run_sync
 class Bed(BaseBed):
     name = 'qq_channel'
     display_name = 'QQ频道'
-    priority = 30
+    priority = 70
     defaults = {
         'enabled': False,
         'channel_id': '',
@@ -46,9 +46,9 @@ class Bed(BaseBed):
         if not access_token:
             return (False, '获取 access_token 失败')
 
-        return await run_sync(self._upload_sync, image_data, channel_id, access_token)
+        return await run_sync(self._upload_sync, image_data, channel_id, access_token, token_manager.api_base)
 
-    def _upload_sync(self, image_data, channel_id, access_token):
+    def _upload_sync(self, image_data, channel_id, access_token, api_base):
         md5hash = hashlib.md5(image_data).hexdigest().upper()
         temp_path = None
         try:
@@ -63,7 +63,7 @@ class Bed(BaseBed):
             with open(temp_path, 'rb') as fp:
                 files = {'file_image': (f'image.{ext}', fp, mime_type)}
                 httpx.post(
-                    f'https://api.sgroup.qq.com/channels/{channel_id}/messages',
+                    f'{api_base}/channels/{channel_id}/messages',
                     files=files,
                     data={'msg_id': '1'},
                     headers={'Authorization': f'QQBot {access_token}'},

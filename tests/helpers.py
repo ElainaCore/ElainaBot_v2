@@ -25,9 +25,3 @@ async def do_login(client, password='test_pass'):
     """登录并返回 (response, json_data)"""
     resp = await client.post('/api/auth/login', json={'password': password})
     return resp, await resp.json()
-
-
-async def do_login_no_auth(client, password='test_pass'):
-    """未认证的登录请求 (用于测试未设置密码的场景)"""
-    resp = await client.post('/api/auth/login', json={'password': password})
-    return resp, await resp.json()

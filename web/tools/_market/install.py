@@ -14,11 +14,11 @@ from web.tools._market.fetch import (
 from web.tools._market.shared import (
     _convert_github_url,
     _github_to_archive,
-    _load_market_mirror,
     _modules_dir,
     _plugins_dir,
     _repo_raw_url,
     _safe_name,
+    get_github_mirror,
     log,
 )
 from web.tools._python_source import read_dict_assignment
@@ -138,23 +138,52 @@ def _version_lt(local, remote):
 # ==================== 预览 ====================
 
 
-def _preview_zip(content):
+def _preview_markdown_zip(content, plugin_path=''):
+    """读取插件所在目录的 Markdown 文件，不暴露源码。"""
     try:
         with zipfile.ZipFile(io.BytesIO(content), 'r') as zf:
-            py_files = [f for f in zf.namelist() if f.endswith('.py') and not f.startswith('__') and '/__pycache__/' not in f]
+            names = zf.namelist()
+            roots = {name.split('/')[0] for name in names if '/' in name and name.split('/')[0]}
+            root_prefix = (next(iter(roots)) + '/') if len(roots) == 1 else ''
+
+            paths = _split_paths(plugin_path)
+            target = paths[0].replace('\\', '/').strip('/') if paths else ''
+            if target and any(name.startswith(f'{root_prefix}{target}/') for name in names):
+                directory = target
+            elif target:
+                directory = target.rsplit('/', 1)[0] if '/' in target else ''
+            else:
+                directory = ''
+
+            directory_prefix = f'{root_prefix}{directory}/' if directory else root_prefix
+            md_files = [
+                name
+                for name in names
+                if name.lower().endswith('.md')
+                and name.startswith(directory_prefix)
+                and '/' not in name[len(directory_prefix) :]
+            ]
             files = []
-            for pf in py_files[:10]:
+            for md_path in sorted(md_files, key=lambda path: (os.path.basename(path).lower() != 'readme.md', path.lower())):
                 try:
-                    fc = zf.read(pf).decode('utf-8', errors='replace')
-                    files.append({'name': pf, 'content': fc[:5000], 'size': len(fc)})
+                    content_text = zf.read(md_path).decode('utf-8', errors='replace')
+                    files.append(
+                        {
+                            'name': os.path.basename(md_path),
+                            'path': md_path[len(root_prefix) :],
+                            'content': content_text[:200000],
+                            'size': len(content_text.encode('utf-8')),
+                        }
+                    )
                 except Exception as e:
-                    log.debug(f'读取预览文件 {pf} 失败: {e}')
+                    log.debug(f'读取 Markdown 预览文件 {md_path} 失败: {e}')
             return web.json_response(
                 {
                     'success': True,
-                    'type': 'zip',
+                    'type': 'markdown',
                     'files': files,
-                    'total_files': len(py_files),
+                    'total_files': len(md_files),
+                    'directory': directory,
                 }
             )
     except Exception as e:
@@ -163,38 +192,19 @@ def _preview_zip(content):
 
 async def handle_market_preview(request: web.Request):
     body = await request.json()
-    url = body.get('url', '')
-    if not url:
-        return web.json_response({'success': False, 'message': '缺少 URL'}, status=400)
+    github = body.get('github', '')
+    branch = body.get('branch', 'main')
+    plugin_path = body.get('path', '')
+    if not github:
+        return web.json_response({'success': False, 'message': '缺少 GitHub 仓库地址'}, status=400)
 
-    url = _convert_github_url(url)
     try:
-        content = await _download_file(url)
+        content = await _download_repo_zip(github, branch, get_github_mirror())
         if content is None:
             return web.json_response({'success': False, 'message': '下载失败'})
-
-        if b'<!doctype html' in content[:100].lower() or b'<html' in content[:100].lower():
-            return web.json_response({'success': False, 'message': '下载链接无效'})
-
-        if content[:4] == b'PK\x03\x04':
-            return _preview_zip(content)
-
-        is_py = url.endswith('.py') or any(k in content[:500] for k in [b'import ', b'def ', b'class '])
-        if is_py:
-            code = content.decode('utf-8', errors='replace')
-            fname = url.split('/')[-1].split('?')[0]
-            if not fname.endswith('.py'):
-                fname = 'plugin.py'
-            return web.json_response(
-                {
-                    'success': True,
-                    'type': 'py',
-                    'filename': fname,
-                    'content': code,
-                    'size': len(code),
-                }
-            )
-        return web.json_response({'success': False, 'message': '不支持的文件类型'})
+        if content[:4] != b'PK\x03\x04':
+            return web.json_response({'success': False, 'message': '仓库下载内容无效'})
+        return _preview_markdown_zip(content, plugin_path)
     except Exception as e:
         return web.json_response({'success': False, 'message': str(e)})
 
@@ -274,11 +284,19 @@ def _resolve_subdir(flist, root_prefix, subdir_path):
     return None
 
 
-def _extract_zip_subset(content, plugin_name, subdir_path=''):
-    """从仓库 zip 解压到 plugins/<name>/, subdir_path 非空时仅解压该子目录"""
-    plugins_dir = _plugins_dir()
-    safe = _safe_name(plugin_name) or 'unknown'
-    dest_dir = os.path.join(plugins_dir, safe)
+def _extract_zip_subset(
+    content,
+    item_name,
+    subdir_path='',
+    *,
+    dest_root=None,
+    dest_label='plugins',
+    preserve_data=False,
+):
+    """从仓库 zip 中仅提取指定目录到插件或模块安装目录。"""
+    dest_root = dest_root or _plugins_dir()
+    safe = _safe_name(item_name) or 'unknown'
+    dest_dir = os.path.join(dest_root, safe)
     try:
         with zipfile.ZipFile(io.BytesIO(content), 'r') as zf:
             flist = zf.namelist()
@@ -293,6 +311,8 @@ def _extract_zip_subset(content, plugin_name, subdir_path=''):
                 return {'success': False, 'message': f'仓库内未找到: {subdir_path}'}
             selected = [f for f in flist if f.startswith(strip_prefix) and not f.endswith('/')]
 
+            if preserve_data:
+                _clear_dir_except_data(dest_dir)
             os.makedirs(dest_dir, exist_ok=True)
             extracted = []
             for fp in selected:
@@ -305,19 +325,26 @@ def _extract_zip_subset(content, plugin_name, subdir_path=''):
                 if not is_within(dest_dir, dest):
                     log.warning(f'跳过越界成员 (疑似路径穿越): {fp!r}')
                     continue
+                if preserve_data and rel.startswith('data/') and os.path.exists(dest):
+                    continue
                 os.makedirs(os.path.dirname(dest) or dest_dir, exist_ok=True)
                 with zf.open(fp) as src, open(dest, 'wb') as dst:
                     dst.write(src.read())
                 extracted.append(rel)
             if not extracted:
                 return {'success': False, 'message': '未找到要安装的文件'}
-            py_count = sum(1 for f in extracted if f.endswith('.py'))
             total = len(extracted)
-            log.info(f'插件 {safe} 安装完成: {total} 个文件 ({py_count} 个 .py)')
+            if dest_label == 'plugins':
+                py_count = sum(1 for path in extracted if path.endswith('.py'))
+                log.info(f'插件 {safe} 安装完成: {total} 个文件 ({py_count} 个 .py)')
+                message = f'已安装到 plugins/{safe}/ ({total} 个文件, {py_count} 个 Python)'
+            else:
+                log.info(f'模块 {safe} 安装完成: {total} 个文件')
+                message = f'已更新 {dest_label}/{safe}/ ({total} 个文件)'
             return {
                 'success': True,
-                'message': f'已安装到 plugins/{safe}/ ({total} 个文件, {py_count} 个 Python)',
-                'path': f'plugins/{safe}',
+                'message': message,
+                'path': f'{dest_label}/{safe}',
                 'files': total,
             }
     except Exception as e:
@@ -339,75 +366,25 @@ def _clear_dir_except_data(dest_dir):
             os.remove(p)
 
 
-async def _install_module(github_url, module_name, branch='main', mirror=None):
-    """安装/更新模块: 官方仓库只提取 modules/<name>/ 子目录, 第三方整仓库安装"""
+async def _install_module(github_url, module_name, subdir_path='', branch='main', mirror=None):
+    """安装/更新模块。"""
     safe = _safe_name(module_name) or 'unknown'
     log.info(f'模块安装: {safe} ← {_github_to_archive(github_url, branch)}')
-
     content = await _download_repo_zip(github_url, branch, mirror)
     if content is None:
         return {'success': False, 'message': '下载失败, 请检查网络或镜像'}
     if content[:4] != b'PK\x03\x04':
         return {'success': False, 'message': '下载内容不是有效的 zip 文件'}
 
-    try:
-        with zipfile.ZipFile(io.BytesIO(content), 'r') as zf:
-            flist = zf.namelist()
-            # GitHub archive 根目录 (repo-branch/)
-            roots = {f.split('/')[0] for f in flist if '/' in f and f.split('/')[0]}
-            root_prefix = (list(roots)[0] + '/') if len(roots) == 1 else ''
-
-            # 尝试匹配 modules/<name>/ (官方/框架内模块)
-            mod_prefix = f'{root_prefix}modules/{safe}/'
-            mod_files = [f for f in flist if f.startswith(mod_prefix) and not f.endswith('/')]
-
-            if not mod_files:
-                # 判断是否为框架仓库 (精确匹配官方仓库)
-                is_framework = 'ElainaCore/ElainaBot_v2' in github_url
-                if is_framework:
-                    return {
-                        'success': False,
-                        'message': f'框架仓库中未找到 modules/{safe}/',
-                    }
-                # 第三方模块: 整个仓库就是模块内容
-                mod_prefix = root_prefix
-                mod_files = [f for f in flist if f.startswith(mod_prefix) and not f.endswith('/')]
-
-            if not mod_files:
-                return {'success': False, 'message': '仓库内容为空'}
-
-            dest_dir = os.path.join(_modules_dir(), safe)
-            _clear_dir_except_data(dest_dir)
-            os.makedirs(dest_dir, exist_ok=True)
-
-            extracted = []
-            for fp in mod_files:
-                if '__pycache__' in fp or '/.git/' in fp:
-                    continue
-                rel = fp[len(mod_prefix) :]
-                if not rel:
-                    continue
-                dest = os.path.join(dest_dir, rel)
-                if not is_within(dest_dir, dest):
-                    log.warning(f'跳过越界成员 (疑似路径穿越): {fp!r}')
-                    continue
-                # 保留用户已有的 data/ 配置
-                if rel.startswith('data/') and os.path.exists(dest):
-                    continue
-                os.makedirs(os.path.dirname(dest), exist_ok=True)
-                with zf.open(fp) as src, open(dest, 'wb') as dst:
-                    dst.write(src.read())
-                extracted.append(rel)
-
-            log.info(f'模块 {safe} 安装完成: {len(extracted)} 个文件')
-            return {
-                'success': True,
-                'message': f'已更新 modules/{safe}/ ({len(extracted)} 个文件)',
-                'path': f'modules/{safe}',
-                'files': len(extracted),
-            }
-    except Exception as e:
-        return {'success': False, 'message': str(e)}
+    module_path = subdir_path or f'modules/{safe}'
+    return _extract_zip_subset(
+        content,
+        module_name,
+        subdir_path=module_path,
+        dest_root=_modules_dir(),
+        dest_label='modules',
+        preserve_data=True,
+    )
 
 
 async def _auto_enable_plugin(reload_name):
@@ -488,14 +465,14 @@ async def handle_market_install(request: web.Request):
     file_path = body.get('path', '')
     alone = bool(body.get('alone', True))
     branch = body.get('branch', 'main')
-    mirror = body.get('mirror', '') or _load_market_mirror()
+    mirror = get_github_mirror()
     if not github_url:
         return web.json_response({'success': False, 'message': '缺少下载地址'}, status=400)
 
     try:
-        # 模块: 从仓库 zip 提取 modules/<name>/ 子目录
+        # 模块
         if item_type == TYPE_MODULE:
-            return web.json_response(await _install_module(github_url, item_name, branch, mirror=mirror))
+            return web.json_response(await _install_module(github_url, item_name, file_path, branch, mirror))
 
         # 独立插件 (single)
         if item_type == TYPE_SINGLE:

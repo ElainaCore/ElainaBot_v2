@@ -3,6 +3,7 @@
 import contextlib
 import json
 import os
+import re
 import shutil
 import tempfile
 import zipfile
@@ -18,7 +19,9 @@ from web.tools._plugin_mgr.shared import (
     modules_dir,
 )
 from web.tools._python_source import read_dict_assignment
-from web.tools._zipsafe import replace_dir_from_zip
+from web.tools._zipsafe import is_within, replace_dir_from_zip
+
+_SAFE_MODULE_NAME = re.compile(r'^[A-Za-z0-9_.-]+$')
 
 # ==================== 元数据读取 ====================
 
@@ -162,6 +165,9 @@ async def handle_module_upload(request: web.Request):
                         if meta.get('name'):
                             mod_name = meta['name']
                     break
+            mod_name = str(mod_name).strip()
+            if not _SAFE_MODULE_NAME.fullmatch(mod_name):
+                return web.json_response({'success': False, 'message': '无效模块名'}, status=400)
 
             top_dirs = set()
             for n in names:
@@ -172,6 +178,8 @@ async def handle_module_upload(request: web.Request):
             mdir = modules_dir()
             os.makedirs(mdir, exist_ok=True)
             target_dir = os.path.join(mdir, mod_name)
+            if not is_within(mdir, target_dir):
+                return web.json_response({'success': False, 'message': '无效模块路径'}, status=400)
             top_dir = list(top_dirs)[0] if len(top_dirs) == 1 else ''
             replace_dir_from_zip(zf, target_dir, top_dir=top_dir)
 

@@ -13,13 +13,7 @@ from web.tools._market.install import (
     _get_local_plugin_version,
     _version_lt,
 )
-from web.tools._market.shared import (
-    _load_market_mirror,
-    _safe_name,
-    _save_market_mirror,
-)
-from web.tools._updater.mirror import _test_one_mirror
-from web.tools._updater.shared import GITHUB_FILE_MIRRORS, _load_mirror_cache
+from web.tools._market.shared import _safe_name
 
 
 async def handle_market_list(request: web.Request):
@@ -88,35 +82,3 @@ async def handle_market_refresh(request: web.Request):
         return web.json_response({'success': False, 'message': '刷新失败, 无法连接插件库'})
     total = len(_extract_plugins(data))
     return web.json_response({'success': True, 'message': f'已刷新, 共 {total} 个插件'})
-
-
-# ==================== 市场镜像 API ====================
-
-
-async def handle_market_get_mirror(request: web.Request):
-    """获取当前市场镜像偏好 + 可用镜像列表"""
-    cached = _load_mirror_cache()
-    return web.json_response(
-        {
-            'success': True,
-            'mirror': _load_market_mirror(),
-            'mirrors': list(GITHUB_FILE_MIRRORS),
-            'fast_mirrors': cached,
-        }
-    )
-
-
-async def handle_market_set_mirror(request: web.Request):
-    """设置市场镜像偏好"""
-    body = await request.json()
-    mirror = body.get('mirror', '')
-    _save_market_mirror(mirror)
-    return web.json_response({'success': True, 'message': f'镜像已设为: {mirror or "(自动选择)"}'})
-
-
-async def handle_market_test_mirror(request: web.Request):
-    """测试单个镜像延迟"""
-    body = await request.json()
-    mirror = body.get('mirror', '')
-    result = await _test_one_mirror(mirror, timeout=5)
-    return web.json_response({'success': True, 'data': result})

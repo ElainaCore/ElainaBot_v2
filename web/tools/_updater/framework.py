@@ -25,6 +25,7 @@ from web.tools._updater.shared import (
     _load_mirror_cache,
     log,
 )
+from web.tools._zipsafe import safe_extractall
 
 _SHA_RE = re.compile(r'[0-9a-f]{8,40}', re.IGNORECASE)
 
@@ -45,7 +46,6 @@ class FrameworkUpdater:
         self.skip_files = self._load_skip_files()
         self.whitelist = self._load_setting('update_whitelist', None) or list(DEFAULT_WHITELIST)
         self.current_version = self._load_version()
-        self.custom_mirror = self._load_setting('custom_mirror', '')
         self.progress = {
             'stage': 'idle',
             'message': '',
@@ -138,9 +138,12 @@ class FrameworkUpdater:
 
     # ==================== 镜像管理 ====================
 
+    @property
+    def custom_mirror(self):
+        return self._load_setting('custom_mirror', '')
+
     def set_custom_mirror(self, mirror):
-        self.custom_mirror = mirror or ''
-        self._save_setting('custom_mirror', self.custom_mirror)
+        self._save_setting('custom_mirror', mirror or '')
 
     async def _pick_download_url(self, original_url):
         """从磁盘缓存的排名中选最快的镜像 URL"""
@@ -371,7 +374,7 @@ class FrameworkUpdater:
             temp.mkdir(parents=True)
 
             with zipfile.ZipFile(zip_file, 'r') as zf:
-                zf.extractall(temp)
+                safe_extractall(zf, str(temp))
 
             items = list(temp.iterdir())
             source = items[0] if len(items) == 1 and items[0].is_dir() else temp

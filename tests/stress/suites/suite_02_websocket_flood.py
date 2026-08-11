@@ -19,10 +19,10 @@ class WebSocketFloodTest(BaseStressTest):
 
     @property
     def suite_name(self):
-        return "websocket_flood"
+        return 'websocket_flood'
 
     async def setup(self, config: StressTestConfig) -> None:
-        sem_size = config.overrides.get("semaphore_size", 256)
+        sem_size = config.overrides.get('semaphore_size', 256)
         self._semaphore = asyncio.Semaphore(sem_size)
         self._sem_wait_times = []
         self._sem_acquired = 0
@@ -35,23 +35,23 @@ class WebSocketFloodTest(BaseStressTest):
 
         self._events = EventFactory.batch_group_messages(
             count=10000,
-            content_pattern="/ws_{i}",
-            group_ids=["group_001"],
-            user_ids=[f"wu_{i:05d}" for i in range(1000)],
+            content_pattern='/ws_{i}',
+            group_ids=['group_001'],
+            user_ids=[f'wu_{i:05d}' for i in range(1000)],
             appid=self._appid,
         )
         self._evt_idx = 0
 
     async def run_phase(self, config: StressTestConfig) -> None:
-        rates = config.overrides.get("rates", [100, 500, 1000, 2000])
-        dur_per_rate = config.overrides.get("duration_per_rate", 30)
-        suite_label = {"suite": self.suite_name}
+        rates = config.overrides.get('rates', [100, 500, 1000, 2000])
+        dur_per_rate = config.overrides.get('duration_per_rate', 30)
+        suite_label = {'suite': self.suite_name}
 
         for rate in rates:
             if self._stop_event.is_set():
                 break
 
-            print(f"    Rate: {rate}/s ...")
+            print(f'    Rate: {rate}/s ...')
             rate_start = time.time()
             rate_end = rate_start + dur_per_rate
             interval = 1.0 / rate if rate > 0 else 0
@@ -74,13 +74,13 @@ class WebSocketFloodTest(BaseStressTest):
                             event.appid = self._appid
                             # Simulate processing (mock 5ms work)
                             await asyncio.sleep(0.005)
-                            self._metrics.counter("events_success", suite_label).inc()
+                            self._metrics.counter('events_success', suite_label).inc()
                         except Exception:
-                            self._metrics.counter("events_failed", suite_label).inc()
+                            self._metrics.counter('events_failed', suite_label).inc()
                         finally:
                             dt = time.perf_counter() - t0
-                            self._metrics.counter("events_total", suite_label).inc()
-                            self._metrics.record_latency("dispatch_latency_seconds", dt, suite_label)
+                            self._metrics.counter('events_total', suite_label).inc()
+                            self._metrics.record_latency('dispatch_latency_seconds', dt, suite_label)
 
                     if interval > 0:
                         await asyncio.sleep(interval)
@@ -90,13 +90,9 @@ class WebSocketFloodTest(BaseStressTest):
                 await asyncio.wait_for(producer(), timeout=dur_per_rate + 5)
 
     async def teardown(self) -> None:
-        self._result.custom_metrics["sem_acquired"] = self._sem_acquired
-        self._result.custom_metrics["sem_wait_avg_ms"] = round(
-            (sum(self._sem_wait_times) / max(len(self._sem_wait_times), 1)) * 1000, 2
-        )
-        self._result.custom_metrics["sem_wait_p99_ms"] = round(
-            _p99(self._sem_wait_times) * 1000, 2
-        ) if self._sem_wait_times else 0
+        self._result.custom_metrics['sem_acquired'] = self._sem_acquired
+        self._result.custom_metrics['sem_wait_avg_ms'] = round((sum(self._sem_wait_times) / max(len(self._sem_wait_times), 1)) * 1000, 2)
+        self._result.custom_metrics['sem_wait_p99_ms'] = round(_p99(self._sem_wait_times) * 1000, 2) if self._sem_wait_times else 0
 
 
 def _p99(data):

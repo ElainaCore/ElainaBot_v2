@@ -19,7 +19,7 @@ _PATH_PREFIX = 'SnsShare/SocialProfile'
 class Bed(BaseBed):
     name = 'nature'
     display_name = 'Nature'
-    priority = 60
+    priority = 30
     defaults = {
         'enabled': True,
     }

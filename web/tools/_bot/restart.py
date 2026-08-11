@@ -1,18 +1,16 @@
 """机器人重启"""
 
 import os
-import platform
 import subprocess
 import sys
 import threading
-import time
 
 from aiohttp import web
 
-from core.application import get_app
+from core.application import close_console_window, get_app
 from core.base.config import cfg
 
-_IS_WINDOWS = platform.system().lower() == 'windows'
+_IS_WINDOWS = sys.platform == 'win32'
 _base_dir = ''
 
 
@@ -88,17 +86,14 @@ async def handle_restart(request: web.Request):
             f.write(script)
 
         if _IS_WINDOWS:
-            subprocess.Popen(
-                [sys.executable, restarter],
-                cwd=_base_dir,
-                creationflags=getattr(subprocess, 'CREATE_NEW_CONSOLE', 0),
-            )
+            creationflags = subprocess.__dict__.get('CREATE_NO_WINDOW', 0)
+            subprocess.Popen([sys.executable, restarter], cwd=_base_dir, creationflags=creationflags)
 
             def _delayed_exit():
-                time.sleep(1)
+                close_console_window()
                 os._exit(0)
 
-            threading.Thread(target=_delayed_exit, daemon=True).start()
+            threading.Timer(1, _delayed_exit).start()
         else:
             subprocess.Popen([sys.executable, restarter], cwd=_base_dir, start_new_session=True)
         return web.json_response({'success': True, 'message': '正在重启...'})

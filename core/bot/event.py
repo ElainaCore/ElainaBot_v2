@@ -7,13 +7,14 @@ import time
 from datetime import datetime, timedelta
 
 from core.base.config import cfg
-from core.base.logger import FRAMEWORK, get_logger, now_str, report_error
+from core.base.logger import FRAMEWORK, get_logger, report_error
 from core.base.tasks import spawn
 from core.message.event import (
     FRIEND_ADD,
     FRIEND_DEL,
     GROUP_ADD_ROBOT,
     GROUP_DEL_ROBOT,
+    GROUP_JOIN_REQUEST,
     GROUP_MEMBER_ADD,
     GROUP_MEMBER_REMOVE,
     GROUP_MESSAGE_CREATE,
@@ -95,7 +96,7 @@ class EventHandlerMixin:
         self._cache_clean_ts = 0
         self._group_users_cache = {}
         self._group_locks = {}
-        self._full_access_cache = {}  # {group_id: expire_ts}
+        self._full_access_cache = {}  # {(appid, group_id): expire_ts}
         self._dirty_groups = {}  # {group_id: bot} — 待写入的群缓存
         self._flush_task = None
         # 用户追踪后台队列 (有界, 背压): 替代每条消息 create_task 无界堆积
@@ -314,24 +315,25 @@ class EventHandlerMixin:
     # ==================== 全量群记录 ====================
 
     def _record_full_access_group(self, bot, group_id):
-        """记录全量群到 data.db"""
+        """记录实际收到全量消息的群，不触发受限查询接口。"""
         now = time.time()
-        expire = self._full_access_cache.get(group_id)
+        cache_key = (bot.appid, group_id)
+        expire = self._full_access_cache.get(cache_key)
         if expire and now < expire:
             return
-        self._full_access_cache[group_id] = now + _FULL_ACCESS_CACHE_TTL
-        ts = now_str()
+        self._full_access_cache[cache_key] = now + _FULL_ACCESS_CACHE_TTL
         bot.log_service.db_queue(
-            'INSERT OR IGNORE INTO full_access_groups (group_id, first_seen) VALUES (?, ?)',
-            (group_id, ts),
+            'INSERT INTO groups_users (group_id, is_full_access, in_group) VALUES (?, 1, 1) '
+            'ON CONFLICT(group_id) DO UPDATE SET is_full_access=1, in_group=1',
+            (group_id,),
         )
 
     def _record_bot_admin(self, bot, group_id):
         """记录机器人在该群为管理员"""
-        ts = now_str()
         bot.log_service.db_queue(
-            'INSERT OR REPLACE INTO group_bot_admin (group_id, updated_at) VALUES (?, ?)',
-            (group_id, ts),
+            'INSERT INTO groups_users (group_id, is_admin, in_group) VALUES (?, 1, 1) '
+            'ON CONFLICT(group_id) DO UPDATE SET is_admin=1, in_group=1',
+            (group_id,),
         )
 
     def get_full_access_groups(self):
@@ -339,16 +341,25 @@ class EventHandlerMixin:
         rows = []
         for appid, bot in self._bots.items():
             try:
-                bot_rows = bot.log_service.query_data('SELECT group_id, first_seen FROM full_access_groups')
+                bot_rows = bot.log_service.query_data(
+                    'SELECT group_id, group_name, group_member_num, in_group, allow_proactive_msg '
+                    'FROM groups_users WHERE is_full_access=1'
+                )
             except Exception as e:
                 log.debug(f'读取全量群记录失败 {appid}: {e}')
                 continue
             rows.extend(
-                {'group_id': r['group_id'], 'first_seen': r.get('first_seen') or '', 'appid': appid}
+                {
+                    'group_id': r['group_id'],
+                    'group_name': str(r.get('group_name') or ''),
+                    'group_member_num': int(r.get('group_member_num') or 0),
+                    'in_group': bool(r.get('in_group', 1)),
+                    'allow_proactive_msg': bool(r.get('allow_proactive_msg')),
+                    'appid': appid,
+                }
                 for r in bot_rows
                 if r.get('group_id')
             )
-        rows.sort(key=lambda r: r['first_seen'], reverse=True)
         return rows
 
     # ==================== 生命周期 ====================
@@ -367,13 +378,30 @@ class EventHandlerMixin:
         self._push_web_log('lifecycle', web_entry)
 
     async def _handle_group_add(self, bot, event):
-        if event.group_id:
-            bot.log_service.db_queue(
-                'UPDATE groups_users SET in_group=1 WHERE group_id=?', (event.group_id,))
+        gid = event.group_id or ''
+        if gid:
+            should_refresh = False
+            async with self._group_lock(gid):
+                existing = await bot.log_service.db_fetch_one(
+                    'SELECT 1 FROM groups_users WHERE group_id=?', (gid,))
+                if existing:
+                    bot.log_service.db_queue(
+                        'UPDATE groups_users SET in_group=1 WHERE group_id=?',
+                        (gid,),
+                    )
+                else:
+                    # 先占位，避免同一新群的重复事件并发触发受限接口。
+                    await bot.log_service.db_execute(
+                        'INSERT OR IGNORE INTO groups_users (group_id, in_group) VALUES (?, 1)',
+                        (gid,),
+                    )
+                    should_refresh = True
+            if should_refresh:
+                spawn(bot.sender.refresh_group_info(gid))
         self._log_lifecycle(
             bot,
             'group_add',
-            {'group_id': event.group_id or '', 'user_id': event.user_id or ''},
+            {'group_id': gid, 'user_id': event.user_id or ''},
             raw_event=event.raw,
         )
         await self._lifecycle_reply(
@@ -381,7 +409,7 @@ class EventHandlerMixin:
             event,
             'welcome.group_welcome',
             'welcome',
-            {'group_id': event.group_id or ''},
+            {'group_id': gid},
         )
 
     async def _handle_group_del(self, bot, event):
@@ -397,15 +425,25 @@ class EventHandlerMixin:
 
     async def _handle_group_member_add(self, bot, event):
         gid, uid = event.group_id or '', event.user_id or ''
-        if gid and uid:
-            await self._add_user_to_group(bot, gid, uid)
+        if gid and uid and await self._add_user_to_group(bot, gid, uid):
+            bot.log_service.db_queue(
+                'UPDATE groups_users SET group_member_num=group_member_num+1 WHERE group_id=?',
+                (gid,),
+            )
         self._log_lifecycle(bot, 'group_member_add', {'group_id': gid, 'user_id': uid}, raw_event=event.raw)
 
     async def _handle_group_member_remove(self, bot, event):
         gid, uid = event.group_id or '', event.user_id or ''
-        if gid and uid:
-            await self._remove_user_from_group(bot, gid, uid)
+        if gid and uid and await self._remove_user_from_group(bot, gid, uid):
+            bot.log_service.db_queue(
+                'UPDATE groups_users SET group_member_num=MAX(group_member_num-1, 0) WHERE group_id=?',
+                (gid,),
+            )
         self._log_lifecycle(bot, 'group_member_del', {'group_id': gid, 'user_id': uid}, raw_event=event.raw)
+
+    async def _handle_group_join_request(self, bot, event):
+        self._log_lifecycle(bot, 'group_join_request', {
+            'group_id': event.group_id or '', 'user_id': event.user_id or ''}, raw_event=event.raw)
 
     async def _handle_friend_add(self, bot, event):
         uid = event.user_id or ''
@@ -465,6 +503,7 @@ class EventHandlerMixin:
         GROUP_DEL_ROBOT: _handle_group_del,
         GROUP_MEMBER_ADD: _handle_group_member_add,
         GROUP_MEMBER_REMOVE: _handle_group_member_remove,
+        GROUP_JOIN_REQUEST: _handle_group_join_request,
         FRIEND_ADD: _handle_friend_add,
         FRIEND_DEL: _handle_friend_del,
         GROUP_MSG_REJECT: _handle_group_msg_reject,
@@ -645,17 +684,19 @@ class EventHandlerMixin:
                 # LRU: 命中后移到末尾, 保证热点群在大规模(群数>>缓存上限)下不被冷群挤出
                 self._group_users_cache.pop(group_id, None)
                 self._group_users_cache[group_id] = cached
-                if mutate(cached[1]):
+                changed = mutate(cached[1])
+                if changed:
                     self._mark_group_dirty(group_id, bot)
-                return
+                return changed
             self._group_users_cache.pop(group_id, None)
 
             # 2. DB 加载
             try:
                 user_map, existed = await self._load_group_user_map(bot, group_id)
                 if not existed and not create_if_missing:
-                    return
-                if mutate(user_map):
+                    return False
+                changed = mutate(user_map)
+                if changed:
                     if existed:
                         bot.log_service.db_queue(
                             'UPDATE groups_users SET users=? WHERE group_id=?',
@@ -667,6 +708,7 @@ class EventHandlerMixin:
                             (group_id, self._users_json(user_map)),
                         )
                 self._set_group_cache(group_id, user_map)
+                return changed
             except Exception as e:
                 report_error(
                     FRAMEWORK,
@@ -674,20 +716,29 @@ class EventHandlerMixin:
                     e,
                     context={'group_id': group_id},
                 )
+                return False
 
     async def _add_user_to_group(self, bot, group_id, user_id, member_role='', is_bot=False):
         uid = str(user_id)
         today = _today_str()
-        await self._mutate_group_user(
+        added = False
+
+        def upsert(user_map):
+            nonlocal added
+            added = uid not in user_map
+            return self._upsert_group_user(user_map, uid, today, member_role, is_bot)
+
+        changed = await self._mutate_group_user(
             bot,
             group_id,
-            lambda user_map: self._upsert_group_user(user_map, uid, today, member_role, is_bot),
+            upsert,
             create_if_missing=True,
         )
+        return changed and added
 
     async def _remove_user_from_group(self, bot, group_id, user_id):
         uid = str(user_id)
-        await self._mutate_group_user(
+        return await self._mutate_group_user(
             bot,
             group_id,
             lambda user_map: user_map.pop(uid, None) is not None,

@@ -68,7 +68,7 @@ class TestConfigReadWrite:
 
         # settings.yaml
         with open(os.path.join(temp_config_dir, 'settings.yaml'), 'w') as f:
-            yaml.dump({'web': {'access_token': 'abc123'}}, f)
+            yaml.dump({'web': {'admin_password': 'abc123'}}, f)
 
         # custom.yaml (非标准文件, 仍可读取)
         with open(os.path.join(temp_config_dir, 'custom.yaml'), 'w') as f:
@@ -78,7 +78,7 @@ class TestConfigReadWrite:
         mgr2 = ConfigManager()
         mgr2.init(temp_config_dir)
 
-        assert mgr2.get('settings', 'web.access_token') == 'abc123'
+        assert mgr2.get('settings', 'web.admin_password') == 'abc123'
         custom = mgr2.get('custom')
         assert custom['extra']['key'] == 'value'
         assert custom['extra']['list'] == [1, 2, 3]

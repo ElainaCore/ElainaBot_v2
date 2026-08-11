@@ -1,9 +1,11 @@
 """框架更新 — 版本检查/更新日志/在线更新/上传更新"""
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
+import tempfile
 from datetime import datetime, timedelta, timezone
 from typing import cast
 
@@ -231,14 +233,15 @@ async def handle_upload_update(request: web.Request):
     if not field or field.name != 'file':
         return web.json_response({'success': False, 'message': '缺少文件'}, status=400)
 
-    filename = field.filename or ''
+    filename = os.path.basename((field.filename or '').replace('\\', '/'))
     if not filename.lower().endswith('.zip'):
         return web.json_response({'success': False, 'message': '仅支持 zip 格式'}, status=400)
 
     # 保存到临时文件
     upload_dir = os.path.join(_base_dir, 'data', 'temp_update')
     os.makedirs(upload_dir, exist_ok=True)
-    filepath = os.path.join(upload_dir, filename or 'upload.zip')
+    fd, filepath = tempfile.mkstemp(prefix='upload_', suffix='.zip', dir=upload_dir)
+    os.close(fd)
 
     try:
         with open(filepath, 'wb') as f:
@@ -248,6 +251,8 @@ async def handle_upload_update(request: web.Request):
                     break
                 f.write(chunk)
     except Exception as e:
+        with contextlib.suppress(OSError):
+            os.remove(filepath)
         return web.json_response({'success': False, 'message': f'保存文件失败: {e}'}, status=500)
 
     # 读取额外字段
@@ -276,6 +281,9 @@ async def handle_upload_update(request: web.Request):
             )
         except Exception as e:
             updater._report('failed', f'更新出错: {e}', 0)
+        finally:
+            with contextlib.suppress(OSError):
+                os.remove(filepath)
 
     loop = asyncio.get_event_loop()
     loop.run_in_executor(None, _do)

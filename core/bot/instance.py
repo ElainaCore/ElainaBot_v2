@@ -6,7 +6,7 @@ import asyncio
 from core.base.config import cfg
 from core.base.logger import FRAMEWORK, get_logger
 from core.message.sender import MessageSender
-from core.network.access import TokenManager
+from core.network.access import DEFAULT_API_VERSION, TokenManager
 from core.network.websocket import WSClient
 from core.storage.log import LogService
 
@@ -36,9 +36,13 @@ class BotInstance:
         self.name = self.appid
         self.secret = str(bot_cfg['secret'])
 
-        custom_api_base = str(bot_cfg.get('api_base', '') or '')
-        self.token_manager = TokenManager(self.appid, self.secret, api_base=custom_api_base)
-        self.sender = MessageSender(self.token_manager, custom_api_base=custom_api_base)
+        self.token_manager = TokenManager(
+            self.appid,
+            self.secret,
+            api_base=bot_cfg.get('api_base', ''),
+            api_version=bot_cfg.get('api_version', DEFAULT_API_VERSION),
+        )
+        self.sender = MessageSender(self.token_manager)
 
         # 日志服务
         log_cfg = cfg.get('settings', 'logging') or {}
@@ -82,11 +86,10 @@ class BotInstance:
                 reconnect_interval=ws_cfg.get('reconnect_interval', 5),
                 max_reconnects=ws_cfg.get('max_reconnects', -1),
                 custom_url=ws_cfg.get('custom_url', ''),
-                custom_api_base=str(self.bot_cfg.get('api_base', '') or ''),
                 client_name=str(identify_cfg.get('name', '') or ''),
             )
 
-        api_info = f', API={self.sender._base_url}' if self.sender._custom_api_base else ''
+        api_info = f', API={self.token_manager.api_base}'
         bot_log.info(f'✅ 启动完成 (WS={"启用" if self.ws_client else "禁用"}{api_info})')
 
     async def _fetch_bot_name(self):

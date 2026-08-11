@@ -15,21 +15,21 @@ class StressReporter:
         self._metrics = metrics
         self._output_dir = output_dir
 
-    def generate(self, results, format="all"):
+    def generate(self, results, format='all'):
         """Generate reports for all results."""
         os.makedirs(self._output_dir, exist_ok=True)
 
         fmt = format.lower()
         paths = {}
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        ts = datetime.now().strftime('%Y%m%d_%H%M%S')
 
-        if fmt in ("all", "json"):
+        if fmt in ('all', 'json'):
             p = self._generate_json(results, ts)
-            paths["json"] = p
+            paths['json'] = p
 
-        if fmt in ("all", "html"):
+        if fmt in ('all', 'html'):
             p = self._generate_html(results, ts)
-            paths["html"] = p
+            paths['html'] = p
 
         return self._output_dir
 
@@ -38,18 +38,18 @@ class StressReporter:
         import platform
 
         output = {
-            "framework_version": "1.0",
-            "timestamp": datetime.now().isoformat(),
-            "environment": {
-                "python_version": platform.python_version(),
-                "platform": platform.system(),
-                "cpu_count": os.cpu_count() or 0,
+            'framework_version': '1.0',
+            'timestamp': datetime.now().isoformat(),
+            'environment': {
+                'python_version': platform.python_version(),
+                'platform': platform.system(),
+                'cpu_count': os.cpu_count() or 0,
             },
-            "summary": self._build_summary(results),
-            "suites": [self._result_to_dict(r) for r in results],
+            'summary': self._build_summary(results),
+            'suites': [self._result_to_dict(r) for r in results],
         }
-        path = os.path.join(self._output_dir, f"summary_{ts}.json")
-        with open(path, "w", encoding="utf-8") as f:
+        path = os.path.join(self._output_dir, f'summary_{ts}.json')
+        with open(path, 'w', encoding='utf-8') as f:
             json.dump(output, f, ensure_ascii=False, indent=2)
         return path
 
@@ -57,9 +57,9 @@ class StressReporter:
         """Generate simple HTML report."""
         summary = self._build_summary(results)
 
-        rows = ""
+        rows = ''
         for r in results:
-            verdict_color = {"PASS": "green", "WARN": "orange", "FAIL": "red"}.get(r.verdict, "gray")
+            verdict_color = {'PASS': 'green', 'WARN': 'orange', 'FAIL': 'red'}.get(r.verdict, 'gray')
             rows += f"""<tr>
                 <td>{r.suite_name}</td>
                 <td style="text-align:right">{r.total_events:,}</td>
@@ -125,8 +125,8 @@ class StressReporter:
 </body>
 </html>"""
 
-        path = os.path.join(self._output_dir, f"report_{ts}.html")
-        with open(path, "w", encoding="utf-8") as f:
+        path = os.path.join(self._output_dir, f'report_{ts}.html')
+        with open(path, 'w', encoding='utf-8') as f:
             f.write(html)
         return path
 
@@ -136,40 +136,40 @@ class StressReporter:
 
     def _build_summary(self, results):
         total = len(results)
-        passed = sum(1 for r in results if r.verdict == "PASS")
-        warned = sum(1 for r in results if r.verdict == "WARN")
-        failed = sum(1 for r in results if r.verdict == "FAIL")
+        passed = sum(1 for r in results if r.verdict == 'PASS')
+        warned = sum(1 for r in results if r.verdict == 'WARN')
+        failed = sum(1 for r in results if r.verdict == 'FAIL')
         total_events = sum(r.total_events for r in results)
         total_failed = sum(r.failed for r in results)
         return {
-            "total_suites": total,
-            "passed": passed,
-            "warned": warned,
-            "failed": failed,
-            "total_events": total_events,
-            "total_duration_seconds": round(sum(r.duration for r in results), 1),
-            "overall_error_rate": round(total_failed / max(total_events, 1), 4),
+            'total_suites': total,
+            'passed': passed,
+            'warned': warned,
+            'failed': failed,
+            'total_events': total_events,
+            'total_duration_seconds': round(sum(r.duration for r in results), 1),
+            'overall_error_rate': round(total_failed / max(total_events, 1), 4),
         }
 
     def _result_to_dict(self, r):
         return {
-            "name": r.suite_name,
-            "verdict": r.verdict,
-            "duration": round(r.duration, 3),
-            "total_events": r.total_events,
-            "successful": r.successful,
-            "failed": r.failed,
-            "error_rate": round(r.error_rate, 4),
-            "throughput_avg": round(r.throughput_avg, 1),
-            "latency_p50_ms": round(r.latency_p50 * 1000, 2),
-            "latency_p90_ms": round(r.latency_p90 * 1000, 2),
-            "latency_p95_ms": round(r.latency_p95 * 1000, 2),
-            "latency_p99_ms": round(r.latency_p99 * 1000, 2),
-            "latency_max_ms": round(r.latency_max * 1000, 2),
-            "memory_start_mb": r.memory_start_mb,
-            "memory_end_mb": r.memory_end_mb,
-            "memory_delta_mb": r.memory_delta_mb,
-            "task_count_peak": r.task_count_peak,
-            "task_count_end": r.task_count_end,
-            "error_samples": r.error_samples[:10],
+            'name': r.suite_name,
+            'verdict': r.verdict,
+            'duration': round(r.duration, 3),
+            'total_events': r.total_events,
+            'successful': r.successful,
+            'failed': r.failed,
+            'error_rate': round(r.error_rate, 4),
+            'throughput_avg': round(r.throughput_avg, 1),
+            'latency_p50_ms': round(r.latency_p50 * 1000, 2),
+            'latency_p90_ms': round(r.latency_p90 * 1000, 2),
+            'latency_p95_ms': round(r.latency_p95 * 1000, 2),
+            'latency_p99_ms': round(r.latency_p99 * 1000, 2),
+            'latency_max_ms': round(r.latency_max * 1000, 2),
+            'memory_start_mb': r.memory_start_mb,
+            'memory_end_mb': r.memory_end_mb,
+            'memory_delta_mb': r.memory_delta_mb,
+            'task_count_peak': r.task_count_peak,
+            'task_count_end': r.task_count_end,
+            'error_samples': r.error_samples[:10],
         }
