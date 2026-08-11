@@ -21,6 +21,8 @@ from modules.onebot_adapter.actions import (
     GetStrangerInfoAction,
     GetVersionInfoAction,
     SendMessageAction,
+    SetGroupAddRequestAction,
+    SetGroupBanAction,
 )
 from modules.onebot_adapter.base_action import BaseAction
 from modules.onebot_adapter.response_builder import ResponseBuilder
@@ -78,6 +80,8 @@ class ActionRegistry:
                 'get_version_info': GetVersionInfoAction(ctx),
                 'can_send_image': CanSendImageAction(ctx),
                 'can_send_record': CanSendRecordAction(ctx),
+                'set_group_add_request': SetGroupAddRequestAction(ctx),
+                'set_group_ban': SetGroupBanAction(ctx),
             }
         )
         return registry

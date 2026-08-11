@@ -75,6 +75,7 @@ if ctx:
 | `get_stranger_info` | `user_id` | 最小用户信息 |
 | `get_group_member_info` | `group_id`、`user_id` | 群成员缓存信息；未缓存时返回默认字段 |
 | `get_group_member_list` | 无 | 当前实现返回空列表 |
+| `set_group_add_request` | `flag`、`sub_type=add`、`approve`、可选 `reason` | 审批 `GROUP_JOIN_REQUEST` 产生的成员入群申请 |
 | `get_status` | 无 | `online`、`good` |
 | `get_version_info` | 无 | 适配器版本信息 |
 | `can_send_image` | 无 | `{"yes": true}` |

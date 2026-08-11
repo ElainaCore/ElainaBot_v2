@@ -9,6 +9,8 @@ import html
 import re
 import time
 
+from modules.onebot_adapter.lib.group_join_request_flag import GroupJoinRequestFlagCodec
+
 _URL_IN_ANGLE = re.compile(r'<(https?://[^>]+)>')
 
 
@@ -177,7 +179,34 @@ _LIFECYCLE_MAP = {
 
 
 async def convert_lifecycle_event(event, id_mapper, self_qq: int) -> dict | None:
-    """将 Elaina 生命周期事件转换为 OneBot 11 notice 事件"""
+    """将 Elaina 生命周期事件转换为 OneBot 11 notice/request 事件"""
+    if event.event_type == 'GROUP_JOIN_REQUEST':
+        if not event.group_id or not event.user_id:
+            return None
+        qq_group = await id_mapper.to_qq(event.group_id, 'group')
+        qq_user = await id_mapper.to_qq(event.user_id, 'user')
+        verify_info = event.get('d/verify_info') or {}
+        comment = verify_info.get('verify_message', '') if isinstance(verify_info, dict) else ''
+        return {
+            'time': int(time.time()),
+            'self_id': self_qq,
+            'post_type': 'request',
+            'request_type': 'group',
+            'sub_type': 'add',
+            'group_id': qq_group,
+            'user_id': qq_user,
+            'invitor_id': 0,
+            'comment': str(comment or ''),
+            'flag': GroupJoinRequestFlagCodec.encode(
+                event.group_id,
+                event.user_id,
+                event.join_request_id,
+            ),
+            'event_id': event.event_id or '',
+            'real_user_id': event.user_id,
+            'real_group_id': event.group_id,
+        }
+
     entry = _LIFECYCLE_MAP.get(event.event_type)
     if not entry:
         return None

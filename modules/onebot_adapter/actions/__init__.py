@@ -15,6 +15,8 @@
   - GetVersionInfoAction: get_version_info
   - CanSendImageAction: can_send_image
   - CanSendRecordAction: can_send_record
+  - SetGroupAddRequestAction: set_group_add_request
+  - SetGroupBanAction: set_group_ban
 """
 
 from modules.onebot_adapter.actions.can_send_image import CanSendImageAction
@@ -33,6 +35,8 @@ from modules.onebot_adapter.actions.get_status import GetStatusAction
 from modules.onebot_adapter.actions.get_stranger_info import GetStrangerInfoAction
 from modules.onebot_adapter.actions.get_version_info import GetVersionInfoAction
 from modules.onebot_adapter.actions.send_message import SendMessageAction
+from modules.onebot_adapter.actions.set_group_add_request import SetGroupAddRequestAction
+from modules.onebot_adapter.actions.set_group_ban import SetGroupBanAction
 
 __all__ = [
     'CanSendImageAction',
@@ -47,4 +51,6 @@ __all__ = [
     'GetStrangerInfoAction',
     'GetVersionInfoAction',
     'SendMessageAction',
+    'SetGroupAddRequestAction',
+    'SetGroupBanAction',
 ]
