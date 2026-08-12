@@ -1,1014 +1,1063 @@
-# ElainaBot 插件开发文档
+﻿# ElainaBot v2 插件开发文档
 
-> 面向开发者的完整插件开发指南 — 从最简单的 "Hello World" 到复杂的多文件插件、Web 面板扩展、主动消息推送、生命周期钩子等。
+本文档说明插件结构、配置、事件处理、消息 API、群管理 API、Web 面板扩展和模块接入。
 
----
+> 开发插件前，请先完成项目根目录 [README.md](README.md) 中的运行配置，并确认机器人已正常连接。
 
 ## 目录
 
 - [1. 快速开始](#1-快速开始)
-- [2. 插件目录结构](#2-插件目录结构)
-- [3. 核心装饰器](#3-核心装饰器)
-  - [3.1 `@handler` 消息处理器](#31-handler-消息处理器)
-  - [3.2 `@on_load` / `@on_unload` 生命周期钩子](#32-on_load--on_unload-生命周期钩子)
-  - [3.3 `@interceptor` 消息拦截器](#33-interceptor-消息拦截器)
-- [4. Event 事件对象](#4-event-事件对象)
-- [5. 消息发送 API](#5-消息发送-api)
-- [6. 插件上下文 `ctx`](#6-插件上下文-ctx)
-- [7. 插件元数据 `__plugin_meta__`](#7-插件元数据-__plugin_meta__)
-- [8. Web 面板扩展](#8-web-面板扩展)
-- [9. 配置项与全量环境](#9-配置项与全量环境)
-- [10. 调试与最佳实践](#10-调试与最佳实践)
-- [11. 模块接入索引](#11-模块接入索引)
+- [2. 插件结构与元数据](#2-插件结构与元数据)
+  - [2.1 加载规则](#21-加载规则)
+  - [2.2 普通插件](#22-普通插件)
+  - [2.3 包式插件](#23-包式插件)
+  - [2.4 插件元数据](#24-插件元数据)
+- [3. 上下文、配置与生命周期](#3-上下文配置与生命周期)
+  - [3.1 插件上下文](#31-插件上下文)
+  - [3.2 机器人配置](#32-机器人配置)
+  - [3.3 生命周期钩子](#33-生命周期钩子)
+- [4. 事件与处理器](#4-事件与处理器)
+  - [4.1 handler 装饰器](#41-handler-装饰器)
+  - [4.2 事件类型](#42-事件类型)
+  - [4.3 Event 字段](#43-event-字段)
+  - [4.4 拦截、阻断与兜底](#44-拦截阻断与兜底)
+- [5. 消息 API](#5-消息-api)
+  - [5.1 回复文本与媒体](#51-回复文本与媒体)
+  - [5.2 消息类型](#52-消息类型)
+  - [5.3 按钮与交互回调](#53-按钮与交互回调)
+  - [5.4 Ark 与卡片消息](#54-ark-与卡片消息)
+  - [5.5 主动消息](#55-主动消息)
+  - [5.6 引用、撤回与返回值](#56-引用撤回与返回值)
+  - [5.7 订阅消息](#57-订阅消息)
+  - [5.8 Sender 工具方法](#58-sender-工具方法)
+- [6. 群管理 API](#6-群管理-api)
+  - [6.1 权限与接口概览](#61-权限与接口概览)
+  - [6.2 群资料与本地记录](#62-群资料与本地记录)
+  - [6.3 入群申请事件](#63-入群申请事件)
+  - [6.4 查询与审批入群申请](#64-查询与审批入群申请)
+  - [6.5 群禁言](#65-群禁言)
+  - [6.6 返回值与错误处理](#66-返回值与错误处理)
+- [7. Web 面板扩展](#7-web-面板扩展)
+- [8. Image Hosting 模块](#8-image-hosting-模块)
+- [9. 调试与运行限制](#9-调试与运行限制)
+- [10. 参考实现](#10-参考实现)
 
 ---
 
 ## 1. 快速开始
 
-在 `plugins/` 下新建文件 `plugins/hello/main.py`：
+在 `plugins/hello/main.py` 中创建插件入口：
 
-```python
-"""Hello 插件 — 最小示例"""
+~~~python
 from core.plugin.decorators import handler
 
 
 @handler(r'^你好$', name='打招呼', desc='回复一句问候')
 async def say_hello(event, match):
-    await event.reply(f"你好, {event.user_id[:8]}****!")
-```
+    await event.reply('你好！')
+~~~
 
-**完成。** 框架启动时会自动扫描 `plugins/` 目录加载插件，热更新也已内置。
+框架启动时会扫描 `plugins/` 下的插件目录并自动加载。保存插件文件后，文件监视器会触发热重载。
 
 | 元素 | 说明 |
 | --- | --- |
-| `@handler(r'^你好$')` | 正则匹配用户消息 |
-| `event` | 当前消息事件对象 (`core.message.event.Event`) |
-| `match` | `re.Match` 对象 (匹配结果) |
+| `@handler(...)` | 声明消息或事件处理器 |
+| `event` | 当前 `core.message.event.Event` 对象 |
+| `match` | 正则表达式的 `re.Match` 结果 |
 | `event.reply(...)` | 回复当前会话 |
 
+`handler` 使用 `search()` 匹配；`^` 和 `$` 可将命令限制为整条消息匹配。
+
 ---
 
-## 2. 插件目录结构
+## 2. 插件结构与元数据
 
-ElainaBot 支持两种插件形态：
+### 2.1 加载规则
 
-### 2.1 简单插件 (单文件)
+框架只扫描 `plugins/` 下的一级目录，不直接加载 `plugins/` 根目录中的 Python 文件。
 
-```
+| 目录情况 | 加载方式 |
+| --- | --- |
+| 存在 `index.py`、`app.py` 或 `main.py` | 作为包式插件加载；按该顺序选择第一个存在的入口文件 |
+| 不存在入口文件 | 加载目录根部所有非下划线开头的 `*.py` 文件 |
+| 存在 `requirements.txt` | 加载前自动检查并安装依赖 |
+| 目录或文件名以 `_`、`.` 开头 | 扫描时忽略 |
+
+包式插件只自动执行入口文件。需要使用子模块时，应在入口中显式导入。普通插件不会递归扫描子目录。
+
+### 2.2 普通插件
+
+普通插件适合独立命令或少量功能，单文件插件通常位于 `plugins/alone/`：
+
+~~~text
 plugins/
-└── hello/
-    ├── 任意文件名.py       # 入口文件 
-    ├── requirements.txt   # 依赖 (可选, 自动 pip install)
-    └── data/              # 持久化数据 (可选, 由 ctx 管理)
-```
+└── alone/
+    ├── weather.py
+    ├── translate.py
+    └── requirements.txt    # 可选，目录内插件共享
+~~~
 
-### 2.2 大型插件 (多文件 + 子模块)
+### 2.3 包式插件
 
-```
+包式插件适合包含多个业务模块、资源文件或 Web 页面的功能：
+
+~~~text
 plugins/
 └── my_plugin/
-    ├── main.py            # 入口（以下入口仅作推荐命名，不强制）
-    ├── app/               # 子插件目录
-    │   └── **.py
-    ├── mod/               # 业务模块
-    │   └── **.py
-    ├── data/              # 数据存储
-    │   └── **.yaml
-    ├── necessary/         # 资源文件
+    ├── main.py             # 入口，也可使用 index.py 或 app.py
+    ├── handlers/
+    │   ├── __init__.py
+    │   └── commands.py
+    ├── services/
+    │   └── client.py
+    ├── assets/
+    │   └── panel.html
+    ├── data/               # 运行数据，不应提交敏感配置
     └── requirements.txt
-```
+~~~
 
-> **入口文件命名**: `index.py` / `app.py` / `main.py` 任选其一  
-> **子目录访问**: `from .mod.core import xxx`  
-> **自由组织**: 框架只识别入口文件，内部目录结构、文件数量和命名完全自由，只需在入口文件中 import 即可生效。
+入口文件中显式导入注册处理器的子模块：
 
----
+~~~python
+# plugins/my_plugin/main.py
+from .handlers import commands  # noqa: F401
+~~~
 
-## 3. 核心装饰器
+不要在插件目录内自行修改 `sys.path`。包式插件已注册为 `plugins.<插件目录名>` 包，可直接使用相对导入。
 
-所有装饰器都从 `core.plugin.decorators` 导入：
+### 2.4 插件元数据
 
-```python
-from core.plugin.decorators import handler, on_load, on_unload, interceptor
-```
+在入口模块顶层声明 `__plugin_meta__`。Web 面板会显示受支持的字段：
 
-### 3.1 `@handler` 消息处理器
-
-**签名**:
-
-```python
-@handler(pattern, *, name='', desc='', priority=0, owner_only=False,
-         group_only=False, direct_only=False, channel_only=False,
-         event_types=None, cooldown=0, ignore_at_check=False, block=False,
-         fallback=False)
-```
-
-| 参数 | 类型 | 默认 | 说明 |
-| --- | --- | --- | --- |
-| `pattern` | `str` | — | 正则表达式 (使用 `re.DOTALL` 编译) |
-| `name` | `str` | 函数名 | 处理器显示名称 (Web 面板 / 日志) |
-| `desc` | `str` | `''` | 功能描述 |
-| `priority` | `int` | `0` | 优先级 (数字越大越先匹配) |
-| `owner_only` | `bool` | `False` | 仅主人可触发 |
-| `group_only` | `bool` | `False` | 仅群聊 |
-| `direct_only` | `bool` | `False` | 仅私聊 |
-| `channel_only` | `bool` | `False` | 仅频道 |
-| `event_types` | `list[str]` | `None` | 仅响应指定事件类型 (见下表) |
-| `cooldown` | `int` | `0` | 冷却时间 (秒, 0 = 无冷却) |
-| `ignore_at_check` | `bool` | `False` | 全量模式: 不需@机器人也触发 |
-| `block` | `bool` | `False` | 命中后是否拦截后续处理器 (见 3.1.1) |
-| `fallback` | `bool \| Callable[[Event], bool]` | `False` | 为真时仅在普通处理器完成原文和斜杠兼容匹配后仍未命中时参与；函数形式可按事件和动态配置决定阶段 |
-
-**事件类型常量** (`event_types` 可选值):
-
-| 常量 | 含义 |
-| --- | --- |
-| `GROUP_AT_MESSAGE_CREATE` | 群聊 @ 机器人 |
-| `GROUP_MESSAGE_CREATE` | 群聊全量消息 |
-| `C2C_MESSAGE_CREATE` | 私聊消息 |
-| `DIRECT_MESSAGE_CREATE` | 频道私信 |
-| `AT_MESSAGE_CREATE` | 频道 @ 机器人 |
-| `MESSAGE_CREATE` | 频道公开消息 |
-| `INTERACTION_CREATE` | 按钮/交互回调 |
-| `GROUP_ADD_ROBOT` / `GROUP_DEL_ROBOT` | 机器人加群/退群 |
-| `GROUP_MEMBER_ADD` / `GROUP_MEMBER_REMOVE` | 群成员入群/退群 |
-| `GROUP_MSG_REJECT` / `GROUP_MSG_RECEIVE` | 群消息拒绝/恢复 |
-| `FRIEND_ADD` / `FRIEND_DEL` | 加好友/删好友 |
-| `MESSAGE_REACTION_ADD` / `MESSAGE_REACTION_REMOVE` | 表态(表情回应)添加/移除 |
-
-**示例**:
-
-```python
-@handler(r'^管理\s+(\S+)$', name='管理命令', owner_only=True, group_only=True)
-async def admin(event, match):
-    await event.reply(f"✅ 已处理: {match.group(1)}")
-
-
-@handler(r'^签到$', name='签到', ignore_at_check=True)  # 无需@即可触发
-async def check_in(event, match):
-    await event.reply("✅ 签到成功!")
-
-
-@handler(r'(?s)^(.+)$', name='自然对话', priority=-50, fallback=True)
-async def chat(event, match):
-    await event.reply(await ask_model(match.group(1)))
-```
-
-`fallback=True` 适用于 AI 对话等兜底处理器。框架会先让普通处理器依次匹配原文和加/去 `/` 后的兼容文本；两轮均未命中时，兜底处理器才使用原始消息匹配。不要仅用低 `priority` 模拟兜底，否则宽泛正则仍可能抢先命中带 `/` 的指令。
-
-需要运行时开关时，可传入接收 `Event` 的判断函数，例如 `fallback=lambda event: load_config()['fallback_only']`。配置变化会在下一条消息生效，不需要重载插件。
-
-#### 3.1.1 `block` 放行 / 拦截
-
-多个插件注册相同指令时, `block=False` (默认) 放行让所有命中处理器按 `priority` 顺序执行, `block=True` 命中即拦截后续低优先级处理器:
-
-```python
-@handler(r'^状态$', name='系统状态', priority=10, block=True)  # 命中即拦截, 只有它响应
-async def status(event, match):
-    await event.reply("✅ 系统正常")
-
-
-@handler(r'^状态$', name='天气状态', priority=0)  # 被上面 block 拦截, 不会触发
-async def weather(event, match):
-    await event.reply("☀️ 今天晴")
-```
-
-### 3.2 `@on_load` / `@on_unload` 生命周期钩子
-
-```python
-from core.plugin.decorators import on_load, on_unload
-
-
-@on_load
-async def init():
-    """插件加载完成时执行 (支持 async/sync)"""
-    print("插件已加载")
-
-
-@on_unload
-def cleanup():
-    """插件卸载/重载时执行 — 清理资源"""
-    print("插件已卸载")
-```
-
-> **使用场景**: 启动后台任务、连接数据库、注册 Web 页面、注销定时器等。
-
-### 3.3 `@interceptor` 消息拦截器
-
-```python
-@interceptor(priority=100)
-async def filter_keywords(event):
-    """返回 True 阻止后续 handler 匹配, 否则继续"""
-    if '违禁词' in (event.content or ''):
-        await event.reply("⛔ 消息包含违禁词")
-        return True
-    return False
-```
-
-| 参数 | 说明 |
-| --- | --- |
-| `priority` | 拦截器优先级 (数字越大越先执行) |
-| 返回值 | `True` 阻止后续处理, 其他值继续 |
-
----
-
-## 4. Event 事件对象
-
-`event` 是所有 handler 的第一个参数, 提供事件的全部上下文。
-
-### 4.1 常用字段
-
-| 字段 | 类型 | 说明 |
-| --- | --- | --- |
-| `event.user_id` | `str` | 用户 ID (OpenID, 或 union_id 取决于配置) |
-| `event.username` | `str` | 用户昵称 (可能为空) |
-| `event.group_id` | `str` | 群 ID (仅群聊) |
-| `event.channel_id` | `str` | 频道 ID |
-| `event.content` | `str` | 消息文本 (已去除 @机器人 标记) |
-| `event.raw_content` | `str` | 原始消息内容 |
-| `event.message_id` | `str` | 消息 ID |
-| `event.event_type` | `str` | 事件类型 |
-| `event.appid` | `str` | 机器人 AppID |
-| `event.attachments` | `list` | 附件列表 (图片/文件等) |
-| `event.image_url` | `str` | 图片 URL (若消息含图片) |
-| `event.raw` | `dict` | 原始 payload 字典 |
-| `event.timestamp` | `str` | 消息时间戳 |
-| `event.event_id` | `str` | 事件 ID |
-| `event.guild_id` | `str` | 频道服务器 ID (频道场景) |
-| `event.interaction_data` | `dict` | 交互回调数据 (仅 INTERACTION 事件) |
-| `event.callback_code` | `int` / `None` | 交互回调状态码, 见 5.8 |
-| `event.message_reference_id` | `str` | 可引用的 REFIDX (用于引用回复, 见 5.7) |
-| `event.message_scene` | `dict` | 消息场景信息 (`source` / `ext` 等) |
-| `event.raw_user_id` | `str` | 平台原始用户 OpenID (不受 union_id 配置影响) |
-| `event.union_openid` | `str` | 用户 union_openid (跨机器人统一 ID, 可能为空) |
-| `event.msg_elements` | `list` | 消息元素列表 (平台原始 msg_elements) |
-| `event.member_role` | `str` | 发送者群身份 (`admin` / `owner` / 空) |
-| `event.bot_member_role` | `str` | 机器人在该群的身份 (被@时由 mentions 解析) |
-| `event.error` | `dict` / `None` | 最近一次媒体上传失败的响应 (排查用) |
-
-### 4.2 场景标识 (布尔属性)
-
-| 属性 | 说明 |
-| --- | --- |
-| `event.is_group` | 群聊 |
-| `event.is_direct` | 私聊 |
-| `event.is_channel` | 频道 |
-| `event.is_interaction` | 按钮交互回调 |
-| `event.is_lifecycle` | 生命周期事件 (加群/加好友) |
-| `event.is_bot` | 消息发送者是机器人 | 
-
-### 4.3 @ 相关 (仅群聊)
-
-| 属性 | 说明 |
-| --- | --- |
-| `event.is_at_self` | 是否 @ 了当前机器人 |
-| `event.is_at_other_bot` | 是否 @ 了其他机器人 |
-| `event.is_at_other_user` | 是否 @ 了其他普通用户 |
-| `event.is_at_all` | 是否 @ 了全体成员 |
-| `event.mentions` | @ 列表原始数据 |
-
-### 4.4 派生属性
-
-| 属性 | 说明 |
-| --- | --- |
-| `event.chat_id` | 自动返回 `group_id` / `user_id` / `channel_id` |
-| `event.chat_type` | 返回 `'group'` / `'direct'` / `'channel'` / `'unknown'` |
-| `event.get(path)` | JSON 路径取值, 如 `event.get('d/author/id')` |
-| `event.sender` | 底层 `MessageSender` 实例 (高级用法) |
-
----
-
-## 5. 消息发送 API
-
-`event` 通过代理表自动转发到 `MessageSender`, 调用形如 `await event.reply(...)`。
-
-### 5.1 文本与媒体回复
-
-```python
-# 文本回复
-await event.reply("Hello!")
-
-# 带按钮回复 (按钮字段与示例见 5.2 节)
-await event.reply("📌 选择操作", buttons=[[{'text': '回调', 'data': 'cb_1', 'type': 1}]])
-
-# 自动撤回 (秒)
-await event.reply("⏰ 5秒后撤回", auto_delete_time=5)
-
-# 图片 (URL 或 bytes)
-await event.reply_image("https://i.elaina.vin/1.png", "图片说明")
-await event.reply_image(open('local.png', 'rb').read(), "本地图片")
-await event.reply_image("https://...", "10秒后撤回", auto_delete_time=10)  # 媒体也支持自动撤回
-
-# 语音 / 视频 / 文件
-await event.reply_voice("https://example.com/audio.wav")
-await event.reply_video("https://example.com/video.mp4")
-await event.reply_file('/path/to/file.txt', "📄 文档", file_name="custom.txt")
-```
-
-#### `reply()` 完整参数一览
-
-```python
-await event.reply(
-    content=None,              # 文本内容
-    buttons=None,              # 按钮 (见 5.2)
-    media=None,                # 已上传的 media 对象 {'file_info': ...} (高级用法)
-    msg_type=None,             # 强制消息类型 (见 5.1.2)
-    template_name=None,        # 模板名 (见 5.4)
-    template_vars=None,        # 模板变量 dict
-    prompt_buttons=None,       # 扩展 prompt 按钮 (见 5.2)
-    auto_delete_time=None,     # N 秒后自动撤回
-    skip_suffix=False,         # 跳过全局 markdown_suffix 后缀 (见 5.1.2)
-    message_reference_id=None, # 引用回复 REFIDX (见 5.7)
-    message_reference=None,    # 完整引用对象 dict (优先于 message_reference_id)
-    button_font_size=None,     # 键盘级按钮字号 small/middle/large (见 5.2)
-    button_style=None,         # 键盘级样式 dict, 直接并入 keyboard.content.style
-    # **kwargs: 其余关键字原样并入平台载荷 (payload), 支持平台新增字段
-)
-```
-
-> **kwargs 透传**: 未列出的关键字参数会原样写入发送载荷, 例如 `await event.reply('hi', markdown={'custom_template_id': 'xxx', 'params': [...]})` 可直接使用平台原生字段。`reply_image` / `reply_voice` / `reply_video` / `reply_file` 支持的关键字为 `file_name` / `auto_delete_time` / `target_user_id` / `target_group_id` (见 5.5)。
-
-#### 5.1.2 消息类型: 强制 markdown / 强制纯文本
-
-框架默认按 `bot.yaml` 的 `message.use_markdown` 决定用 markdown (`msg_type=2`) 还是纯文本 (`msg_type=0`) 发送。单条消息可通过 `msg_type` 参数强制覆盖:
-
-```python
-# 强制以纯文本发送 (即使全局开启 use_markdown)
-await event.reply("**不会加粗**, 原样显示", msg_type=0)
-
-# 强制以 markdown 发送 (即使全局关闭 use_markdown)
-await event.reply("**加粗** 和 [链接](https://example.com)", msg_type=2)
-
-# 主动消息同样支持
-await event.send_to_group(event.group_id, "# 标题", msg_type=2)
-```
-
-| 值 | 说明 |
-| --- | --- |
-| `0` | 纯文本 |
-| `2` | 原生 Markdown |
-| `3` | Ark 卡片 (由 `reply_ark` 自动设置) |
-| `7` | 富媒体 (由 `reply_image` 等自动设置) |
-| `8` | 卡片消息 (由 `reply_card` 自动设置) |
-
-> 不传 `msg_type` 时按 `message.use_markdown` 配置决定。
-
-**markdown 全局后缀**: markdown 消息会自动拼接 `bot.yaml` 中 `message.markdown_suffix` 配置的全局后缀 (支持 `\n` 等转义)。单条消息可用 `skip_suffix=True` 跳过:
-
-```python
-await event.reply("这条消息不带全局后缀", skip_suffix=True)
-await event.send_to_group(event.group_id, "主动消息同样支持", skip_suffix=True)
-```
-
-### 5.2 按钮完整字段参考
-
-按钮是二维数组 `list[list[dict]]` (行 × 列), 每个按钮是一个字典。全部字段一览:
-
-| 字段 | 类型 | 默认 | 说明 |
-| --- | --- | --- | --- |
-| `text` | `str` | `''` | 按钮显示文字 (**必填**) |
-| `type` | `int` | `2` | 按钮类型: `0`=跳转链接 / `1`=回调 / `2`=输入指令 / `4`=订阅 |
-| `data` | `str` | `text` | type=0: URL; type=1: 回调标识; type=2: 填充到输入框的内容 |
-| `link` | `str` | — | 快捷方式: 设置后自动设为 `type=0 + data=link` |
-| `show` | `str` | `text` | 点击后显示的文字 (visited_label) |
-| `style` | `int` | `1` | 样式: `0`=灰框 / `1`=蓝框蓝字 / `2`=黑框(PC 端气泡) / `3`=黑框红字 / `4`=蓝底白字 |
-| `reply` | `bool` | — | 点击后作为引用回复发送 |
-| `limit` | `int` | — | 点击次数限制 (`click_limit`)可能无效 |
-| `tips` | `str` | — | 不支持时的提示文字 (`unsupport_tips`) |
-| `modal` | `str`/`dict` | — | 点击后的二次确认弹窗; 字符串等价于 `{'content': 文本}`, dict 可额外指定 `confirm_text` / `cancel_text` |
-| `subscribe` | `str`/`list`/`dict` | — | 订阅模板 ID, 设置后自动设为 `type=4` 并生成 `subscribe_data`; 含 `_` 的 ID 转为 `custom_template_id`, 否则为 `template_id`; dict 原样透传 |
-
-**权限字段** (五者二选一, 优先级从上到下): `permission` (显式权限对象, 如 `{'type': 1}`) > `role` (身份组 ID 列表, 频道场景 → type=3) > `list` (用户 ID 列表 → type=0) > `admin` (仅管理员 → type=1) > 默认所有人可点 (type=2)。
-
-平台原生 action 字段 (`subscribe_data` / `click_limit` / `unsupport_tips` / `anchor`) 也可以直接写在按钮字典里, 原样透传到 `action`; 写了 `subscribe_data` 且未指定 `type` 时自动设为 `type=4`。
-
-#### 按钮示例
-
-```python
-buttons = [
-    # type: 0=跳转链接 / 1=回调 / 2=输入指令 / 4=订阅 (link 等同 type=0)
-    [{'text': '跳转官网', 'link': 'https://example.com'},
-     {'text': '点我回调', 'data': 'cb_action_1', 'type': 1},
-     {'text': '/帮助', 'type': 2}],
-    # style: 0=灰框 / 1=蓝框蓝字(默认) / 2=黑框(PC 端气泡) / 3=黑框红字 / 4=蓝底白字
-    [{'text': '灰框', 'data': 's0', 'type': 1, 'style': 0},
-     {'text': '蓝框蓝字', 'data': 's1', 'type': 1, 'style': 1},
-     {'text': '黑框', 'data': 's2', 'type': 1, 'style': 2},
-     {'text': '黑框红字', 'data': 's3', 'type': 1, 'style': 3},
-     {'text': '蓝底白字', 'data': 's4', 'type': 1, 'style': 4}],
-    # 权限与限制
-    [{'text': '仅管理员', 'data': 'admin_only', 'type': 1, 'admin': True},
-     {'text': '点击一次', 'data': 'once', 'type': 1, 'limit': 1}],
-    # 订阅按钮 (type=4): 必须挂在 markdown 消息 (msg_type=2) 上发送
-    [{'text': '订阅', 'show': '已订阅',
-      'subscribe': '102134274_1749040268',  # 机器人Markdown模板 id
-      'modal': {'content': '确认订阅？', 'confirm_text': '✔️确认', 'cancel_text': '❌取消'},
-      'tips': '请升级QQ版本'}],
-]
-await event.reply("📌 多功能按钮面板", buttons=buttons, msg_type=2)
-```
-
-> ⚠️ `subscribe` 必须传入真实存在的模板 ID: 无效模板 (如 `template_id: "0"`) 会导致部分 QQ 客户端点击按钮后闪退。
-
-#### 发送订阅消息
-
-用户点击订阅按钮后, 平台下发 `SUBSCRIBE_MESSAGE_STATUS` 订阅事件, 事件中返回 `subscribe_id` (发送订阅消息的票据)。框架会自动记录订阅关系 (模板ID ↔ 群/用户, 含 `subscribe_id`), 也可用 `event_types=['SUBSCRIBE_MESSAGE_STATUS']` 订阅该事件自行读取 `event.subscribe_results`。
-
-但**必须携带 `subscribe_id`** — 不填写将按普通主动消息推送 (占用主动消息条数):
-
-```python
-markdown_id = '102134274_1749040268'  # markdown 模板 id (订阅按钮 subscribe 字段填的那个)
-# 先查该群订阅了哪些模板: [{template_id, sub_type, subscribe_id}, ...]
-subs = log_service.subscribe_get_by_target(group_id)
-t = next((x for x in subs if x['template_id'] == markdown_id), None)
-if t:
-    ok, data, _ = await event.send_to_group(
-        group_id, '🔔 这是一条订阅消息推送', subscribe_id=t['subscribe_id'])
-    # 单次订阅 (sub_type='once') 发送后作废, 永久订阅可重复推送; 单群有每日推送限额
-    if ok and t['sub_type'] == 'once':
-        await log_service.subscribe_consume(markdown_id, group_id)
-```
-
-#### 小按钮 (键盘级字号)
-
-通过键盘级样式 `content.style.font_size` 控制整组按钮的大小 (对应官方 botgo
-`CustomKeyboard.Style.FontSize`), 取值 `small` / `middle` / `large`, `small`
-即「小按钮」, 不传则保持默认大小:
-
-```python
-# 方式一: reply 关键字 button_font_size / button_style
-await event.reply("📌 小按钮面板", buttons=buttons, button_font_size='small')
-await event.reply("📌", buttons=buttons, button_style={'font_size': 'small'})  # 整体样式 dict, 对应平台 keyboard.content.style
-
-# 方式二: buttons 用 dict 包装 (适用于所有发送入口, 含主动推送/频道)
-await event.reply("📌 小按钮面板", buttons={'rows': buttons, 'font_size': 'small'})
-await event.reply("📌", buttons={'rows': buttons, 'style': {'font_size': 'small'}})
-```
-
-#### 附: 扩展 prompt 按钮 (最多 3 个)
-
-```python
-# 字符串简写 (点击后自动发送 'elaina')
-await event.reply("选择:", prompt_buttons=['选项A', '选项B', '选项C'])
-
-# (文本, 样式) 元组
-await event.reply("选择:", prompt_buttons=[('确认', 1), ('取消', 0)])
-```
-
-### 5.3 Ark 卡片
-
-```python
-# ark23 — 列表卡片
-await event.reply_ark(23, (
-    "列表卡片标题", "提示文本",
-    [['项目1'], ['项目2', 'https://link.com']]))
-
-# ark24 — 文本+图片
-await event.reply_ark(24, (
-    "提示", "标题", "副标题", "描述", "图片URL", "跳转URL", "图片副标题"))
-
-# ark37 — 大图文
-await event.reply_ark(37, (
-    "提示", "标题", "副标题", "图片URL", "跳转URL"))
-```
-
-### 5.3.1 卡片消息 (msg_type=8)
-
-`reply_card(card_type, data)` 发送卡片消息, `card_type` 可自定义以支持平台新增卡片类型, `data` 为 dict 时原样作为 `card.content` 发送:
-
-```python
-# tuwen 图文卡片, 元组简写: (标题, 描述, 图片URL, 跳转URL)
-await event.reply_card('tuwen', (
-    "QQ开放平台", "2分钟完成注册并创建QQBot",
-    "https://example.com/pic.png", "https://q.qq.com/#/"))
-
-# 自定义类型/字段, dict 原样透传
-await event.reply_card('tuwen', {
-    'title': 'QQ开放平台', 'description': '...', 'pic_url': '...', 'url': '...'})
-```
-
-### 5.4 模板消息
-
-```python
-# 引用 templates 目录下的模板
-await event.reply(template_name='maintenance',
-                  template_vars={'user_id': event.user_id})
-```
-
-### 5.5 主动推送图片
-
-```python
-# 主动推送图片到指定群/用户 (不关联消息)
-await event.send_image('group', event.group_id, "https://...", "图片说明")
-await event.send_image('user', event.user_id, image_bytes, "说明")
-
-# 或者用 reply_* 系列 + target_group_id / target_user_id 主动推送任意媒体
-await event.reply_image("https://...", "说明", target_group_id="群ID")
-await event.reply_video("https://...", target_user_id="用户ID")
-await event.reply_file('/path/file.zip', "📦", file_name="pkg.zip", target_group_id="群ID")
-```
-
-> 传入 `target_group_id` / `target_user_id` 后, 媒体不再关联当前消息 (变为主动推送), 可另传 `msg_id=...` 使其关联指定消息成为被动回复。媒体上传失败时, 最近一次失败响应会记录到 `event.error` 供排查。
-
-### 5.6 主动消息推送
-
-```python
-await event.send_to_group(event.group_id, "主动群消息")     # 目标 ID 可为当前会话或任意指定
-await event.send_to_user(event.user_id, "主动私聊消息")
-await event.send_to_channel("频道ID", "频道消息")
-```
-
-#### `send_to_group` / `send_to_user` 参数
-
-除首参为目标 ID 外, `content` / `buttons` / `media` / `msg_type` / `skip_suffix` / `message_reference_id` / `**kwargs` 透传均与 `reply()` 一致 (见 5.1), 额外支持:
-
-```python
-await event.send_to_group(
-    group_id,      # 目标群 ID (send_to_user 为 user_id)
-    msg_id=None,   # 关联消息 ID → 变为被动回复 (不占主动推送额度)
-    event_id=None, # 关联事件 ID (加群/加好友等事件回复)
-)
-```
-
-`send_to_channel(channel_id, content, *, msg_id=None, buttons=None, **kwargs)` 支持 `msg_id` 被动化与 `buttons`。
-
-> **`event.reply()` vs `event.send_to_*()`**: `reply` 是被动回复 (关联当前消息 msg_id), `send_to_*` 是主动推送 (不关联消息)。日常使用 `reply` 即可, 延迟场景 (如定时任务、sleep 后) 可以用 `send_to_*`。
-
-#### 不依赖 event 的主动推送
-
-`send_to_*` 不读取 event 字段, `event.send_to_*` 只是便捷写法。没有 event 时 (定时任务、`@on_load` 后台循环) 取一个 `sender` 直接调用:
-
-```python
-from core.bot.manager import _bot_manager_ref
-
-# 取任意可用 bot 的 sender (指定 appid: _bot_manager_ref.get_bot(appid).sender)
-sender = next(iter(_bot_manager_ref._bots.values())).sender
-
-await sender.send_to_group("群ID", "通知内容")
-await sender.send_to_user("用户ID", "私信内容")
-await sender.send_to_channel("频道ID", "频道消息")
-```
-
-### 5.7 引用消息与发送返回值
-
-#### 发送返回值
-
-| 方法 | 返回值 |
-| --- | --- |
-| `reply` / `reply_image` / `reply_ark` 等 | 平台响应 `dict` (失败为 `None`) |
-| `send_to_group` / `send_to_user` | `(ok, data, payload)` 三元组 |
-| `send_to_channel` | `(ok, data)` |
-| `send_wakeup` | `(ok, 消息ID或原因)` |
-
-响应 `dict` 常用字段: `data['id']` (平台消息 ID)、`data['ext_info']['ref_idx']` (本条消息的可引用 REFIDX)。
-
-#### 引用消息 (message_reference_id)
-
-引用回复需要传 **REFIDX** (`REFIDX_xxx`), 而不是平台消息 ID (`ROBOT1.0_xxx`):
-
-```python
-# 1) 引用"用户当前这条消息"
-await event.reply("引用你刚发的消息", message_reference_id=event.message_reference_id)
-
-# 2) 引用"机器人刚发出的那条消息" (从发送响应里取 ref_idx)
-data = await event.reply("第一条")
-ref = (data or {}).get('ext_info', {}).get('ref_idx', '')
-if ref:
-    await event.reply("引用上面那条", message_reference_id=ref)
-
-# 3) 主动消息也可引用
-await event.send_to_group(event.group_id, "通知", message_reference_id=ref)
-```
-
-> 框架会自动组装为 `{"message_reference": {"message_id": "REFIDX_xxx", "ignore_get_message_error": true}}`。只有显式传 `message_reference_id` 才会引用。需要完全自定义引用对象时可直接传 `message_reference={...}` (优先级高于 `message_reference_id`)。
-
-### 5.8 撤回与交互回调
-
-```python
-# 撤回当前消息
-await event.recall()
-
-# 撤回指定消息
-await event.recall(message_id="xxx")
-```
-
-**交互回调** — 回调按钮 (`type=1`) 被点击时下发 `INTERACTION_CREATE` 事件, 此时 `event.content` 即按钮的 `data`。用 `set_callback_code` 应答这次点击:
-
-```python
-@handler(r'^my_btn$', event_types=['INTERACTION_CREATE'])
-async def on_click(event, match):
-    event.set_callback_code(0)     # 应答这次交互
-    # event.set_ack_timeout(15)    # 需更久处理时, 先延长等待(秒)再设置 code
-    # 未调用时, 框架会自动用默认 code 应答
-
-# 旧式 REST 应答 (会额外发一次请求, 一般无需使用)
-await event.ack_interaction(code=0)
-```
-
-### 5.9 唤醒消息 (召回功能)
-
-```python
-# 智能召回 (按规则发送)
-ok, reason = await event.send_wakeup(user_id, "📢 召回提示")
-
-# 强制召回 (跳过条件)
-ok, result = await event.sender.force_wakeup(user_id, "强制召回")
-```
-
-### 5.10 高级工具方法 (通过 `event.sender`)
-
-```python
-# 生成分享链接
-url = await event.sender.get_share_link(callback_data='my_data')
-
-# 获取图片尺寸 (URL/bytes/本地路径, 返回 {'width', 'height', 'px'} 或 None)
-size = await event.sender.get_image_size("https://...")
-
-# 手动上传媒体文件 (返回 file_info)
-file_info = await event.sender.upload_media(event, file_bytes, file_type=1)
-# file_type: 1=图片, 2=视频, 3=语音, 4=文件
-
-# 查询单个群成员详情 (返回 dict 或 None, 含 member_openid/username/member_role 等)
-member = await event.sender.get_group_member(group_id, user_id)
-
-# 查询机器人自身在某群的成员信息 (返回 dict 或 None)
-bot_member = await event.sender.get_bot_member(group_id)
-is_admin = bot_member and bot_member.get('member_role') in ('admin', 'owner')
-
-# 群资料、入群申请和禁言管理，完整用法见下一节
-group_info = await event.sender.get_group_info(group_id)
-join_requests = await event.sender.get_group_join_requests(group_id)
-mute_setting = await event.sender.get_group_restrict_chat_setting(group_id)
-
-# 读取 data.db 中该群的完整记录，不调用平台接口
-group = await event.get_group_record(group_id)
-```
-
-#### 群管理接口
-
-| 方法 | 用途 | 限制 | 返回值 |
-| --- | --- | --- | --- |
-| `get_group_record(group_id)` | 从数据库读取完整群记录 | 无接口请求 | 字典或 `None` |
-| `get_group_info(group_id)` | 获取并保存群名称、人数 | 30 QPM | 数据或 `None` |
-| `get_group_bot_state(group_id)` | 获取并保存机器人身份、消息权限 | 30 QPM | 数据或 `None` |
-| `refresh_group_info(group_id)` | 同时调用上面两个接口 | 每个接口 30 QPM | 汇总字典 |
-| `get_group_join_requests(group_id, cursor='', limit=20)` | 分页查询入群申请 | 30 QPM | 分页数据或 `None` |
-| `review_group_join_request(...)` | 通过或拒绝入群申请 | 60 QPM | `(ok, response)` |
-| `get_group_restrict_chat_setting(group_id)` | 查询全员与成员禁言 | 30 QPM | 数据或 `None` |
-| `set_group_member_mute(group_id, members)` | 设置或解除成员禁言 | 60 QPM | `(ok, response)` |
-
-机器人需为群主或管理员才能调用申请审批和禁言接口。查询接口不要放在消息处理器中循环调用；批量刷新每次最多处理 25 个群，并逐群间隔调用。
-
-`get_group_record()` 读取当前机器人 `data.db` 中该群的完整记录，不会调用 QQ 接口，因此没有 QPM 限制。既可以通过 `event` 调用，也可以直接通过 `event.sender` 调用：
-
-```python
-group = await event.get_group_record(event.group_id)
-if group:
-    print(group['group_name'], group['group_member_num'])
-    print(group['is_admin'], group['is_full_access'])
-    print(group['allow_proactive_msg'], group['in_group'])
-    print(group['users'])
-
-# 等价写法
-group = await event.sender.get_group_record(group_id)
-```
-
-返回字典包含 `group_id`、`group_name`、`users`、`group_member_num`、`is_admin`、`is_full_access`、`allow_proactive_msg`、`in_group`。其中 `users` 已从数据库 JSON 转为列表，四个状态字段已转为布尔值；数据库没有该群记录时返回 `None`。该方法只读取本地已有数据，不会自动刷新数据。
-
-```python
-# 更新群资料与机器人状态
-result = await event.sender.refresh_group_info(group_id)
-print(result['group_info'], result['bot_state'], result['errors'])
-
-# 查询申请；next_cursor 为空表示已到最后一页
-page = await event.sender.get_group_join_requests(group_id, cursor='', limit=20)
-for item in page['list']:
-    print(item['username'], item['member_openid'], item['join_request_id'])
-cursor = page['next_cursor']
-
-# 通过申请；op 改为 decline 即为拒绝
-ok, response = await event.sender.review_group_join_request(
-    group_id, member_openid, 'approve', join_request_id=join_request_id)
-
-# 拒绝时可填写理由并加入群黑名单
-ok, response = await event.sender.review_group_join_request(
-    group_id, member_openid, 'decline',
-    join_request_id=join_request_id,
-    reject_reason='不符合入群要求',
-    add_to_member_blacklist=True,
-)
-
-# 查询禁言状态
-setting = await event.sender.get_group_restrict_chat_setting(group_id)
-print(setting['global_rule'], setting['members'])
-
-# add=增加、update=更新、del=解除；单次最多 10 人
-ok, response = await event.sender.set_group_member_mute(group_id, [{
-    'op': 'add',
-    'member_openid': member_openid,
-    'mute_expire_at': '2026-08-10T18:00:00+08:00',
-}])
-```
-
-入群申请包含申请 ID、成员 OpenID、昵称、来源、时间、安全提示及 `verify_info`；禁言状态包含 `global_rule` 和当前被禁言的 `members`。查询方法传入 `return_error=True` 时返回 `(数据, 原始错误 JSON)`。
-
-`refresh_group_info()` 返回 `removed`、`left_group` 和双接口 `errors`。当 `code` 或 `err_code` 为 `11255` 时删除无效群记录；当 `err_code=40011026` 时标记退群并清空权限。
-
-群数据统一存放在 `data.db` 的 `groups_users` 表，数据库版本为 `2.0.1`（`PRAGMA user_version=20001`）。旧的 `group_bot_admin`、`full_access_groups` 会自动迁移后删除。
-
-| 列 | 含义 |
-| --- | --- |
-| `group_id` / `group_name` | 群 OpenID / 群名称 |
-| `users` / `group_member_num` | 成员记录 / 群人数 |
-| `is_admin` | 机器人是否为群主或管理员 |
-| `is_full_access` | 是否接收全量消息 |
-| `allow_proactive_msg` | 是否允许主动推送 |
-| `in_group` | 机器人是否仍在群内 |
-
-示例插件提供：`本地群信息`、`刷新群信息`、`入群申请 [游标]`、`通过入群 <成员ID> <申请ID>`、`拒绝并拉黑 <成员ID> <申请ID>`、`群禁言状态`、`禁言成员 <成员ID> <分钟>`、`解除禁言 <成员ID>`。
-
----
-
-## 6. 插件上下文 `ctx`
-
-`ctx` 在插件加载时由框架注入, 提供 **数据目录管理 + YAML 配置**:
-
-```python
-import core.plugin.context as _ctx
-ctx = _ctx.ctx  # 在模块顶层捕获
-
-# 读写文本
-ctx.save_data('log.txt', 'hello')
-content = ctx.read_data('log.txt')
-
-# YAML 配置 (推荐)
-config = ctx.ensure_config({
-    'enabled': True,
-    'timeout': 30,
-}, filename='config.yaml')
-
-ctx.save_config({'enabled': False}, filename='config.yaml')
-
-# 异步版本
-await ctx.read_config_async()
-await ctx.save_config_async({'k': 'v'})
-
-# 路径辅助
-ctx.get_data_path('foo.json')      # data/ 下文件
-ctx.get_resource_path('image.png') # 插件根目录文件
-```
-
-| 方法 | 说明 |
-| --- | --- |
-| `read_config(filename)` | 读取 YAML 配置 |
-| `save_config(data, filename, comments)` | 保存 YAML (可带注释) |
-| `ensure_config(defaults, ...)` | 缺项自动补齐, 返回完整配置 |
-| `read_data` / `save_data` | 文本文件读写 |
-| `read_data_async` / `save_data_async` | 异步版本 |
-| `data_exists(filename)` | 文件是否存在 |
-| `list_data()` | 列出 data/ 下所有文件 |
-
----
-
-## 7. 插件元数据 `__plugin_meta__`
-
-在入口模块顶层声明, **Web 面板将展示这些信息**:
-
-```python
+~~~python
 __plugin_meta__ = {
     'name': '我的插件',
     'author': 'YourName',
     'description': '插件功能说明',
     'version': '1.0.0',
-    'github': 'https://github.com/xxx/repo',
+    'github': 'https://github.com/example/repo',
     'homepage': 'https://example.com',
     'license': 'MIT',
 }
-```
+~~~
 
 | 字段 | 说明 |
 | --- | --- |
-| `name` | 显示名称 |
+| `name` | 展示名称 |
 | `author` | 作者 |
 | `description` | 简介 |
-| `version` | 版本号 |
-| `github` | 仓库地址 |
-| `homepage` | 主页 |
+| `version` | 插件版本 |
+| `github` | 源码仓库 |
+| `homepage` | 项目主页 |
 | `license` | 许可证 |
+
+未列出的字段会被忽略。普通插件目录包含多个 Python 文件时，元数据取第一个成功加载的模块；包式插件可在入口中统一声明。
 
 ---
 
-## 8. Web 面板扩展
+## 3. 上下文、配置与生命周期
 
-插件可注册自定义页面到 Web 面板侧边栏：
+### 3.1 插件上下文
 
-```python
-from core.plugin.web_pages import register_page, unregister_page
-from core.plugin.decorators import on_unload
+框架在导入插件时注入 `ctx`，用于访问插件目录、持久化数据和 YAML 配置：
 
+~~~python
+import core.plugin.context as plugin_context
 
-# 内联 HTML 注册
-register_page(
-    key='my-page',          # 唯一标识 (URL)
-    label='我的页面',        # 侧边栏显示名
-    source='plugin',        # 来源类型
-    source_name='my_plugin',
-    html='<h1>Hello Panel</h1>',
-    icon='settings',        # 侧边栏图标 (可选)
+ctx = plugin_context.ctx
+
+config = ctx.ensure_config({'enabled': True, 'timeout': 30})
+ctx.save_data('state.txt', 'ready')
+state = ctx.read_data('state.txt')
+asset_path = ctx.get_resource_path('assets/panel.html')
+~~~
+
+| 方法 | 说明 |
+| --- | --- |
+| `read_config(filename='config.yaml')` | 读取 `data/` 下的 YAML；不存在或读取失败时返回空字典 |
+| `save_config(data, filename='config.yaml', comments=None)` | 保存 YAML，可附带字段注释 |
+| `ensure_config(defaults, filename='config.yaml', comments=None)` | 补齐缺少的顶层字段并返回配置 |
+| `read_config_async(...)` / `save_config_async(...)` | 配置读写的异步版本 |
+| `read_data(...)` / `save_data(...)` | 文本文件读写 |
+| `read_data_async(...)` / `save_data_async(...)` | 文本读写的异步版本 |
+| `data_exists(filename)` | 判断数据文件是否存在 |
+| `list_data()` | 列出 `data/` 下的文件 |
+| `get_data_path(filename)` | 返回数据文件绝对路径 |
+| `get_resource_path(filename)` | 返回插件资源绝对路径 |
+
+`ensure_config()` 只补齐第一层键，不会递归合并嵌套字典。凭据、Token 和用户数据应保存在 `data/` 中；发布插件前应通过插件自己的忽略规则或打包清单排除敏感数据。
+
+### 3.2 机器人配置
+
+机器人级配置位于 `config/bot.yaml`，通过 `cfg` 读取：
+
+~~~python
+from core.base.config import cfg
+
+use_markdown = cfg.get_bot_setting(
+    event.appid,
+    'message.use_markdown',
+    True,
 )
+bot_config = cfg.get_bot_config(event.appid)
+server_port = cfg.get('settings', 'server.port', 5200)
+~~~
 
-# 或指定 HTML 文件
-register_page(key='my-page', label='我的页面',
-              html_file='/abs/path/to/page.html')
+未 @ 消息由每个机器人配置中的 `non_at_message` 控制：
+
+~~~yaml
+non_at_message:
+  enabled: true
+  group_whitelist: []
+  ignore_at_other_bot: true
+  ignore_at_other_user: true
+  ignore_bot_sender: true
+  quiet_at_self: false
+  strip_bot_name_at: false
+~~~
+
+当 `enabled: false` 时，只有 `group_whitelist` 中的群和声明 `ignore_at_check=True` 的处理器可以响应未 @ 消息。
+
+### 3.3 生命周期钩子
+
+生命周期钩子支持同步和异步函数：
+
+~~~python
+import asyncio
+
+from core.plugin.decorators import on_load, on_unload
+
+worker = None
+
+
+async def run_worker():
+    while True:
+        await asyncio.sleep(60)
+
+
+@on_load
+async def start_worker():
+    global worker
+    worker = asyncio.create_task(run_worker())
 
 
 @on_unload
-def _cleanup():
-    """插件卸载时清理"""
-    unregister_page('my-page')
-```
+async def stop_worker():
+    if worker:
+        worker.cancel()
+        try:
+            await worker
+        except asyncio.CancelledError:
+            pass
+~~~
 
-### 8.1 自定义 HTTP 路由
+| 钩子 | 执行时机 | 常见用途 |
+| --- | --- | --- |
+| `@on_load` | 插件导入并收集注册项后 | 启动任务、创建客户端、准备缓存 |
+| `@on_unload` | 卸载或热重载前 | 取消任务、关闭客户端、注销页面 |
 
-除了页面, 插件还能注册自己的 HTTP 接口。路径**必须以 `/api/ext/` 开头**(建议用 `/api/ext/{插件名}/` 避免冲突)。默认 `auth=True` 复用后台登录 token; 设 `auth=False` 则开放免验证(如对外回调、健康检查)。
+热重载会执行 `on_unload`，因此插件必须释放自己创建的任务、连接和其他外部资源。
 
-```python
+---
+
+## 4. 事件与处理器
+
+### 4.1 handler 装饰器
+
+所有装饰器均从 `core.plugin.decorators` 导入：
+
+~~~python
+from core.plugin.decorators import handler, interceptor, on_load, on_unload
+~~~
+
+`handler` 签名：
+
+~~~text
+@handler(
+    pattern,
+    *,
+    name='',
+    desc='',
+    priority=0,
+    owner_only=False,
+    group_only=False,
+    direct_only=False,
+    channel_only=False,
+    event_types=None,
+    cooldown=0,
+    ignore_at_check=False,
+    block=False,
+    fallback=False,
+)
+~~~
+
+| 参数 | 默认值 | 说明 |
+| --- | --- | --- |
+| `pattern` | 必填 | 正则表达式，使用 `re.DOTALL` 编译并通过 `search()` 匹配 |
+| `name` | 函数名 | Web 面板和日志中的处理器名称 |
+| `desc` | 空字符串 | 功能描述 |
+| `priority` | `0` | 数字越大越先匹配、先执行 |
+| `owner_only` | `False` | 消息事件仅允许当前机器人配置的主人触发 |
+| `group_only` | `False` | 仅群聊场景 |
+| `direct_only` | `False` | 仅私聊场景 |
+| `channel_only` | `False` | 仅频道场景 |
+| `event_types` | `None` | 只接收指定事件类型 |
+| `cooldown` | `0` | 兼容保留字段；分发器不执行冷却 |
+| `ignore_at_check` | `False` | 未开启全量消息时也允许匹配未 @ 消息 |
+| `block` | `False` | 命中后停止收集后续低优先级处理器 |
+| `fallback` | `False` | 只在普通处理器未命中后参与匹配；也可传入 `Callable[[Event], bool]` |
+
+`owner_only` 属于消息分发权限。生命周期事件和其他非消息事件走快速分发路径，不应把 `owner_only` 当作这类事件的授权校验。
+
+### 4.2 事件类型
+
+事件常量位于 `core.message.event`：
+
+~~~python
+from core.message.event import GROUP_JOIN_REQUEST
+
+
+@handler(r'.*', event_types=[GROUP_JOIN_REQUEST], group_only=True)
+async def on_join_request(event, match):
+    ...
+~~~
+
+| 分类 | 常量 | 含义 |
+| --- | --- | --- |
+| 群消息 | `GROUP_AT_MESSAGE_CREATE` | 群聊 @ 机器人消息 |
+| 群消息 | `GROUP_MESSAGE_CREATE` | 群聊全量消息 |
+| 私聊 | `C2C_MESSAGE_CREATE` | 单聊消息 |
+| 频道 | `AT_MESSAGE_CREATE` | 频道 @ 机器人消息 |
+| 频道 | `MESSAGE_CREATE` | 频道公开消息 |
+| 频道 | `DIRECT_MESSAGE_CREATE` | 频道私信 |
+| 交互 | `INTERACTION_CREATE` | 按钮或其他交互回调 |
+| 群生命周期 | `GROUP_ADD_ROBOT` / `GROUP_DEL_ROBOT` | 机器人加入或退出群 |
+| 群生命周期 | `GROUP_MEMBER_ADD` / `GROUP_MEMBER_REMOVE` | 用户加入或退出群 |
+| 群管理 | `GROUP_JOIN_REQUEST` | 用户提交入群申请 |
+| 群状态 | `GROUP_MSG_REJECT` / `GROUP_MSG_RECEIVE` | 群拒绝或恢复接收消息 |
+| 好友 | `FRIEND_ADD` / `FRIEND_DEL` | 添加或删除机器人好友 |
+| 订阅 | `SUBSCRIBE_MESSAGE_STATUS` | 用户开启或关闭消息订阅 |
+
+没有设置 `event_types` 的处理器会参与所有已分发事件的匹配。`MESSAGE_REACTION_ADD`、`MESSAGE_REACTION_REMOVE` 和 `GUILD_UPDATE` 只由框架记录，不会分发给插件处理器。
+
+### 4.3 Event 字段
+
+常用字段：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `event.appid` | `str` | 当前机器人 AppID |
+| `event.event_type` | `str` | 事件类型 |
+| `event.event_id` | `str` | 事件 ID |
+| `event.message_id` | `str` | 消息 ID |
+| `event.user_id` | `str` | 按身份配置转换后的用户 ID |
+| `event.raw_user_id` | `str` | 平台原始用户 OpenID |
+| `event.union_openid` | `str 或 None` | 跨机器人统一用户 ID，可能为空 |
+| `event.username` | `str 或 None` | 用户昵称，可能为空 |
+| `event.group_id` | `str 或 None` | 群 OpenID |
+| `event.guild_id` | `str 或 None` | 频道服务器 ID |
+| `event.channel_id` | `str 或 None` | 频道 ID |
+| `event.content` | `str` | 供处理器匹配的文本 |
+| `event.raw_content` | `str` | 原始消息文本 |
+| `event.attachments` | `list` | 附件列表 |
+| `event.image_url` | `str 或 None` | 消息中的首个图片地址 |
+| `event.msg_elements` | `list` | 平台原始消息元素 |
+| `event.member_role` | `str` | 发送者群身份，如 `admin`、`owner` |
+| `event.bot_member_role` | `str` | mentions 中解析出的机器人群身份 |
+| `event.message_reference_id` | `str` | 当前消息可引用的 REFIDX |
+| `event.interaction_data` | `dict 或 None` | 交互回调数据 |
+| `event.subscribe_results` | `list` | 订阅状态变化结果 |
+| `event.raw` | `dict 或 None` | 原始事件载荷；处理链结束后可能被释放 |
+| `event.error` | `dict 或 None` | 上一次媒体上传失败响应 |
+
+入群申请事件额外提供：
+
+| 字段 | 说明 |
+| --- | --- |
+| `event.join_request_id` | 入群申请 ID |
+| `event.apply_at` | 申请时间 |
+| `event.apply_source` | 申请来源 |
+| `event.invited_by` | 邀请人 OpenID，可能为空 |
+
+场景与 @ 标识：
+
+| 字段 | 说明 |
+| --- | --- |
+| `event.is_group` / `is_direct` / `is_channel` | 当前会话场景 |
+| `event.is_interaction` | 是否为交互回调 |
+| `event.is_lifecycle` | 是否为生命周期事件 |
+| `event.is_bot` | 发送者是否为机器人 |
+| `event.is_at_self` | 是否 @ 当前机器人 |
+| `event.is_at_other_bot` | 是否 @ 其他机器人 |
+| `event.is_at_other_user` | 是否 @ 其他用户 |
+| `event.is_at_all` | 是否 @ 全体成员 |
+| `event.mentions` | 原始 mentions 列表 |
+
+派生属性和工具：
+
+~~~python
+chat_type = event.chat_type  # group / direct / channel / unknown
+chat_id = event.chat_id
+author_id = event.get('d/author/id')
+sender = event.sender
+~~~
+
+不要在后台任务中长期保留完整 `event`。需要延迟处理时，复制必要的 ID 和业务字段即可。
+
+### 4.4 拦截、阻断与兜底
+
+拦截器在消息处理器之前执行，返回 `True` 时终止本次消息分发：
+
+~~~python
+from core.plugin.decorators import interceptor
+
+
+@interceptor(priority=100)
+async def filter_keywords(event):
+    if '违禁词' in (event.content or ''):
+        await event.reply('消息包含不可用内容')
+        return True
+    return False
+~~~
+
+多个处理器命中同一条消息时，默认按优先级依次执行。`block=True` 会停止收集后续低优先级处理器：
+
+~~~python
+@handler(r'^状态$', name='系统状态', priority=10, block=True)
+async def system_status(event, match):
+    await event.reply('系统正常')
+
+
+@handler(r'^状态$', name='业务状态', priority=0)
+async def business_status(event, match):
+    # 上一个处理器命中并阻断时不会执行
+    await event.reply('业务正常')
+~~~
+
+`fallback=True` 适合 AI 对话等兜底处理器。框架会先让普通处理器匹配原文，再匹配自动加上或移除 `/` 的兼容文本；均未命中时才进入兜底阶段：
+
+~~~python
+@handler(r'(?s)^(.+)$', name='自然对话', priority=-50, fallback=True)
+async def chat(event, match):
+    await event.reply(await ask_model(match.group(1)))
+~~~
+
+运行时开关可以使用函数形式：
+
+~~~python
+@handler(
+    r'(?s)^(.+)$',
+    fallback=lambda event: bool(ctx.read_config().get('fallback_enabled')),
+)
+async def conditional_chat(event, match):
+    ...
+~~~
+
+---
+
+## 5. 消息 API
+
+`event` 会把常用发送方法代理到当前机器人的 `MessageSender`。被动回复优先使用 `event.reply*()`，跨会话或延迟发送使用 `send_to_*()`。
+
+### 5.1 回复文本与媒体
+
+~~~python
+await event.reply('Hello!')
+
+await event.reply_image('https://example.com/image.png', '图片说明')
+await event.reply_image(image_bytes, '本地图片')
+await event.reply_voice('https://example.com/audio.wav')
+await event.reply_video('https://example.com/video.mp4')
+await event.reply_file('/path/to/report.pdf', '报告', file_name='report.pdf')
+
+# 自动撤回，单位为秒
+await event.reply('这条消息将在 5 秒后撤回', auto_delete_time=5)
+~~~
+
+`reply()` 的核心参数：
+
+~~~python
+await event.reply(
+    content=None,
+    buttons=None,
+    media=None,
+    msg_type=None,
+    template_name=None,
+    template_vars=None,
+    prompt_buttons=None,
+    auto_delete_time=None,
+    skip_suffix=False,
+    message_reference_id=None,
+    message_reference=None,
+    button_font_size=None,
+    button_style=None,
+    # 其他关键字会合并到平台载荷
+)
+~~~
+
+媒体方法支持 URL 或 `bytes`；`reply_file()` 还支持本地路径。使用 `target_group_id` 或 `target_user_id` 可将媒体主动发送到其他会话：
+
+~~~python
+await event.reply_image(
+    image_bytes,
+    '日报',
+    target_group_id='目标群 OpenID',
+)
+~~~
+
+媒体上传失败时返回 `None`，原始失败响应会写入 `event.error`。
+
+### 5.2 消息类型
+
+文本消息默认根据 `message.use_markdown` 选择 Markdown 或纯文本。单条消息可以强制覆盖：
+
+~~~python
+await event.reply('**原样文本**', msg_type=0)
+await event.reply('**加粗文本**', msg_type=2)
+await event.reply('不附加全局 Markdown 后缀', msg_type=2, skip_suffix=True)
+~~~
+
+| `msg_type` | 说明 |
+| --- | --- |
+| `0` | 纯文本 |
+| `2` | 原生 Markdown |
+| `3` | Ark，由 `reply_ark()` 构建 |
+| `7` | 富媒体，由媒体方法构建 |
+| `8` | 卡片，由 `reply_card()` 构建 |
+
+
+### 5.3 按钮与交互回调
+
+按钮使用二维数组表示行和列：
+
+~~~python
+buttons = [
+    [
+        {'text': '打开官网', 'link': 'https://example.com'},
+        {'text': '查看状态', 'type': 1, 'data': 'query_status'},
+        {'text': '/帮助', 'type': 2, 'data': '/帮助'},
+    ],
+]
+
+await event.reply('请选择操作', buttons=buttons)
+~~~
+
+按钮字段：
+
+| 字段 | 默认值 | 说明 |
+| --- | --- | --- |
+| `id` | 自动编号 | 按整组键盘从 `0` 开始递增；也可显式指定稳定 ID |
+| `text` | 空字符串 | 显示文字 |
+| `type` | `2` | `0` 跳转、`1` 回调、`2` 输入、`4` 订阅 |
+| `data` | 空字符串 | 链接、回调数据或输入内容 |
+| `link` | 无 | 链接简写，会覆盖 `type` 和 `data` |
+| `show` | `text` | 点击后的显示文字 |
+| `style` | `1` | `0` 灰框、`1` 蓝框、`2` 黑框、`3` 红字、`4` 蓝底 |
+| `enter` | `False` | 点击后直接发送；开启 `button_enter_to_send` 时，type 2 会转换为回调 |
+| `reply` | `False` | 点击后作为引用回复发送 |
+| `limit` | 无 | 点击次数限制 |
+| `tips` | 无 | 客户端不支持时的提示 |
+| `modal` | 无 | 二次确认内容，可传字符串或字典 |
+| `subscribe` | 无 | 订阅模板 ID、ID 列表或原生订阅字典 |
+
+权限字段按以下优先级取第一个：`permission` > `role` > `list` > `admin` > 所有人。平台原生 `action`、`render_data`、`subscribe_data`、`click_limit`、`unsupport_tips` 和 `anchor` 也可直接传入。
+
+整组按钮字号：
+
+~~~python
+await event.reply(
+    '小按钮',
+    buttons=buttons,
+    button_font_size='small',  # small / middle / large
+)
+
+await event.reply(
+    '自定义小按钮样式',
+    buttons={'rows': buttons, 'style': {'font_size': 'small'}},
+)
+~~~
+
+扩展 prompt 按钮最多三个：
+
+~~~python
+await event.reply('请选择', prompt_buttons=['选项 A', '选项 B'])
+await event.reply('请选择', prompt_buttons=[('确认', 1), ('取消', 0)])
+~~~
+
+用户点击 `type=1` 的回调按钮后会产生 `INTERACTION_CREATE` 事件，`event.content` 为按钮的 `data`：
+
+~~~python
+from core.message.event import INTERACTION_CREATE
+
+
+@handler(r'^query_status$', event_types=[INTERACTION_CREATE])
+async def on_query_status(event, match):
+    event.set_callback_code(0)
+    await event.reply('状态正常')
+~~~
+
+框架默认在 2 秒或分发结束时返回回调码 `0`。确需等待较长处理时，可先调用 `event.set_ack_timeout(seconds)`；通常不需要旧式 `await event.ack_interaction(...)` REST 应答。
+
+### 5.4 Ark 与卡片消息
+
+Ark 简写：
+
+~~~python
+await event.reply_ark(23, (
+    '列表标题',
+    '提示文本',
+    [['项目 1'], ['项目 2', 'https://example.com']],
+))
+~~~
+
+`reply_ark()` 支持模板 `23`、`24` 和 `37`，元组字段顺序由对应模板定义。
+
+卡片消息 `msg_type=8`：
+
+~~~python
+await event.reply_card('tuwen', (
+    '标题',
+    '描述',
+    'https://example.com/image.png',
+    'https://example.com',
+))
+~~~
+
+传入字典时，数据会写入 `card.content`。
+
+### 5.5 主动消息
+
+~~~python
+ok, data, payload = await event.send_to_group(group_id, '群通知')
+ok, data, payload = await event.send_to_user(user_id, '私聊通知')
+ok, data = await event.send_to_channel(channel_id, '频道通知')
+
+ok, data = await event.send_image('group', group_id, image_bytes, '图片通知')
+~~~
+
+`send_to_group()` 和 `send_to_user()` 支持 `buttons`、`media`、`msg_type`、`skip_suffix`、`message_reference_id` 等消息载荷参数。传入 `msg_id` 或 `event_id` 时，会关联已有消息或事件。
+
+没有 `event` 的定时任务应通过公开应用对象获取 Sender：
+
+~~~python
+from core.application import get_app
+
+app = get_app()
+bot = app.get_bot(appid) if app else None
+if bot:
+    await bot.sender.send_to_group(group_id, '定时通知')
+~~~
+
+不要依赖 `_bot_manager_ref`、`_bots` 等私有属性。
+
+### 5.6 引用、撤回与返回值
+
+引用消息需要 REFIDX，而不是普通平台消息 ID：
+
+~~~python
+# 引用用户当前消息
+await event.reply(
+    '引用回复',
+    message_reference_id=event.message_reference_id,
+)
+
+# 引用机器人刚发送的消息
+data = await event.reply('第一条')
+ref_id = (data or {}).get('ext_info', {}).get('ref_idx', '')
+if ref_id:
+    await event.reply('第二条', message_reference_id=ref_id)
+~~~
+
+需要完全控制引用对象时，可传 `message_reference={...}`，其优先级高于 `message_reference_id`。
+
+撤回消息：
+
+~~~python
+await event.recall()
+await event.recall(message_id='平台消息 ID')
+~~~
+
+| 方法 | 返回值 |
+| --- | --- |
+| `reply()`、`reply_image()`、`reply_ark()` 等 | 平台响应字典；失败为 `None` |
+| `send_to_group()` / `send_to_user()` | `(ok, data, payload)` |
+| `send_to_channel()` | `(ok, data)` |
+| `send_wakeup()` | `(ok, 消息 ID 或失败原因)` |
+
+平台响应中的常用字段为 `data['id']` 和 `data['ext_info']['ref_idx']`。
+
+### 5.7 订阅消息
+
+订阅按钮必须附加在 Markdown 消息上，并使用真实有效的模板 ID：
+
+~~~python
+template_id = '102134274_1749040268'
+buttons = [[{
+    'id': 'subscribe_report',
+    'text': '订阅日报',
+    'show': '已订阅',
+    'subscribe': template_id,
+    'modal': {
+        'content': '确认订阅日报？',
+        'confirm_text': '确认',
+        'cancel_text': '取消',
+    },
+}]]
+
+await event.reply('日报订阅', buttons=buttons, msg_type=2)
+~~~
+
+状态变化会产生 `SUBSCRIBE_MESSAGE_STATUS` 事件，结果位于 `event.subscribe_results`。框架会自动记录目标、模板和 `subscribe_id`。
+
+发送订阅消息时必须带上对应 `subscribe_id`，否则会按普通主动消息处理：
+
+~~~python
+records = bot.log_service.subscribe_get_by_target(group_id)
+record = next(
+    (item for item in records if item['template_id'] == template_id),
+    None,
+)
+
+if record:
+    ok, data, payload = await event.send_to_group(
+        group_id,
+        '日报已生成',
+        subscribe_id=record['subscribe_id'],
+    )
+    if ok and record['sub_type'] == 'once':
+        await bot.log_service.subscribe_consume(template_id, group_id)
+~~~
+
+### 5.8 Sender 工具方法
+
+不属于普通回复流程的能力通过 `event.sender` 调用：
+
+~~~python
+url = await event.sender.get_share_link(callback_data='source_plugin')
+
+size = await event.sender.get_image_size(image_bytes)
+# {'width': 1920, 'height': 1080, 'px': '#1920px #1080px'}
+
+file_info = await event.sender.upload_media(
+    event,
+    file_bytes,
+    file_type=1,  # 1 图片、2 视频、3 语音、4 文件
+    file_name='image.png',
+)
+
+member = await event.sender.get_group_member(group_id, member_openid)
+bot_member = await event.sender.get_bot_member(group_id)
+
+ok, result = await event.send_wakeup(user_id, '召回提示')
+ok, result = await event.sender.force_wakeup(user_id, '强制召回')
+~~~
+
+---
+
+## 6. 群管理 API
+
+### 6.1 权限与接口概览
+
+以下接口用于读取群资料、处理入群申请和设置群禁言。平台会校验机器人权限。
+
+| 方法 | 用途 | 返回值 |
+| --- | --- | --- |
+| `get_group_record(group_id)` | 读取本地完整群记录，不调用平台接口 | 字典或 `None` |
+| `get_group_info(group_id, return_error=False)` | 获取群名称和人数并保存 | 数据、`None` 或错误元组 |
+| `get_group_bot_state(group_id, return_error=False)` | 获取机器人群身份与消息权限并保存 | 数据、`None` 或错误元组 |
+| `refresh_group_info(group_id)` | 并发刷新群资料和机器人状态 | 汇总字典 |
+| `get_group_join_requests(group_id, cursor='', limit=20, return_error=False)` | 分页查询入群申请 | 分页数据、`None` 或错误元组 |
+| `review_group_join_request(...)` | 通过或拒绝入群申请 | `(ok, response)` |
+| `get_group_restrict_chat_setting(group_id, return_error=False)` | 查询全员和成员禁言状态 | 数据、`None` 或错误元组 |
+| `set_group_member_mute(group_id, members)` | 批量设置或解除成员禁言 | `(ok, response)` |
+
+平台接口有调用频率限制。
+
+### 6.2 群资料与本地记录
+
+读取 `data.db` 中已有群记录，不产生平台请求：
+
+~~~python
+group = await event.get_group_record(event.group_id)
+if group:
+    print(group['group_name'], group['group_member_num'], group['is_admin'])
+~~~
+
+返回字段：
+
+| 字段 | 说明 |
+| --- | --- |
+| `group_id` / `group_name` | 群 OpenID 和群名称 |
+| `users` / `group_member_num` | 已保存的成员列表和群人数 |
+| `is_admin` | 机器人是否为群主或管理员 |
+| `is_full_access` | 是否接收群全量消息 |
+| `allow_proactive_msg` | 是否允许主动推送 |
+| `in_group` | 机器人是否仍在群内 |
+
+刷新平台数据：
+
+~~~python
+result = await event.sender.refresh_group_info(event.group_id)
+print(result['group_info'], result['bot_state'], result['errors'])
+~~~
+
+接口识别到群无效或机器人已退群时，会同步修正本地群记录。
+
+### 6.3 入群申请事件
+
+监听入群申请事件：
+
+~~~python
+from core.message.event import GROUP_JOIN_REQUEST
+from core.plugin.decorators import handler
+
+
+@handler(r'.*', event_types=[GROUP_JOIN_REQUEST], group_only=True)
+async def on_join_request(event, match):
+    print(event.group_id, event.raw_user_id, event.join_request_id)
+~~~
+
+### 6.4 查询与审批入群申请
+
+分页查询申请列表：
+
+~~~python
+page, error = await event.sender.get_group_join_requests(
+    event.group_id,
+    limit=20,
+    return_error=True,
+)
+if page:
+    print(page['list'], page['next_cursor'])
+~~~
+
+`limit` 会被限制在 1 到 100 之间。`next_cursor` 为空表示已到最后一页。
+
+通过申请：
+
+~~~python
+ok, response = await event.sender.review_group_join_request(
+    event.group_id,
+    member_openid,
+    'approve',
+    join_request_id=join_request_id,
+)
+~~~
+
+拒绝申请，可选填写理由并加入群成员黑名单：
+
+~~~python
+ok, response = await event.sender.review_group_join_request(
+    event.group_id,
+    member_openid,
+    'decline',
+    join_request_id=join_request_id,
+    reject_reason='不符合入群要求',
+    add_to_member_blacklist=True,
+)
+~~~
+
+`op` 仅支持 `approve` 和 `decline`。`reject_reason` 与 `add_to_member_blacklist` 只在拒绝时写入请求。
+
+### 6.5 群禁言
+
+查询全员禁言规则和成员禁言列表：
+
+~~~python
+setting, error = await event.sender.get_group_restrict_chat_setting(
+    event.group_id,
+    return_error=True,
+)
+if setting:
+    print(setting.get('global_rule'), setting.get('members'))
+~~~
+
+成员禁言通过 `members` 列表批量提交，单次最多 10 人：
+
+| 字段 | 说明 |
+| --- | --- |
+| `op` | `add` 添加、`update` 更新、`del` 解除 |
+| `member_openid` | 目标成员 OpenID |
+| `mute_expire_at` | 带时区的 ISO 8601 到期时间；解除禁言时不需要 |
+
+设置禁言：
+
+~~~python
+from datetime import datetime, timedelta
+
+minutes = 30
+expire_at = (
+    datetime.now().astimezone() + timedelta(minutes=minutes)
+).isoformat(timespec='seconds')
+
+members = [{
+    'op': 'add',
+    'member_openid': member_openid,
+    'mute_expire_at': expire_at,
+}]
+ok, response = await event.sender.set_group_member_mute(event.group_id, members)
+~~~
+
+解除禁言：
+
+~~~python
+members = [{'op': 'del', 'member_openid': member_openid}]
+ok, response = await event.sender.set_group_member_mute(event.group_id, members)
+~~~
+
+### 6.6 返回值与错误处理
+
+查询方法默认失败返回 `None`。需要展示或记录具体原因时，传入 `return_error=True`：
+
+~~~python
+data, error = await event.sender.get_group_info(
+    event.group_id,
+    return_error=True,
+)
+if error:
+    ctx.log.warning('获取群资料失败：%s', error)
+~~~
+
+写操作返回 `(ok, response)`：
+
+~~~python
+ok, response = await event.sender.set_group_member_mute(event.group_id, members)
+if not ok:
+    ctx.log.warning('设置禁言失败：%s', response)
+~~~
+
+---
+
+## 7. Web 面板扩展
+
+插件可以注册自定义页面：
+
+~~~python
+from core.plugin.decorators import on_unload
+from core.plugin.web_pages import register_page, unregister_page
+
+
+register_page(
+    key='my-plugin',
+    label='我的插件',
+    source='plugin',
+    source_name='my_plugin',
+    html_file=ctx.get_resource_path('assets/panel.html'),
+    icon='settings',
+)
+
+
+@on_unload
+def cleanup_page():
+    unregister_page('my-plugin')
+~~~
+
+`key` 必须全局唯一。页面不会按插件所有者自动清理，因此必须在 `on_unload` 中调用 `unregister_page()`。
+
+插件 HTTP 路由必须以 `/api/ext/` 开头：
+
+~~~python
 from aiohttp import web
 from core.plugin.web_pages import register_route
 
 
-# 免验证路由: 任何人可直接访问
-@register_route('GET', '/api/ext/myplugin/ping', auth=False)
-async def ping(request):
+@register_route('GET', '/api/ext/my-plugin/status')
+async def status(request):
     return web.json_response({'ok': True})
 
 
-# 需要 token (auth=True 是默认值, 可省略): 请求头带 Authorization: Bearer <token>
-@register_route('POST', '/api/ext/myplugin/echo')
-async def echo(request):
+@register_route('POST', '/api/ext/my-plugin/callback', auth=False)
+async def callback(request):
     body = await request.json()
-    return web.json_response({'you_sent': body})
-```
+    return web.json_response({'received': bool(body)})
+~~~
 
 | 参数 | 说明 |
 | --- | --- |
-| `method` | `'GET'` / `'POST'` / `'PUT'` / `'DELETE'` 等 |
-| `path` | 路由路径, 必须以 `/api/ext/` 开头 (精确匹配, 不支持路径参数; 可变部分用查询串/请求体传) |
-| `handler` | `async def handler(request)`, 返回 `web.json_response(...)` / `web.Response(...)` |
-| `auth` | 是否要求登录 token, 默认 `True` |
+| `method` | HTTP 方法，如 `GET`、`POST` |
+| `path` | 精确路径，必须以 `/api/ext/` 开头，不支持路径参数 |
+| `handler` | 接收 `aiohttp.web.Request` 的异步处理函数 |
+| `auth` | 默认 `True`，复用 Web 面板登录认证 |
 
-> 路由由 web 层动态查表执行, 插件**热重载/卸载即时生效**; 插件卸载时框架会自动注销其全部路由, 无需手动清理。也可直接调用 `register_route('POST', '/api/ext/x/do', handler)` (非装饰器写法)。
-
----
-
-## 9. 配置项与全量环境
-
-`bot.yaml` 中 `non_at_message` 区块控制 "未 @ 机器人" 时的消息处理：
-
-```yaml
-non_at_message:
-  enabled: false                 # 是否响应未@消息 (开启后全量正则匹配)
-  group_whitelist: []            # 未开启全量时, 仅白名单群触发插件
-  ignore_at_other_bot: true      # 忽略仅@其他机器人的消息
-  ignore_at_other_user: true     # 忽略仅@其他用户的消息
-  ignore_bot_sender: true        # 屏蔽其他机器人发出的消息
-  quiet_at_self: false           # @机器人时抑制默认黑名单/维护回复
-```
-
-### 在 handler 中使用
-
-```python
-# 永远响应 (即使全量未开启, 即使未@机器人)
-@handler(r'^签到$', ignore_at_check=True)
-async def check_in(event, match):
-    await event.reply("✅ 签到成功")
-
-# 仅响应 @机器人 的消息 (默认行为)
-@handler(r'^菜单$')
-async def menu(event, match):
-    await event.reply("📋 菜单")
-```
-
-### 读取自定义配置
-
-```python
-from core.base.config import cfg
-
-# 读取当前机器人配置项
-value = cfg.get_bot_setting(event.appid, 'message.use_markdown', True)
-
-# 读取全局 settings
-port = cfg.get('settings', 'server.port', 5200)
-
-# 获取单个机器人完整配置
-bot_cfg = cfg.get_bot_config(event.appid)
-
-# 写入配置
-cfg.set_value('bot', 'bots.0.message.use_markdown', False)
-
-# 监听配置变更
-def on_bot_changed(new_data):
-    print('配置已变更', new_data)
-cfg.on_change('bot', on_bot_changed)
-# cfg.off_change('bot', on_bot_changed)  # 移除监听
-```
+路由应在插件导入期间注册，以便框架记录插件所有者并在卸载时自动清理。仅对确实需要公开访问的回调使用 `auth=False`，并自行实现签名校验、防重放和限流。
 
 ---
 
-## 10. 调试与最佳实践
+## 8. Image Hosting 模块
 
-### 10.1 异常报错
+插件通过 `Application.module_manager` 获取 Image Hosting 模块：
 
-```python
-from core.base.logger import get_logger, PLUGIN, report_error
-
-log = get_logger(PLUGIN, '我的插件')
-
-try:
-    await risky_operation()
-except Exception as e:
-    report_error(PLUGIN, '我的插件', e,
-                 context={'user_id': event.user_id, 'extra': '...'})
-    await event.reply("❌ 操作失败")
-```
-
-> **超时**: 框架对 handler 强制 300 秒超时, 超时会自动取消并记录错误。 
-
-### 10.2 异步规范
-
-```python
-# 推荐 — async/await
-@handler(r'^test$')
-async def test(event, match):
-    await event.reply("hi")
-
-# 也支持同步 (会自动跑在 executor 中)
-@handler(r'^test$')
-def test_sync(event, match):
-    import time
-    time.sleep(1)
-    return  # 同步函数无法 await reply, 应当避免
-```
-
-### 10.3 命名规范
-
-| 规则 | 推荐 |
-| --- | --- |
-| handler 函数名 | snake_case, 体现功能 |
-| `name=` 参数 | 中文短名, 用于面板展示 |
-| `desc=` 参数 | 一句话描述功能 |
-| 正则锚定 | 始终使用 `^` 和 `$` 避免误匹配 |
-| 资源清理 | `on_unload` 中关闭文件/连接/页面 |
-
-### 10.4 性能要点
-
-- **避免阻塞**: 不要在 async handler 中调用同步 IO (用 `asyncio.to_thread` / `run_in_executor`)
-- **延迟导入**: 体积大的依赖在 handler 内 `import`, 加快插件加载
-- **冷却限流**: 高频指令加 `cooldown=N`
-- **大型插件**: 子模块放 `app/` / `mod/` 目录, 按需 import
-
----
-
-## 11. 模块接入索引
-
-框架模块由 `ModuleManager` 统一管理。插件通过 `core.application.get_app()` 获取当前应用，再从 `app.module_manager` 读取已启用模块：
-
-```python
+~~~python
 from core.application import get_app
 
 app = get_app()
-renderer = app.module_manager.get("renderer") if app else None
-if renderer and renderer.playwright_available():
-    image_bytes = await renderer.playwright.screenshot_html("<h1>报告</h1>")
-```
+hosting = app.module_manager.get('image_hosting') if app else None
 
-模块未启用或初始化失败时，`get()` 返回 `None`；插件应检查模块和子引擎的可用状态。模块实例由框架负责生命周期管理，插件不要主动调用模块的 `close()` / `teardown()`。
+if hosting:
+    url = await hosting.upload_any(image_bytes, 'report.png')
+else:
+    url = None
+~~~
 
-| 模块 | 用途 | 接入文档 |
-| --- | --- | --- |
-| `datastore` | 异步 MySQL、Redis 连接池和 CRUD/缓存操作 | [Datastore 模块文档](modules/datastore/README.md) |
-| `renderer` | PIL 子进程渲染、Playwright 截图和 PDF | [Renderer 模块文档](modules/renderer/README.md) |
-| `image_hosting` | 多图床统一上传、状态查询和动态分发 | [Image Hosting 模块文档](modules/image_hosting/README.md) |
-| `onebot_adapter` | OneBot 11 网络连接、事件推送和标准 action | [OneBot Adapter 模块文档](modules/onebot_adapter/README.md) |
+模块未启用或初始化失败时，`get()` 返回 `None`。单个图床可能因依赖、凭据或网络不可用，上传前可检查状态：
 
-各文档均包含配置文件位置、完整公开方法、返回值、依赖要求和插件示例。模块 API 以对应模块文档和源码中的公开方法为准，以下划线开头的成员属于内部实现，不保证兼容。
+~~~python
+status = hosting.status()
+if status.get('cos'):
+    result = await hosting.upload_cos_url(
+        image_bytes,
+        'report.png',
+        user_id=event.user_id,
+    )
+else:
+    result = await hosting.upload_any(image_bytes, 'report.png')
+~~~
+
+统一入口 `upload_any()` 会按优先级尝试可用图床，返回第一个 HTTP URL，全部失败时返回 `None`。指定图床的返回结构可能不同，需要按对应图床 API 判断。
+
+配置、图床列表、动态方法和扩展规范见 [Image Hosting 模块接入文档](modules/image_hosting/README.md)。模块实例由框架管理生命周期。
 
 ---
 
-## 附录: 项目示例插件
+## 9. 调试与运行限制
 
-| 路径 | 功能 |
+### 日志与异常
+
+通过插件上下文记录日志：
+
+~~~python
+ctx.log.info('任务开始')
+
+try:
+    await risky_operation()
+except Exception:
+    ctx.log.exception('任务执行失败')
+    await event.reply('操作失败，请稍后重试')
+~~~
+
+需要写入框架错误中心时：
+
+~~~python
+from core.base.logger import PLUGIN, report_error
+
+try:
+    await risky_operation()
+except Exception as error:
+    report_error(PLUGIN, '我的插件', error)
+~~~
+
+处理器总执行时间上限为 300 秒。网络请求、渲染和外部命令应设置更短的业务超时。
+
+同步 handler 在线程池中运行，不能直接使用 `await`。`async def` 中调用同步 IO 会阻塞事件循环，可通过 `asyncio.to_thread()` 或 executor 执行。由 `on_load` 创建的后台任务和客户端，应在 `on_unload` 中关闭。
+
+---
+
+## 10. 参考实现
+
+| 路径 | 内容 |
 | --- | --- |
-| `plugins/alone/示例插件.py` | 媒体/ark/按钮/交互回调/引用消息/撤回/主动消息/Web 面板综合示例 |
-| `plugins/system/main.py` | 内置系统插件 (信息、管理) |
+| [plugins/alone/示例插件.py](plugins/alone/示例插件.py) | 媒体、卡片、按钮、交互、群资料、入群审批、禁言、引用、主动消息和 Web 扩展示例 |
+| [plugins/system/main.py](plugins/system/main.py) | 内置系统插件的组织方式和管理命令 |
+| [modules/image_hosting/README.md](modules/image_hosting/README.md) | 统一图床完整 API 与配置 |
 
-> **启用/禁用插件**: 在 Web 面板「插件」页切换即可, 状态持久化到 `data/plugins_disabled.json`。
-
----
-
-## 反馈与贡献
-
-- 提交 Issue: 项目 GitHub 仓库
-- 插件市场: Web 面板 → 市场 页面
-
-**Happy Coding!** 🎉
+插件可以在 Web 面板的“插件”页面启用、禁用或重载；禁用状态保存在 `data/plugins_disabled.json`。

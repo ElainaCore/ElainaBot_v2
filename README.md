@@ -3,11 +3,9 @@
 
 <h1>ElainaBot v2</h1>
 
-ElainaBot V2是一个基于 Python 的 QQ 官方机器人框架，采用纯异步架构，支持 Webhook / WebSocket 多机器人连接，插件热重载、模块化扩展、Web 面板管理等特性。
+ElainaBot v2 是一个基于 Python 的 QQ 官方机器人框架，采用纯异步架构，支持 Webhook / WebSocket 多机器人连接、插件热重载、模块化扩展和 Web 面板管理。
 
-[![Python](https://img.shields.io/badge/Python-3.11+-blue?logo=python&logoColor=white)](https://python.org)
-[![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
-[![QQ群](https://img.shields.io/badge/QQ交流群-1085402468-blue)](https://qm.qq.com/q/5O3xGoe4so)
+[![Python](https://img.shields.io/badge/Python-3.11+-blue?logo=python&logoColor=white)](https://python.org) [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE) [![QQ群](https://img.shields.io/badge/QQ交流群-1085402468-blue)](https://qm.qq.com/q/5O3xGoe4so)
 
 - **纯异步架构** — 基于 aiohttp / websockets，高并发低延迟
 - **插件市场** — 基于 GitHub 插件库，一键浏览、安装、更新插件
@@ -16,35 +14,20 @@ ElainaBot V2是一个基于 Python 的 QQ 官方机器人框架，采用纯异�
 </p>
 <br clear="left" />
 
-> 项目仅供学习交流使用，严禁用于非法行为。
-
-## 📢 交流群
-
-**ElainaBot 框架交流群：[1085402468](https://qm.qq.com/q/5O3xGoe4so)**
+> 项目仅供学习交流使用，严禁用于非法行为。交流群：[1085402468](https://qm.qq.com/q/5O3xGoe4so)。
 
 ## 🚀 快速开始
 
-### 环境要求
-
-- Python 3.11+
-- Git
-
-### 安装
+要求：Python 3.11+、Git。
 
 ```bash
-git clone https://github.com/ElainaCore/ElainaBot_v2.git #（手动部署跳过）
+git clone https://github.com/ElainaCore/ElainaBot_v2.git
 cd ElainaBot_v2
 pip install -r requirements.txt
 python main.py
 ```
 
-启动后访问 Web 面板完成配置(默认密码admin)：
-
-```
-http://localhost:5200/web/
-```
-
-> **Webhook回调配置地址**: 进入框架后点击机器人名字右边的 **感叹号图标** 即可查看。
+启动后访问 [Web 面板](http://localhost:5200/web/) 完成配置，默认密码为 `admin`。Webhook 回调地址可在面板中点击机器人名称右侧的感叹号图标查看。
 
 ## 📁 框架结构
 
@@ -59,46 +42,30 @@ ElainaBot_v2/
 └── templates/       # 消息模板
 ```
 
-## 🔌 插件开发
+## 🔌 开发与扩展
 
-详见 **[插件开发文档 (PLUGIN_DEVELOPMENT.md)](PLUGIN_DEVELOPMENT.md)** — 包含完整的装饰器、Event API、按钮构造、主动消息、Web 面板扩展等参考。
-
-## 🧩 模块接入
-
-插件可通过 `get_app().module_manager.get("模块名")` 获取已启用模块。各模块的公开 API、配置和示例见对应文档：
-
-| 模块 | 文档 |
-| --- | --- |
-| Datastore（MySQL + Redis） | [modules/datastore/README.md](modules/datastore/README.md) |
-| Renderer（PIL + Playwright） | [modules/renderer/README.md](modules/renderer/README.md) |
-| Image Hosting（统一图床） | [modules/image_hosting/README.md](modules/image_hosting/README.md) |
-| OneBot Adapter | [modules/onebot_adapter/README.md](modules/onebot_adapter/README.md) |
+- **插件开发** — [插件开发文档](PLUGIN_DEVELOPMENT.md)，包含插件结构、事件处理、消息 API、入群审批、群禁言和 Web 面板扩展。
+- **图床模块** — 通过 `get_app().module_manager.get("image_hosting")` 获取；公开 API、配置和示例见 [Image Hosting 文档](modules/image_hosting/README.md)。
 
 ## 🛒 插件市场
 
-框架内置插件市场，从 [ElainaCore/Elaina-plugins](https://github.com/ElainaCore/Elaina-plugins) 获取插件列表。
+框架从 [Elaina-plugins](https://github.com/ElainaCore/Elaina-plugins) 获取插件列表，支持在 Web 面板中浏览、搜索、一键安装和镜像加速下载；插件开发者可向该仓库提交 PR，将插件加入市场。
 
-- **Web 面板** — 在线浏览、搜索、一键安装
-- **镜像加速** — 自动使用最快 GitHub 镜像下载
-- **三种清单类型 (`type`)**：
-  - `complete` 完整插件：解压整仓库或仓库内某子目录到 `plugins/<name>/`，支持一个仓库内放多个插件 (用 `path` 指向子目录)
-  - `single` 独立插件：默认下载单文件到共享目录 `plugins/alone/<name>.py`；显式 `alone: false` 时改为装到专属目录 `plugins/<name>/`，支持多文件 (附带 html 等，用 `path` 指向子目录整目录下载)，彻底避免同名文件冲突
-  - `module` 模块：解压到 `modules/<name>/`
+## 🤝 反馈与贡献
 
-**插件开发者** 请前往 [Elaina-plugins](https://github.com/ElainaCore/Elaina-plugins) 提交 PR，将你的插件加入市场。
+遇到问题或有功能建议，请前往 [Issues](https://github.com/ElainaCore/ElainaBot_v2/issues) 提交 Issue；欢迎通过 [Pull Requests](https://github.com/ElainaCore/ElainaBot_v2/pulls) 提交 PR，参与项目改进。
 
 ## 🐳 Docker 一键部署
 
-### 环境要求
+要求：[Docker](https://docs.docker.com/get-docker/) 20.10+、[Docker Compose](https://docs.docker.com/compose/install/) v2+。推荐直接拉取预构建镜像，无需克隆代码。
 
-- [Docker](https://docs.docker.com/get-docker/) 20.10+
-- [Docker Compose](https://docs.docker.com/compose/install/) v2+
+**docker compose（推荐）**
 
-### 快速启动（推荐）
+```bash
+mkdir elainabot && cd elainabot && curl -O https://raw.githubusercontent.com/ElainaCore/ElainaBot_v2/main/docker-compose.yml && docker compose up -d
+```
 
-直接拉取预构建镜像，无需克隆代码：
-
-**方式一：docker run**
+**docker run**
 
 ```bash
 docker run -d \
@@ -112,21 +79,9 @@ docker run -d \
   elainabot/elainabot:latest
 ```
 
-**方式二：docker compose（推荐）**
+启动后访问 [Web 面板](http://localhost:5200/web/?token=admin)，填写机器人的 `APPID` 和 `Secret`。
 
-```bash
-mkdir elainabot && cd elainabot && curl -O https://raw.githubusercontent.com/ElainaCore/ElainaBot_v2/main/docker-compose.yml && docker compose up -d
-```
-
-**访问 Web 面板完成配置**
-
-```
-http://localhost:5200/web/?token=admin
-```
-
-在面板中填写机器人的 `APPID` 和 `Secret` 后即可正常运行。
-
-### 数据持久化说明
+### 数据持久化
 
 以下目录已通过 Volume 挂载到宿主机，容器删除后数据不会丢失：
 
@@ -139,11 +94,8 @@ http://localhost:5200/web/?token=admin
 
 ### 自行构建（可选）
 
-如需从源码构建：
-
 ```bash
 git clone https://github.com/ElainaCore/ElainaBot_v2.git
 cd ElainaBot_v2
 docker compose -f docker-compose.build.yml up -d --build
 ```
-
