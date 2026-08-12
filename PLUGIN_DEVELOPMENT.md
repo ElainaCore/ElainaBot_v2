@@ -517,7 +517,14 @@ await event.reply_image(
 await event.reply('**原样文本**', msg_type=0)
 await event.reply('**加粗文本**', msg_type=2)
 await event.reply('不附加全局 Markdown 后缀', msg_type=2, skip_suffix=True)
+await event.reply(
+    '![示例 #208px #320px](https://example.com/image.png)',
+    msg_type=2,
+    force_verify_image_resource=True,
+)
 ~~~
+
+`force_verify_image_resource=True` 会要求平台在发送前确认 Markdown 图片资源转存成功；任一图片转存失败时，整条消息发送失败。默认关闭，保持原有行为。该参数也适用于 `send_to_group()` 和 `send_to_user()`。
 
 | `msg_type` | 说明 |
 | --- | --- |

@@ -655,6 +655,7 @@ class MessageSender(_HttpMixin, _MediaSendMixin, _SenderLogMixin):
     def _build_core_payload(self, content, buttons, media, msg_type, **kwargs):
         """统一载荷构建 (回复/推送共用)"""
         skip_suffix = kwargs.pop('skip_suffix', False)
+        force_verify_image_resource = kwargs.pop('force_verify_image_resource', False)
         message_reference = kwargs.pop('message_reference', None)
         message_reference_id = kwargs.pop('message_reference_id', None) or kwargs.pop('reference_message_id', None)
         button_font_size = kwargs.pop('button_font_size', None)
@@ -678,6 +679,8 @@ class MessageSender(_HttpMixin, _MediaSendMixin, _SenderLogMixin):
             if suffix and '\\' in suffix:
                 suffix = _unescape(suffix)
             payload['markdown'] = {'content': md_content + suffix if suffix else md_content}
+            if force_verify_image_resource:
+                payload['markdown']['force_verify_image_resource'] = True
         else:
             payload['msg_type'] = MSG_TYPE_TEXT
             payload['content'] = content or ''
