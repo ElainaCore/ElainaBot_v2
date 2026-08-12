@@ -434,7 +434,7 @@ class EventHandlerMixin:
             try:
                 bot_rows = bot.log_service.query_data(
                     'SELECT group_id, group_name, group_member_num, in_group, allow_proactive_msg '
-                    'FROM groups_users WHERE is_full_access=1'
+                    'FROM groups_users WHERE is_full_access=1 AND in_group=1'
                 )
             except Exception as e:
                 log.debug(f'读取全量群记录失败 {appid}: {e}')
@@ -839,16 +839,11 @@ class EventHandlerMixin:
                     return False
                 changed = mutate(user_map)
                 if changed:
-                    if existed:
-                        bot.log_service.db_queue(
-                            'UPDATE groups_users SET users=? WHERE group_id=?',
-                            (self._users_json(user_map), group_id),
-                        )
-                    else:
-                        bot.log_service.db_queue(
-                            'INSERT INTO groups_users (group_id, users) VALUES (?, ?)',
-                            (group_id, self._users_json(user_map)),
-                        )
+                    bot.log_service.db_queue(
+                        'INSERT INTO groups_users (group_id, users) VALUES (?, ?) '
+                        'ON CONFLICT(group_id) DO UPDATE SET users=excluded.users',
+                        (group_id, self._users_json(user_map)),
+                    )
                 self._set_group_cache(group_id, user_map)
                 return changed
             except Exception as e:

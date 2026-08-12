@@ -174,10 +174,11 @@ class ReceiveEventHandler:
 
         # ── Full access group record ──
         if et == 'GROUP_MESSAGE_CREATE' and event.group_id:
-            ts = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
             bot.log_service.db_queue(
-                'INSERT OR IGNORE INTO full_access_groups (group_id, first_seen) VALUES (?, ?)',
-                (event.group_id, ts),
+                'INSERT INTO groups_users (group_id, users, is_full_access, in_group) '
+                "VALUES (?, '[]', 1, 1) ON CONFLICT(group_id) DO UPDATE SET "
+                'is_full_access=1, in_group=1',
+                (event.group_id,),
             )
 
         # ── @all filter ──

@@ -310,9 +310,15 @@ def _migrate_data_tables(conn):
     """为 data 库的旧表补齐缺失列 (按 user_version 版本号跳过已迁移库)"""
     try:
         if conn.execute('PRAGMA user_version').fetchone()[0] >= _DATA_SCHEMA_USER_VERSION:
-            conn.execute(_FULL_ACCESS_INDEX)
-            conn.commit()
-            return
+            current = tuple(row[1] for row in conn.execute('PRAGMA table_info(groups_users)'))
+            if (
+                current == _GROUPS_USERS_COLUMNS
+                and not _table_exists(conn, 'group_bot_admin')
+                and not _table_exists(conn, 'full_access_groups')
+            ):
+                conn.execute(_FULL_ACCESS_INDEX)
+                conn.commit()
+                return
     except sqlite3.Error:
         pass
     for table, col, col_def in _DATA_MIGRATIONS:
