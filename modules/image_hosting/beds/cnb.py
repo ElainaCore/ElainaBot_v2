@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from contextlib import asynccontextmanager
 from urllib.parse import quote, unquote, urlsplit
 
 import httpx
@@ -35,12 +36,13 @@ class Bed(BaseBed):
         'timeout': 'CNB API 单次请求超时秒数',
     }
 
-    __slots__ = ('_available', '_transport')
+    __slots__ = ('_available', '_transport', '_http_client')
 
     def __init__(self, cfg):
         super().__init__(cfg)
         self._available = False
         self._transport = None
+        self._http_client = None
 
     def initialize(self):
         if not self._cfg.get('enabled'):
@@ -53,6 +55,7 @@ class Bed(BaseBed):
             log.warning(f'CNB 配置不完整，已跳过: {exc}')
             return
         self._available = True
+        self._http_client = self._build_client()
         log.info(f"CNB 图床已启用: {self._cfg.get('repo')}")
 
     def is_available(self):
@@ -243,12 +246,27 @@ class Bed(BaseBed):
                 return record.get('id')
         return None
 
-    def _client(self):
+    def _build_client(self):
         return httpx.AsyncClient(
             timeout=float(self._cfg.get('timeout', 30)),
             follow_redirects=True,
             transport=self._transport,
         )
+
+    def _get_client(self):
+        if self._http_client is None:
+            self._http_client = self._build_client()
+        return self._http_client
+
+    @asynccontextmanager
+    async def _client(self):
+        yield self._get_client()
+
+    async def close(self):
+        client = self._http_client
+        self._http_client = None
+        if client is not None:
+            await client.aclose()
 
     def _api_url(self, operation):
         repo = quote(_repo_path(self._cfg.get('repo', '')), safe='/')

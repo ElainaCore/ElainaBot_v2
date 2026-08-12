@@ -26,7 +26,7 @@
 __module_meta__ = {
     'name': '图床服务',
     'description': '统一图床上传 (CNB / ChatGLM / 星野 / Nature / QQ分片 / COS / B站 / QQ频道 / 自身图床)',
-    'version': '2.2.0',
+    'version': '2.2.1',
     'author': 'ElainaBot',
 }
 
@@ -76,6 +76,7 @@ async def setup(ctx):
 async def teardown():
     global _instance
     if _instance is not None:
+        await _instance.aclose()
         public_server.detach(_instance)
     _instance = None
     shutdown_executor()
@@ -100,6 +101,19 @@ class ImageHosting:
         log.info(f"图床状态: {' | '.join(status)}")
 
     # ==================== 状态查询 ====================
+
+    async def aclose(self):
+        """关闭各图床持有的异步客户端。"""
+        for bed in self._beds.values():
+            close = getattr(bed, 'close', None)
+            if close is None:
+                continue
+            try:
+                result = close()
+                if inspect.isawaitable(result):
+                    await result
+            except Exception:
+                log.exception('图床客户端关闭失败: %s', getattr(bed, 'name', type(bed).__name__))
 
     def get_bed(self, name):
         return self._beds.get(name)
