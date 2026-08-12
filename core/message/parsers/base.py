@@ -84,10 +84,12 @@ def apply_message_scene(event, d):
 def _parse_common_fields(event, d):
     """提取公共字段 (id/author/content/group/image)"""
     event.message_id = d.get('id', '')
+    event.message_type = d.get('message_type')
     event.raw_content = d.get('content', '')
     event.content = MessageUtils.sanitize_content(event.raw_content)
     event.timestamp = d.get('timestamp', '')
     event.msg_elements = d.get('msg_elements', [])
+    event.parallel_message = d.get('parallel_message', {})
     event.attachments = d.get('attachments', [])
     event.image_url = MessageUtils.extract_image_from_attachments(event.attachments)
 

@@ -350,6 +350,7 @@ async def on_join_request(event, match):
 | `event.event_type` | `str` | 事件类型 |
 | `event.event_id` | `str` | 事件 ID |
 | `event.message_id` | `str` | 消息 ID |
+| `event.message_type` | `int 或 None` | 平台消息内容类型，如复合消息为 `103` |
 | `event.user_id` | `str` | 按身份配置转换后的用户 ID |
 | `event.raw_user_id` | `str` | 平台原始用户 OpenID |
 | `event.union_openid` | `str 或 None` | 跨机器人统一用户 ID，可能为空 |
@@ -359,9 +360,10 @@ async def on_join_request(event, match):
 | `event.channel_id` | `str 或 None` | 频道 ID |
 | `event.content` | `str` | 供处理器匹配的文本 |
 | `event.raw_content` | `str` | 原始消息文本 |
-| `event.attachments` | `list` | 附件列表 |
+| `event.attachments` | `list` | 消息顶层附件列表 |
 | `event.image_url` | `str 或 None` | 消息中的首个图片地址 |
 | `event.msg_elements` | `list` | 平台原始消息元素 |
+| `event.parallel_message` | `dict` | 复合消息数据，子消息位于 `msg_nodes`；无数据时为空字典 |
 | `event.member_role` | `str` | 发送者群身份，如 `admin`、`owner` |
 | `event.bot_member_role` | `str` | mentions 中解析出的机器人群身份 |
 | `event.message_reference_id` | `str` | 当前消息可引用的 REFIDX |

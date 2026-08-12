@@ -188,6 +188,7 @@ class Event:
         'event_type',
         'raw',
         'message_id',
+        'message_type',
         'content',
         'raw_content',
         'timestamp',
@@ -201,6 +202,7 @@ class Event:
         'guild_id',
         'channel_id',
         'message_scene',
+        'parallel_message',
         'message_reference_id',
         'msg_elements',
         'attachments',
@@ -240,6 +242,7 @@ class Event:
         self.event_type = None
         self.raw = None
         self.message_id = None
+        self.message_type = None
         self.content = ''
         self.raw_content = ''
         self.timestamp = None
@@ -253,6 +256,7 @@ class Event:
         self.guild_id = None
         self.channel_id = None
         self.message_scene = {}
+        self.parallel_message = {}
         self.message_reference_id = ''
         self.msg_elements = []
         self.attachments = []
