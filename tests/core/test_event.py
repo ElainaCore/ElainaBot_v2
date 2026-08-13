@@ -119,6 +119,35 @@ class TestEventParsing:
         assert result.is_direct is True
         assert result.is_group is False
 
+    def test_parse_flat_group_join_request(self):
+        from core.message.event import GROUP_JOIN_REQUEST
+
+        payload = {
+            'post_type': 'request',
+            'request_type': 'group.add',
+            'event_id': 'request-event',
+            'group_openid': 'group-001',
+            'member_openid': 'user-001',
+            'join_request_id': 'request-001',
+            'verify_info': {
+                'method': 'admin_review_qa',
+                'review_qa_list': [
+                    {'question': '答案？', 'answer': '42'},
+                    '忽略无效项',
+                ],
+            },
+        }
+
+        result = Event.from_websocket('123456', payload)
+
+        assert result.event_type == GROUP_JOIN_REQUEST
+        assert result.event_id == 'request-event'
+        assert result.group_id == 'group-001'
+        assert result.raw_user_id == 'user-001'
+        assert result.verify_method == 'admin_review_qa'
+        assert result.review_qa_list == [{'question': '答案？', 'answer': '42'}]
+        assert result.get('d/verify_info/method') == 'admin_review_qa'
+
     def test_chat_type_property(self):
         from core.message.event import GROUP_AT_MESSAGE_CREATE
 

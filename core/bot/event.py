@@ -534,7 +534,15 @@ class EventHandlerMixin:
 
     async def _handle_group_join_request(self, bot, event):
         self._log_lifecycle(bot, 'group_join_request', {
-            'group_id': event.group_id or '', 'user_id': event.user_id or ''}, raw_event=event.raw)
+            'group_id': event.group_id or '',
+            'user_id': event.user_id or '',
+            'join_request_id': event.join_request_id or '',
+            'username': event.username or '',
+            'apply_at': event.apply_at or '',
+            'apply_source': event.apply_source or '',
+            'verify_method': event.verify_method or '',
+            'review_qa_list': event.review_qa_list or [],
+        }, raw_event=event.raw)
 
     async def _handle_friend_add(self, bot, event):
         uid = event.user_id or ''

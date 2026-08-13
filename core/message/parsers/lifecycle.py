@@ -60,6 +60,15 @@ class GroupJoinRequestParser(LifecycleParser):
         event.apply_at = d.get('apply_at', '')
         event.apply_source = d.get('apply_source', '')
         event.invited_by = d.get('invited_by', '')
+        verify_info = d.get('verify_info')
+        event.verify_info = dict(verify_info) if isinstance(verify_info, dict) else {}
+        event.verify_method = str(event.verify_info.get('method') or '')
+        qa_list = event.verify_info.get('review_qa_list')
+        event.review_qa_list = (
+            [dict(item) for item in qa_list if isinstance(item, dict)]
+            if isinstance(qa_list, list)
+            else []
+        )
         event.timestamp = event.apply_at or event.timestamp
         event.content = f'用户 {event.username or event.user_id} 申请加入群聊 {event.group_id}'
 

@@ -1,4 +1,4 @@
-"""示例功能：媒体、卡片、按钮、群资料、群管理、引用、主动消息、Web 面板等（仅主人可用）。"""
+"""示例功能：媒体、流式消息、卡片、按钮、群管理、主动消息、Web 面板等（仅主人可用）。"""
 
 import asyncio
 import json
@@ -58,6 +58,44 @@ async def force_text(event, match):
 @handler(r'^无后缀$', name='跳过markdown后缀', desc='skip_suffix=True 跳过全局后缀', owner_only=True)
 async def skip_suffix_demo(event, match):
     await event.reply("这条消息不带全局后缀", skip_suffix=True)
+
+
+# ==================== 私聊流式消息 ====================
+
+async def _stream_demo_chunks():
+    """模拟 LLM 持续产生文本增量。"""
+    for text in ("正在", "生成", "流式", "消息", "...\n\n", "生成完成。"):
+        await asyncio.sleep(0.4)
+        yield text
+
+
+@handler(
+    r'^(Markdown)?流式消息$',
+    name='流式消息',
+    desc='演示纯文本与 Markdown 流式回复',
+    owner_only=True,
+    direct_only=True,
+    event_types=['C2C_MESSAGE_CREATE'],
+)
+async def stream_reply_demo(event, match):
+    await event.reply_stream(
+        _stream_demo_chunks(),
+        content_type='markdown' if match.group(1) else 'text',
+    )
+
+
+@handler(
+    r'^主动流式\s+(\S+)$',
+    name='主动流式消息',
+    desc='向指定用户 OpenID 发送流式消息',
+    owner_only=True,
+)
+async def proactive_stream_demo(event, match):
+    await event.send_stream_to_user(
+        match.group(1),
+        _stream_demo_chunks(),
+        content_type='text',
+    )
 
 
 # ==================== 撤回 ====================

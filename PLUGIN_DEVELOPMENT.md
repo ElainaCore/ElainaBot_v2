@@ -23,13 +23,15 @@
   - [4.4 拦截、阻断与兜底](#44-拦截阻断与兜底)
 - [5. 消息 API](#5-消息-api)
   - [5.1 回复文本与媒体](#51-回复文本与媒体)
-  - [5.2 消息类型](#52-消息类型)
-  - [5.3 按钮与交互回调](#53-按钮与交互回调)
-  - [5.4 Ark 与卡片消息](#54-ark-与卡片消息)
-  - [5.5 主动消息](#55-主动消息)
-  - [5.6 引用、撤回与返回值](#56-引用撤回与返回值)
-  - [5.7 订阅消息](#57-订阅消息)
-  - [5.8 Sender 工具方法](#58-sender-工具方法)
+  - [5.2 私聊流式消息](#52-私聊流式消息)
+  - [5.3 消息类型](#53-消息类型)
+  - [5.4 按钮与交互回调](#54-按钮与交互回调)
+  - [5.5 Ark 与卡片消息](#55-ark-与卡片消息)
+  - [5.6 主动消息](#56-主动消息)
+  - [5.7 引用、撤回与返回值](#57-引用撤回与返回值)
+  - [5.8 订阅消息](#58-订阅消息)
+  - [5.9 Sender 工具方法](#59-sender-工具方法)
+  - [5.10 自定义菜单与指令面板](#510-自定义菜单与指令面板)
 - [6. 群管理 API](#6-群管理-api)
   - [6.1 权限与接口概览](#61-权限与接口概览)
   - [6.2 群资料与本地记录](#62-群资料与本地记录)
@@ -65,6 +67,8 @@ async def say_hello(event, match):
 | `event` | 当前 `core.message.event.Event` 对象 |
 | `match` | 正则表达式的 `re.Match` 结果 |
 | `event.reply(...)` | 回复当前会话 |
+| `event.reply_stream(...)` | 在 QQ 单聊中发送流式回复 |
+| `event.send_stream_to_user(...)` | 向指定用户 OpenID 主动发送流式消息 |
 
 `handler` 使用 `search()` 匹配；`^` 和 `$` 可将命令限制为整条消息匹配。
 
@@ -380,6 +384,9 @@ async def on_join_request(event, match):
 | `event.apply_at` | 申请时间 |
 | `event.apply_source` | 申请来源 |
 | `event.invited_by` | 邀请人 OpenID，可能为空 |
+| `event.verify_info` | 平台验证信息原始对象 |
+| `event.verify_method` | 验证方式，例如 `admin_review_qa` |
+| `event.review_qa_list` | 管理员审核问答列表，每项包含 `question` 和 `answer` |
 
 场景与 @ 标识：
 
@@ -509,7 +516,58 @@ await event.reply_image(
 
 媒体上传失败时返回 `None`，原始失败响应会写入 `event.error`。
 
-### 5.2 消息类型
+### 5.2 私聊流式消息
+
+流式消息仅支持 `C2C_MESSAGE_CREATE`。`content_type='text'` 发送普通文本，
+`content_type='markdown'` 发送 Markdown；两者都接受文本增量：
+
+~~~python
+import asyncio
+
+
+async def generate_chunks():
+    for text in ('正在', '生成', '**Markdown**', ' 回复'):
+        await asyncio.sleep(0.3)
+        yield text
+
+
+@handler(
+    r'^流式消息$',
+    direct_only=True,
+    event_types=['C2C_MESSAGE_CREATE'],
+)
+async def stream_reply(event, match):
+    await event.reply_stream(
+        generate_chunks(),
+        content_type='markdown',  # 普通文本改为 text
+    )
+~~~
+
+| 参数 | 默认值 | 说明 |
+| --- | --- | --- |
+| `chunks` | 必填 | 字符串、同步或异步迭代器；每项可为字符串，或 `{'type': 'delta'/'replace', 'text': '...'}` |
+| `content_type` | 机器人配置 | `text` 普通文本；`markdown` Markdown |
+| `input_mode` | `replace` | `replace` 每次提交累计正文；`append` 每次只提交新增正文 |
+| `min_interval` | `0.25` | 中间分片最小发送间隔，单位秒 |
+| `msg_id` / `event_id` | 自动取当前事件 | 显式关联平台消息或事件 |
+| `msg_seq` | 自动生成 | 同一条流式消息使用的消息序列号 |
+| `is_wakeup` | `False` | 仅主动发送支持，标记召回消息 |
+
+主动发送使用相同参数，但第一个参数为用户 OpenID：
+
+~~~python
+await event.send_stream_to_user(
+    user_openid,
+    generate_chunks(),
+    content_type='text',
+)
+~~~
+
+两个方法都返回结束分片的平台响应；没有正文时返回 `None`。参数错误抛出
+`ValueError`，平台发送失败抛出 `RuntimeError`。已发送的正文前缀不能被后续
+`replace` 片段修改。
+
+### 5.3 消息类型
 
 文本消息默认根据 `message.use_markdown` 选择 Markdown 或纯文本。单条消息可以强制覆盖：
 
@@ -535,7 +593,7 @@ await event.reply(
 | `8` | 卡片，由 `reply_card()` 构建 |
 
 
-### 5.3 按钮与交互回调
+### 5.4 按钮与交互回调
 
 按钮使用二维数组表示行和列：
 
@@ -607,7 +665,7 @@ async def on_query_status(event, match):
 
 框架默认在 2 秒或分发结束时返回回调码 `0`。确需等待较长处理时，可先调用 `event.set_ack_timeout(seconds)`；通常不需要旧式 `await event.ack_interaction(...)` REST 应答。
 
-### 5.4 Ark 与卡片消息
+### 5.5 Ark 与卡片消息
 
 Ark 简写：
 
@@ -634,7 +692,7 @@ await event.reply_card('tuwen', (
 
 传入字典时，数据会写入 `card.content`。
 
-### 5.5 主动消息
+### 5.6 主动消息
 
 ~~~python
 ok, data, payload = await event.send_to_group(group_id, '群通知')
@@ -659,7 +717,7 @@ if bot:
 
 不要依赖 `_bot_manager_ref`、`_bots` 等私有属性。
 
-### 5.6 引用、撤回与返回值
+### 5.7 引用、撤回与返回值
 
 引用消息需要 REFIDX，而不是普通平台消息 ID：
 
@@ -689,13 +747,14 @@ await event.recall(message_id='平台消息 ID')
 | 方法 | 返回值 |
 | --- | --- |
 | `reply()`、`reply_image()`、`reply_ark()` 等 | 平台响应字典；失败为 `None` |
+| `reply_stream()` / `send_stream_to_user()` | 最终分片的平台响应字典；无正文时为 `None` |
 | `send_to_group()` / `send_to_user()` | `(ok, data, payload)` |
 | `send_to_channel()` | `(ok, data)` |
 | `send_wakeup()` | `(ok, 消息 ID 或失败原因)` |
 
 平台响应中的常用字段为 `data['id']` 和 `data['ext_info']['ref_idx']`。
 
-### 5.7 订阅消息
+### 5.8 订阅消息
 
 订阅按钮必须附加在 Markdown 消息上，并使用真实有效的模板 ID：
 
@@ -737,7 +796,7 @@ if record:
         await bot.log_service.subscribe_consume(template_id, group_id)
 ~~~
 
-### 5.8 Sender 工具方法
+### 5.9 Sender 工具方法
 
 不属于普通回复流程的能力通过 `event.sender` 调用：
 
@@ -760,6 +819,105 @@ bot_member = await event.sender.get_bot_member(group_id)
 ok, result = await event.send_wakeup(user_id, '召回提示')
 ok, result = await event.sender.force_wakeup(user_id, '强制召回')
 ~~~
+
+### 5.10 自定义菜单与指令面板
+
+自定义菜单仅在单聊窗口生效，更新会覆盖完整配置：
+
+~~~python
+menu, error = await event.sender.get_global_menu(return_error=True)
+
+ok, response = await event.sender.update_global_menu({
+    'items': [
+        {'type': 'send_message', 'name': '帮助', 'send_message': '/help'},
+        {'type': 'link', 'name': '官网', 'link': 'https://example.com'},
+    ],
+})
+~~~
+
+菜单字段：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `items` | `list[MenuItem]` | 一级菜单，最多 10 项 |
+| `MenuItem.name` | `str` | 按钮名称，最多 10 个字符 |
+| `MenuItem.type` | `str` | `send_message`、`link`、`switch` 或 `menu` |
+| `send_message` | `str` | `send_message` 类型填入聊天框的内容 |
+| `link` | `str` | `link` 类型的 HTTPS 地址 |
+| `switch` | `dict` | `{'switch_id': str, 'default': bool}` |
+| `sub_menu_items` | `list[SubMenuItem]` | `menu` 类型的子菜单，最多 5 项 |
+| `SubMenuItem` | `dict` | 支持 `name`、`type`、`send_message`、`link`；不可继续嵌套 |
+
+菜单方法：
+
+| 方法 | 参数 | 返回值 |
+| --- | --- | --- |
+| `get_global_menu(return_error=False)` | `return_error=True` 可取得错误详情 | 数据或 `None`；详细模式为 `(data, error)` |
+| `update_global_menu(menu=None)` | `menu` 为完整菜单；`None` 清空菜单 | `(ok, response)` |
+
+指令面板支持 `c2c`、`group`、`channel`、`dm`：
+
+~~~python
+page = await event.sender.get_panels('group', limit=20)
+panel = {
+    'items': [
+        {'type': 'command', 'name': '/签到', 'desc': '每日签到'},
+    ],
+    'remark': '群聊常用指令',
+}
+
+ok, response = await event.sender.create_panel(
+    'group',
+    panel,
+    target_type='specific',
+    group_openids=[event.group_id],
+)
+~~~
+
+面板方法：
+
+| 方法 | 参数 | 返回值 |
+| --- | --- | --- |
+| `get_panels(scope, cursor='', limit=20, return_error=False)` | `scope` 必填；`limit` 最大 50 | 分页数据或错误元组 |
+| `create_panel(scope, panel, target_type='all', ...)` | 指定范围时传 `user_openids` 或 `group_openids` | `(ok, response)` |
+| `get_panel(panel_id, return_error=False)` | `panel_id` 必填 | 详情或错误元组 |
+| `update_panel(panel_id, panel)` | 覆盖 `items` 和 `remark` | `(ok, response)` |
+| `delete_panel(panel_id)` | `panel_id` 必填 | `(ok, response)` |
+| `update_panel_targets(panel_id, op, ...)` | `op` 为 `add` 或 `del` | `(ok, response)` |
+
+`panel` 与指令项字段：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `panel.items` | `list[PanelItem]` | 面板元素，最多 20 项 |
+| `panel.remark` | `str` | 开发者备注，最多 255 个字符，不展示给用户 |
+| `PanelItem.type` | `str` | `command` 指令或 `link` 链接 |
+| `PanelItem.name` | `str` | 名称；指令类型点击后会填入聊天框 |
+| `PanelItem.desc` | `str` | 展示说明，最多 30 个字符 |
+| `PanelItem.only_admin` | `bool` | 是否仅群或频道管理员可用 |
+| `PanelItem.link` | `str` | 仅 `link` 类型使用 |
+
+范围参数：
+
+| 参数 | 说明 |
+| --- | --- |
+| `scope` | `c2c` 单聊、`group` 群聊、`channel` 文字子频道、`dm` 频道私信 |
+| `target_type` | `all` 全局；`specific` 指定对象，仅支持 `c2c` 和 `group` |
+| `user_openids` | 单聊指定用户列表，单次最多 20 个 |
+| `group_openids` | 群聊指定群列表，单次最多 20 个 |
+
+修改关联对象：
+
+~~~python
+ok, response = await event.sender.update_panel_targets(
+    panel_id,
+    'add',  # add 添加，del 移除
+    group_openids=['group_openid'],
+)
+~~~
+
+查询方法默认失败返回 `None`；需要错误详情时传 `return_error=True`。写操作
+统一返回 `(ok, response)`。
 
 ---
 
@@ -824,6 +982,8 @@ from core.plugin.decorators import handler
 @handler(r'.*', event_types=[GROUP_JOIN_REQUEST], group_only=True)
 async def on_join_request(event, match):
     print(event.group_id, event.raw_user_id, event.join_request_id)
+    for item in event.review_qa_list:
+        print(item.get('question', ''), item.get('answer', ''))
 ~~~
 
 ### 6.4 查询与审批入群申请

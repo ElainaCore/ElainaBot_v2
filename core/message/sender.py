@@ -35,6 +35,10 @@ from core.message.media import upload_media_bytes, upload_media_via_url
 from core.message.template import tpl
 
 _ESCAPE_MAP = {'n': '\n', 't': '\t', 'r': '\r', '\\': '\\', '0': '\0', 'a': '\a', 'b': '\b', 'f': '\f', 'v': '\v'}
+_STREAM_CONTENT_TYPES = frozenset({'text', 'markdown'})
+_STREAM_INPUT_MODES = frozenset({'append', 'replace'})
+_PANEL_SCOPES = frozenset({'c2c', 'group', 'channel', 'dm'})
+_PANEL_TARGET_TYPES = frozenset({'all', 'specific'})
 
 
 def _unescape(text):
@@ -53,6 +57,29 @@ def _group_error_state(error):
     if str(error.get('err_code', '')) == '40011026':
         return 'left_group'
     return ''
+
+
+async def _iter_stream_chunks(chunks):
+    if isinstance(chunks, str):
+        yield chunks
+    elif hasattr(chunks, '__aiter__'):
+        async for item in chunks:
+            yield item
+    else:
+        for item in chunks:
+            yield item
+
+
+def _parse_stream_chunk(item):
+    """Return (is_replacement, text), or None for unsupported LLM events."""
+    if not isinstance(item, dict):
+        text = str(item or '')
+        return (False, text) if text else None
+    kind = item.get('type')
+    if kind not in (None, 'delta', 'text', 'replace'):
+        return None
+    text = str(item.get('text', item.get('content', '')) or '')
+    return kind == 'replace', text
 
 
 class MessageSender(_HttpMixin, _MediaSendMixin, _SenderLogMixin):
@@ -138,6 +165,173 @@ class MessageSender(_HttpMixin, _MediaSendMixin, _SenderLogMixin):
             **kwargs,
         )
         return await self._reply_send(endpoint, event, payload, content, auto_delete_time)
+
+    async def reply_stream(
+        self,
+        event,
+        chunks,
+        *,
+        content_type=None,
+        input_mode='replace',
+        msg_id=None,
+        event_id=None,
+        msg_seq=None,
+        min_interval=0.25,
+    ):
+        """回复 QQ 单聊事件，并发送纯文本或 Markdown 流式消息。"""
+        if getattr(event, 'event_type', '') != 'C2C_MESSAGE_CREATE':
+            raise ValueError('流式消息仅支持 C2C_MESSAGE_CREATE 事件')
+        user_id = getattr(event, 'raw_user_id', None) or getattr(event, 'user_id', None)
+        if not user_id:
+            raise ValueError('私聊流式消息缺少 user_openid')
+        return await self._send_stream_to_user(
+            user_id,
+            chunks,
+            event=event,
+            content_type=content_type,
+            input_mode=input_mode,
+            msg_id=msg_id,
+            event_id=event_id,
+            msg_seq=msg_seq,
+            min_interval=min_interval,
+        )
+
+    async def send_stream_to_user(
+        self,
+        user_id,
+        chunks,
+        *,
+        content_type=None,
+        input_mode='replace',
+        msg_id=None,
+        event_id=None,
+        msg_seq=None,
+        is_wakeup=False,
+        min_interval=0.25,
+    ):
+        """主动发送私聊流式消息，返回最后一个分片的响应。"""
+        return await self._send_stream_to_user(
+            user_id,
+            chunks,
+            content_type=content_type,
+            input_mode=input_mode,
+            msg_id=msg_id,
+            event_id=event_id,
+            msg_seq=msg_seq,
+            is_wakeup=is_wakeup,
+            min_interval=min_interval,
+        )
+
+    async def _send_stream_to_user(
+        self,
+        user_id,
+        chunks,
+        *,
+        event=None,
+        content_type=None,
+        input_mode='replace',
+        msg_id=None,
+        event_id=None,
+        msg_seq=None,
+        is_wakeup=False,
+        min_interval=0.25,
+    ):
+        """QQ 单聊流式消息公共实现。"""
+        user_id = str(user_id or '').strip()
+        if not user_id:
+            raise ValueError('私聊流式消息缺少 user_openid')
+        input_mode = str(input_mode or '').strip().lower()
+        if input_mode not in _STREAM_INPUT_MODES:
+            raise ValueError('input_mode 只能为 append 或 replace')
+        endpoint = f'/v2/users/{user_id}/stream_messages'
+        content_type = str(content_type or (
+            'markdown' if cfg.get_bot_setting(self._appid, 'message.use_markdown', True)
+            else 'text'
+        )).strip().lower()
+        if content_type not in _STREAM_CONTENT_TYPES:
+            raise ValueError('content_type 只能为 text 或 markdown')
+        try:
+            min_interval = max(0.0, float(min_interval))
+        except (TypeError, ValueError) as exc:
+            raise ValueError('min_interval 必须为非负数字') from exc
+        try:
+            sequence = _msg_seq() if msg_seq is None else int(msg_seq)
+        except (TypeError, ValueError) as exc:
+            raise ValueError('msg_seq 必须为整数') from exc
+
+        async def _send(content, state, index, stream_msg_id=''):
+            payload = {
+                'input_mode': input_mode,
+                'input_state': state,
+                'index': index,
+                'content_type': content_type,
+                'content_raw': content,
+                'msg_seq': sequence,
+            }
+            if stream_msg_id:
+                payload['stream_msg_id'] = stream_msg_id
+            if msg_id:
+                payload['msg_id'] = str(msg_id)
+            elif event_id:
+                payload['event_id'] = str(event_id)
+            elif event is not None:
+                _set_msg_or_event_id(payload, event)
+            if is_wakeup:
+                payload['is_wakeup'] = True
+            ok, data = await self.post_json(endpoint, payload)
+            if not ok:
+                self._report_send_error(
+                    f'私聊流式消息发送失败: {endpoint}', data, payload,
+                )
+                raise RuntimeError(
+                    data.get('message', '私聊流式消息发送失败')
+                    if isinstance(data, dict) else str(data)
+                )
+            return payload, data
+
+        full_text = pending = sent_text = stream_msg_id = ''
+        index = 0
+        last_sent_at = 0.0
+        loop = asyncio.get_running_loop()
+
+        async for item in _iter_stream_chunks(chunks):
+            chunk = _parse_stream_chunk(item)
+            if chunk is None:
+                continue
+            is_replacement, text = chunk
+            if is_replacement:
+                if not text.startswith(sent_text):
+                    raise ValueError('不能修改已经发送的正文前缀')
+                full_text = text
+                pending = text[len(sent_text):] if input_mode == 'append' else text
+            else:
+                if not text:
+                    continue
+                full_text += text
+                pending += text
+
+            content = full_text if input_mode == 'replace' else pending
+            if not content or full_text == sent_text:
+                continue
+            now = loop.time()
+            if index and now - last_sent_at < min_interval:
+                continue
+            _, data = await _send(content, 1, index, stream_msg_id)
+            stream_msg_id = str((data or {}).get('id') or stream_msg_id)
+            sent_text = full_text
+            pending = ''
+            index += 1
+            last_sent_at = loop.time()
+
+        if not full_text and not index:
+            return None
+        content = full_text if input_mode == 'replace' else pending
+        last_payload, last_data = await _send(content, 10, index, stream_msg_id)
+        if event is not None:
+            self._log_sent(last_payload, event, full_text, resp_data=last_data)
+        else:
+            self._log_push(endpoint, last_payload, full_text, last_data)
+        return last_data
 
     async def _reply_send(self, endpoint, event, payload, content, auto_delete_time):
         """回复发送公共尾部: 发送 + 成功后自动撤回 (reply/reply_ark/reply_card 共用)"""
@@ -390,6 +584,186 @@ class MessageSender(_HttpMixin, _MediaSendMixin, _SenderLogMixin):
         if success and data.get('retcode') == 0:
             return data.get('data', {}).get('url')
         return None
+
+    # ==================== 自定义菜单 / 指令面板 ====================
+
+    @staticmethod
+    def _api_error(message):
+        return {'message': message, 'code': -1}
+
+    @classmethod
+    def _normalize_panel_choice(cls, value, choices, name):
+        value = str(value or '').strip().lower()
+        if value not in choices:
+            return '', cls._api_error(
+                f'{name} 只能为 {"、".join(sorted(choices))}'
+            )
+        return value, None
+
+    @classmethod
+    def _panel_targets(
+        cls,
+        *,
+        user_openids=None,
+        group_openids=None,
+        scope='',
+    ):
+        if user_openids is not None and group_openids is not None:
+            return None, cls._api_error('user_openids 和 group_openids 不能同时提供')
+        if user_openids is None and group_openids is None:
+            return {}, None
+
+        key, values = (
+            ('user_openids', user_openids)
+            if user_openids is not None
+            else ('group_openids', group_openids)
+        )
+        if not isinstance(values, (list, tuple)):
+            return None, cls._api_error(f'{key} 必须为列表')
+        if len(values) > 20:
+            return None, cls._api_error(f'{key} 单次最多提供 20 个')
+        expected = {'c2c': 'user_openids', 'group': 'group_openids'}.get(scope)
+        if expected and key != expected:
+            return None, cls._api_error(f'{scope} 场景只能关联 {expected}')
+        if scope in ('channel', 'dm'):
+            return None, cls._api_error(f'{scope} 场景不支持关联指定对象')
+        return {key: [str(value) for value in values]}, None
+
+    async def get_global_menu(self, *, return_error=False):
+        """查询当前生效的全局自定义菜单。"""
+        success, data = await self.get_json('/v2/menu')
+        if not success:
+            return (None, data) if return_error else None
+        return (data, None) if return_error else data
+
+    async def update_global_menu(self, menu=None):
+        """覆盖全局自定义菜单，返回 (是否成功, 响应 JSON)。"""
+        if menu is None:
+            return await self.put('/v2/menu', json={})
+        if not isinstance(menu, dict):
+            return False, self._api_error('menu 必须为字典')
+        return await self.put('/v2/menu', json={'menu': dict(menu)})
+
+    async def get_panels(
+        self,
+        scope,
+        *,
+        cursor='',
+        limit=20,
+        return_error=False,
+    ):
+        """分页查询指定场景的指令面板。"""
+        scope, error = self._normalize_panel_choice(scope, _PANEL_SCOPES, 'scope')
+        if error:
+            return (None, error) if return_error else None
+        try:
+            limit = max(1, min(int(limit), 50))
+        except (TypeError, ValueError):
+            limit = 20
+        params = {'scope': scope, 'limit': limit}
+        if cursor:
+            params['cursor'] = str(cursor)
+        success, data = await self.get_json('/v2/panels', params=params)
+        if not success:
+            return (None, data) if return_error else None
+        data.setdefault('records', [])
+        data.setdefault('next_cursor', '')
+        data.setdefault('is_end', not data['next_cursor'])
+        return (data, None) if return_error else data
+
+    async def create_panel(
+        self,
+        scope,
+        panel,
+        *,
+        target_type='all',
+        user_openids=None,
+        group_openids=None,
+    ):
+        """创建指令面板，返回 (是否成功, 响应 JSON)。"""
+        scope, error = self._normalize_panel_choice(scope, _PANEL_SCOPES, 'scope')
+        if error:
+            return False, error
+        target_type, error = self._normalize_panel_choice(
+            target_type, _PANEL_TARGET_TYPES, 'target_type'
+        )
+        if error:
+            return False, error
+        if target_type == 'specific' and scope not in ('c2c', 'group'):
+            return False, self._api_error('channel 和 dm 场景只支持全局面板')
+        if not isinstance(panel, dict):
+            return False, self._api_error('panel 必须为字典')
+        if target_type == 'all' and (user_openids is not None or group_openids is not None):
+            return False, self._api_error('全局面板不能关联指定对象')
+
+        targets, error = self._panel_targets(
+            user_openids=user_openids,
+            group_openids=group_openids,
+            scope=scope,
+        )
+        if error:
+            return False, error
+        payload = {
+            'scope': scope,
+            'target_type': target_type,
+            'panel': dict(panel),
+            **targets,
+        }
+        return await self.post_json('/v2/panels', payload)
+
+    async def get_panel(self, panel_id, *, return_error=False):
+        """查询指定指令面板的完整配置。"""
+        if not panel_id:
+            error = self._api_error('缺少 panel_id')
+            return (None, error) if return_error else None
+        success, data = await self.get_json(f'/v2/panels/{panel_id}')
+        if not success:
+            return (None, data) if return_error else None
+        return (data, None) if return_error else data
+
+    async def update_panel(self, panel_id, panel):
+        """覆盖指定指令面板的内容和备注。"""
+        if not panel_id:
+            return False, self._api_error('缺少 panel_id')
+        if not isinstance(panel, dict):
+            return False, self._api_error('panel 必须为字典')
+        return await self.put(
+            f'/v2/panels/{panel_id}',
+            json={'panel': dict(panel)},
+        )
+
+    async def delete_panel(self, panel_id):
+        """删除指定指令面板。"""
+        if not panel_id:
+            return False, self._api_error('缺少 panel_id')
+        return await self.delete(f'/v2/panels/{panel_id}')
+
+    async def update_panel_targets(
+        self,
+        panel_id,
+        op,
+        *,
+        user_openids=None,
+        group_openids=None,
+    ):
+        """增加或移除指定面板关联的用户或群。"""
+        if not panel_id:
+            return False, self._api_error('缺少 panel_id')
+        op, error = self._normalize_panel_choice(op, {'add', 'del'}, 'op')
+        if error:
+            return False, error
+        targets, error = self._panel_targets(
+            user_openids=user_openids,
+            group_openids=group_openids,
+        )
+        if error:
+            return False, error
+        if not targets:
+            return False, self._api_error('必须提供 user_openids 或 group_openids')
+        return await self.put(
+            f'/v2/panels/{panel_id}/target',
+            json={'op': op, **targets},
+        )
 
     async def get_group_member(self, group_id, member_id):
         """查询单个群成员详情, 返回 dict, 失败返回 None"""

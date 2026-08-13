@@ -16,6 +16,7 @@ import web.tools._market.market as _market_market
 import web.tools._market.shared as _market_shared
 import web.tools._message.handlers as message_handler
 import web.tools._openapi.handler as openapi_handler
+import web.tools._openapi.menu_panel as openapi_menu_panel
 import web.tools._plugin_mgr.config as _plugin_mgr_config
 import web.tools._plugin_mgr.files as _plugin_mgr_files
 import web.tools._plugin_mgr.module as _plugin_mgr_module
@@ -185,6 +186,17 @@ def get_routes() -> list:
         web.post('/api/openapi/v2/proxy', _(openapi_handler.handle_v2_proxy)),
         web.post('/api/openapi/v2/upload-avatar', _(openapi_handler.handle_v2_upload_avatar)),
         web.post('/api/openapi/v2/webhook-suggest', _(openapi_handler.handle_v2_webhook_suggest)),
+        # ── 开放平台功能配置 ──
+        web.get('/api/openapi/menu-panel/bots', _(openapi_menu_panel.handle_bots)),
+        web.get('/api/openapi/menu-panel/menu', _(openapi_menu_panel.handle_get_menu)),
+        web.put('/api/openapi/menu-panel/menu', _(openapi_menu_panel.handle_update_menu)),
+        web.get('/api/openapi/menu-panel/panels', _(openapi_menu_panel.handle_get_panels)),
+        web.post('/api/openapi/menu-panel/panels', _(openapi_menu_panel.handle_create_panel)),
+        web.put('/api/openapi/menu-panel/panels/save', _(openapi_menu_panel.handle_save_panels)),
+        web.get('/api/openapi/menu-panel/panel', _(openapi_menu_panel.handle_get_panel)),
+        web.put('/api/openapi/menu-panel/panel', _(openapi_menu_panel.handle_update_panel)),
+        web.delete('/api/openapi/menu-panel/panel', _(openapi_menu_panel.handle_delete_panel)),
+        web.put('/api/openapi/menu-panel/targets', _(openapi_menu_panel.handle_update_targets)),
         # ── 自定义页面 ──
         web.get('/api/web-pages', _(handle_get_web_pages)),
         web.get('/api/web-pages/{key}', _(handle_get_web_page_html)),
@@ -225,6 +237,7 @@ def set_context(bot_manager, base_dir: str):
     system_info.set_context(bot_manager)
     deps_info.set_context(base_dir)
     openapi_handler.set_context(base_dir, bot_manager)
+    openapi_menu_panel.set_context(bot_manager)
     _market_shared.set_context(base_dir)
     database_browser.set_context(bot_manager, base_dir)
 

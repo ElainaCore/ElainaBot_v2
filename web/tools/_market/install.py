@@ -312,6 +312,7 @@ def _extract_zip_subset(
             selected = [f for f in flist if f.startswith(strip_prefix) and not f.endswith('/')]
 
             if preserve_data:
+                _migrate_legacy_groupguard_templates(dest_dir)
                 _clear_dir_except_data(dest_dir)
             os.makedirs(dest_dir, exist_ok=True)
             extracted = []
@@ -366,6 +367,21 @@ def _clear_dir_except_data(dest_dir):
             os.remove(p)
 
 
+def _migrate_legacy_groupguard_templates(dest_dir):
+    """Move the legacy GroupGuard template file into its persistent data directory."""
+    if os.path.basename(os.path.normpath(dest_dir)).casefold() not in {
+        'groupguard',
+        '群管',
+    }:
+        return
+    legacy_path = os.path.join(dest_dir, 'reply_templates.json')
+    data_path = os.path.join(dest_dir, 'data', 'reply_templates.json')
+    if not os.path.isfile(legacy_path) or os.path.exists(data_path):
+        return
+    os.makedirs(os.path.dirname(data_path), exist_ok=True)
+    shutil.copy2(legacy_path, data_path)
+
+
 async def _install_module(github_url, module_name, subdir_path='', branch='main', mirror=None):
     """安装/更新模块。"""
     safe = _safe_name(module_name) or 'unknown'
@@ -410,7 +426,9 @@ async def _install_complete(github_url, plugin_name, subdir_path='', branch='mai
         return {'success': False, 'message': '下载失败, 请检查网络或镜像'}
     if content[:4] != b'PK\x03\x04':
         return {'success': False, 'message': '下载内容不是有效的 zip 文件'}
-    return _extract_zip_subset(content, plugin_name, subdir_path=subdir_path)
+    return _extract_zip_subset(
+        content, plugin_name, subdir_path=subdir_path, preserve_data=True
+    )
 
 
 async def _install_single(github_url, plugin_name, path='', branch='main', alone=True, mirror=None):

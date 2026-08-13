@@ -1,7 +1,10 @@
 from types import SimpleNamespace
 
 from web.tools._bots import iter_bots
-from web.tools._market.install import _clear_dir_except_data
+from web.tools._market.install import (
+    _clear_dir_except_data,
+    _migrate_legacy_groupguard_templates,
+)
 from web.tools._python_source import read_dict_assignment
 
 
@@ -46,3 +49,26 @@ def test_clear_dir_except_data(tmp_path):
     assert (data_dir / 'config.json').is_file()
 
     _clear_dir_except_data(str(tmp_path / 'missing'))
+
+
+def test_migrate_legacy_groupguard_templates(tmp_path):
+    plugin_dir = tmp_path / '群管'
+    plugin_dir.mkdir()
+    legacy = plugin_dir / 'reply_templates.json'
+    legacy.write_text('{"custom": true}', encoding='utf-8')
+
+    _migrate_legacy_groupguard_templates(str(plugin_dir))
+
+    assert (plugin_dir / 'data' / 'reply_templates.json').read_text(
+        encoding='utf-8'
+    ) == '{"custom": true}'
+
+
+def test_legacy_groupguard_migration_ignores_other_plugins(tmp_path):
+    plugin_dir = tmp_path / 'other-plugin'
+    plugin_dir.mkdir()
+    (plugin_dir / 'reply_templates.json').write_text('{}', encoding='utf-8')
+
+    _migrate_legacy_groupguard_templates(str(plugin_dir))
+
+    assert not (plugin_dir / 'data').exists()

@@ -57,7 +57,13 @@ class _SenderLogMixin:
     def _extract_log_text(self, payload, content, media_label=''):
         """从 payload 提取日志显示文本"""
         md = payload.get('markdown')
-        text = (md.get('content', '') if md else None) or content or payload.get('content', '') or ''
+        text = (
+            (md.get('content', '') if md else None)
+            or content
+            or payload.get('content', '')
+            or payload.get('content_raw', '')
+            or ''
+        )
         if payload.get('msg_type') == MSG_TYPE_MEDIA:
             label = media_label or '[media]'
             text = f'{label} {text}'.rstrip() if text else label

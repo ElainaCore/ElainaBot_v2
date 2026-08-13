@@ -162,6 +162,7 @@ _PARSERS = {
 # sender 方法代理表: True = 自动注入 event 作为第一参数, False = 直接透传
 _PROXY_METHODS = {
     'reply': True,
+    'reply_stream': True,
     'reply_image': True,
     'reply_voice': True,
     'reply_video': True,
@@ -172,6 +173,7 @@ _PROXY_METHODS = {
     'ack_interaction': True,
     'send_to_group': False,
     'send_to_user': False,
+    'send_stream_to_user': False,
     'send_to_channel': False,
     'send_image': False,
     'send_wakeup': False,
@@ -222,6 +224,9 @@ class Event:
         'apply_at',
         'apply_source',
         'invited_by',
+        'verify_info',
+        'verify_method',
+        'review_qa_list',
         'is_at_self',
         'is_at_other_bot',
         'is_at_other_user',
@@ -276,6 +281,9 @@ class Event:
         self.apply_at = ''
         self.apply_source = ''
         self.invited_by = ''
+        self.verify_info = {}
+        self.verify_method = ''
+        self.review_qa_list = []
         self.is_at_self = False
         self.is_at_other_bot = False
         self.is_at_other_user = False
@@ -314,11 +322,22 @@ class Event:
     # ==================== 解析 ====================
 
     def _parse_payload(self, payload):
-        self.event_id = payload.get('id', '')
-        self.event_type = payload.get('t', '')
+        if not isinstance(payload, dict):
+            return
+        self.event_id = payload.get('id') or payload.get('event_id') or ''
+        self.event_type = payload.get('t') or ''
         self.raw = payload
 
         d = payload.get('d')
+        is_flat_join_request = (
+            not isinstance(d, dict)
+            and (payload.get('_qqbotRawEvent') == GROUP_JOIN_REQUEST
+                 or (payload.get('post_type') == 'request'
+                     and payload.get('request_type') == 'group.add'))
+        )
+        if is_flat_join_request:
+            self.event_type = str(payload.get('_qqbotRawEvent') or GROUP_JOIN_REQUEST)
+            d = payload
         if not d or not isinstance(d, dict):
             return
 
@@ -341,10 +360,13 @@ class Event:
         """JSON 路径取值: get('d/author/id')"""
         data = self.raw
         try:
-            for key in path.split('/'):
-                data = data[key]
+            keys = path.split('/')
+            if keys and keys[0] == 'd' and isinstance(data, dict) and 'd' not in data:
+                keys = keys[1:]
+            for key in keys:
+                data = data[int(key)] if isinstance(data, list) else data[key]
             return data
-        except (KeyError, TypeError):
+        except (IndexError, KeyError, TypeError, ValueError):
             return None
 
     @property
