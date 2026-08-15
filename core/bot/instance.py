@@ -87,6 +87,7 @@ class BotInstance:
                 max_reconnects=ws_cfg.get('max_reconnects', -1),
                 custom_url=ws_cfg.get('custom_url', ''),
                 client_name=str(identify_cfg.get('name', '') or ''),
+                subscribe_channel_events=ws_cfg.get('subscribe_channel_events', False),
             )
 
         api_info = f', API={self.token_manager.api_base}'

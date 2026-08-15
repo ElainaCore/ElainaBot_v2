@@ -78,6 +78,20 @@ class BotRegistry:
             report_error(SYSTEM, '启动器', e, context={'appid': appid})
             return None
 
+    def _create_ws_client(self, appid, bot, ws_cfg):
+        identify_cfg = ws_cfg.get('identify', {}) or {}
+        return WSClient(
+            appid=appid,
+            token_manager=bot.token_manager,
+            on_event=self._on_event,
+            ack_interaction=bot.sender.ack_interaction,
+            reconnect_interval=ws_cfg.get('reconnect_interval', 5),
+            max_reconnects=ws_cfg.get('max_reconnects', -1),
+            custom_url=ws_cfg.get('custom_url', ''),
+            client_name=str(identify_cfg.get('name', '') or ''),
+            subscribe_channel_events=ws_cfg.get('subscribe_channel_events', False),
+        )
+
     # ---------- 热重载 ----------
 
     def on_config_change(self, data):
@@ -150,18 +164,14 @@ class BotRegistry:
             bot.robot_qq = str(new_cfg.get('robot_qq', ''))
 
             ws_cfg = new_cfg.get('websocket', {})
+            subscribe_channel_events = bool(ws_cfg.get('subscribe_channel_events', False))
+            ws_setting_changed = bool(bot.ws_client) and bot.ws_client._subscribe_channel_events != subscribe_channel_events
             if ws_cfg.get('enabled') and not bot.ws_client:
-                identify_cfg = ws_cfg.get('identify', {}) or {}
-                bot.ws_client = WSClient(
-                    appid=appid,
-                    token_manager=bot.token_manager,
-                    on_event=self._on_event,
-                    ack_interaction=bot.sender.ack_interaction,
-                    reconnect_interval=ws_cfg.get('reconnect_interval', 5),
-                    max_reconnects=ws_cfg.get('max_reconnects', -1),
-                    custom_url=ws_cfg.get('custom_url', ''),
-                    client_name=str(identify_cfg.get('name', '') or ''),
-                )
+                bot.ws_client = self._create_ws_client(appid, bot, ws_cfg)
+                spawn(bot.ws_client.connect())
+            elif ws_cfg.get('enabled') and ws_setting_changed:
+                await bot.ws_client.close()
+                bot.ws_client = self._create_ws_client(appid, bot, ws_cfg)
                 spawn(bot.ws_client.connect())
             elif not ws_cfg.get('enabled') and bot.ws_client:
                 await bot.ws_client.close()

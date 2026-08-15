@@ -32,7 +32,12 @@ _CLIENT_VERSION = '9.9.9'
 _UA_RUNTIME = f'Python/{_platform.python_version()}; {_platform.system().lower()}'
 
 # intents 位掩码 (订阅的事件类型)
-_INTENTS = (1 << 0) | (1 << 10) | (1 << 12) | (1 << 24) | (1 << 25) | (1 << 26) | (1 << 27) | (1 << 30)
+# 频道相关 intents 默认关闭，通过 bot.yaml websocket.subscribe_channel_events 开启。
+# 频道: GUILD_MEMBERS(1), GUILD_MESSAGES(9), GUILD_MESSAGE_REACTIONS(10),
+#       FORUMS_EVENT(28), AUDIO_ACTION(29), PUBLIC_GUILD_MESSAGES(30)
+# 其余当前使用的 intents 按群聊/单聊及交互事件处理。
+_BASE_INTENTS = (1 << 0) | (1 << 12) | (1 << 24) | (1 << 25) | (1 << 26) | (1 << 27)
+_CHANNEL_INTENTS = (1 << 1) | (1 << 9) | (1 << 10) | (1 << 28) | (1 << 29) | (1 << 30)
 
 
 def build_user_agent(client_name=''):
@@ -55,6 +60,7 @@ class WSClient:
         max_reconnects=-1,
         custom_url='',
         client_name='ElainaBot',
+        subscribe_channel_events=False,
     ):
         self._appid = str(appid)
         self._tm = token_manager
@@ -64,6 +70,8 @@ class WSClient:
         self._max_reconnects = max_reconnects
         self._custom_url = custom_url.strip() if custom_url else ''
         self._client_name = str(client_name).strip() or 'ElainaBot'
+        self._subscribe_channel_events = bool(subscribe_channel_events)
+        self._intents = _BASE_INTENTS | (_CHANNEL_INTENTS if self._subscribe_channel_events else 0)
 
         self._ws = None
         self._session_id = None
@@ -230,7 +238,7 @@ class WSClient:
         token = await self._tm.get_token()
         payload = {
             'token': f'QQBot {token}',
-            'intents': _INTENTS,
+            'intents': self._intents,
             'shard': [0, 1],
         }
         await self._send_op(_OP_IDENTIFY, payload, '已发送鉴权')

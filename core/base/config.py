@@ -31,6 +31,7 @@ _MISSING = object()
 _BOT_DEFAULTS = {
     'enabled': True,
     'api_version': 'new',
+    'websocket.subscribe_channel_events': False,
     'message.use_markdown': True,
     'message.markdown_suffix': '',
     'message.button_enter_to_send': False,

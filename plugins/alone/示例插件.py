@@ -335,37 +335,6 @@ async def refresh_group_info(event, match):
         f"机器人身份：{state.get('member_role', '未获取')}")
 
 
-@handler(r'^入群申请(?:\s+(\S+))?$', name='入群申请', desc='查看入群申请', owner_only=True, group_only=True)
-async def query_group_join_requests(event, match):
-    page = await event.sender.get_group_join_requests(
-        event.group_id, cursor=match.group(1) or '', limit=5)
-    if not page:
-        return await event.reply("❌ 获取入群申请失败")
-    if not page['list']:
-        return await event.reply("当前没有入群申请")
-
-    lines = []
-    for item in page['list']:
-        verify = item.get('verify_info') or {}
-        lines.append(
-            f"{item.get('username', '未知用户')}\n"
-            f"成员 ID：{item.get('member_openid', '')}\n"
-            f"申请 ID：{item.get('join_request_id', '')}\n"
-            f"验证消息：{verify.get('verify_message') or '无'}"
-        )
-    if page['next_cursor']:
-        lines.append(f"下一页：入群申请 {page['next_cursor']}")
-    await event.reply('\n\n'.join(lines))
-
-
-@handler(r'^通过入群\s+(\S+)\s+(\S+)$', name='通过入群', desc='通过入群申请', owner_only=True, group_only=True)
-async def approve_group_join_request(event, match):
-    member_id, request_id = match.group(1), match.group(2)
-    success, error = await event.sender.review_group_join_request(
-        event.group_id, member_id, 'approve', join_request_id=request_id)
-    await event.reply("✅ 已通过" if success else f"❌ 失败：{error}")
-
-
 @handler(r'^拒绝并拉黑\s+(\S+)\s+(\S+)$', name='拒绝并拉黑', desc='拒绝并拉黑申请人', owner_only=True, group_only=True)
 async def decline_group_join_request(event, match):
     member_id, request_id = match.group(1), match.group(2)
