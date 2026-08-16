@@ -33,11 +33,13 @@ _UA_RUNTIME = f'Python/{_platform.python_version()}; {_platform.system().lower()
 
 # intents 位掩码 (订阅的事件类型)
 # 频道相关 intents 默认关闭，通过 bot.yaml websocket.subscribe_channel_events 开启。
-# 频道: GUILD_MEMBERS(1), GUILD_MESSAGES(9), GUILD_MESSAGE_REACTIONS(10),
-#       FORUMS_EVENT(28), AUDIO_ACTION(29), PUBLIC_GUILD_MESSAGES(30)
+# 公域机器人可订阅的频道事件: GUILD_MEMBERS(1)、GUILD_MESSAGE_REACTIONS(10)、
+#       AUDIO_ACTION(29)、PUBLIC_GUILD_MESSAGES(30)。
+# GUILD_MESSAGES(9) 与 FORUMS_EVENT(28) 仅私域机器人可申请，不能随开关发送，
+# 否则网关会在 IDENTIFY 后返回 INVALID_SESSION。
 # 其余当前使用的 intents 按群聊/单聊及交互事件处理。
 _BASE_INTENTS = (1 << 0) | (1 << 12) | (1 << 24) | (1 << 25) | (1 << 26) | (1 << 27)
-_CHANNEL_INTENTS = (1 << 1) | (1 << 9) | (1 << 10) | (1 << 28) | (1 << 29) | (1 << 30)
+_CHANNEL_INTENTS = (1 << 1) | (1 << 10) | (1 << 29) | (1 << 30)
 
 
 def build_user_agent(client_name=''):

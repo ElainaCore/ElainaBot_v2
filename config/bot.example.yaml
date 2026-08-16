@@ -16,7 +16,7 @@ bots:
     # WebSocket 连接配置
     websocket:
       enabled: true                   # 是否启用 WS 连接
-      subscribe_channel_events: false # 是否订阅频道消息，默认关闭 1/9/10/28/29/30 intents
+      subscribe_channel_events: false # 是否订阅公域频道事件，默认关闭 1/10/29/30 intents
       custom_url: ""                   # 自定义 WS 地址(留空则自动获取网关)
       reconnect_interval: 5            # 重连间隔(秒)
       max_reconnects: -1               # 最大重连次数(-1 无限)
