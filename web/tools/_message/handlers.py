@@ -9,7 +9,7 @@ import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date as _date
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any, cast
 from urllib.parse import quote
 
@@ -751,26 +751,29 @@ async def handle_refresh_group_info(request: web.Request):
 
 # ==================== 群成员权限 (带缓存) ====================
 
-_roles_cache: dict[str, tuple[float, dict[str, str]]] = {}
+_roles_cache: dict[tuple[str, str], tuple[float, dict[str, dict]]] = {}
 _ROLES_CACHE_TTL = 120
 
 
 def _prune_roles_cache(now):
-    for gid in [gid for gid, (ts, _) in _roles_cache.items() if now - ts >= _ROLES_CACHE_TTL]:
-        _roles_cache.pop(gid, None)
+    for key in [key for key, (ts, _) in _roles_cache.items() if now - ts >= _ROLES_CACHE_TTL]:
+        _roles_cache.pop(key, None)
 
 
-def _get_group_members_sync(group_id):
+def _get_group_members_sync(group_id, appid=''):
     """从 groups_users 表读取群成员信息 {user_id: {role, is_bot}}"""
     now = time.time()
-    cached = _roles_cache.get(group_id)
+    cache_key = (str(appid or ''), str(group_id))
+    cached = _roles_cache.get(cache_key)
     if cached and now - cached[0] < _ROLES_CACHE_TTL:
         return cached[1]
     _prune_roles_cache(now)
     if not _shared._bot_manager:
         return {}
     members: dict[str, dict] = {}
-    for inst in _shared._bot_manager._bots.values():
+    bot = _get_bot(appid)
+    instances = [bot] if bot else []
+    for inst in instances:
         try:
             rows = inst.log_service.query_data('SELECT users FROM groups_users WHERE group_id = ?', (group_id,))
             if rows and rows[0].get('users'):
@@ -790,16 +793,81 @@ def _get_group_members_sync(group_id):
                 break
         except Exception as e:
             log.debug(f'获取群成员角色失败: {e}')
-    _roles_cache[group_id] = (now, members)
+    _roles_cache[cache_key] = (now, members)
     return members
 
 
 async def handle_get_group_roles(request: web.Request):
-    """获取群成员角色与 bot 标记"""
+    """获取群成员角色、bot 标记及机器人群管理权限。"""
     body = await request.json()
     group_id = body.get('group_id', '')
+    appid = body.get('appid', '')
     if not group_id:
         return web.json_response({'success': False, 'message': '缺少 group_id'}, status=400)
     loop = asyncio.get_running_loop()
-    members = await loop.run_in_executor(None, _get_group_members_sync, group_id)
-    return web.json_response({'success': True, 'data': members})
+    members = await loop.run_in_executor(None, _get_group_members_sync, group_id, appid)
+    bot = _get_bot(appid)
+    record = await bot.sender.get_group_record(group_id) if bot else None
+    bot_is_admin = bool(record and record.get('in_group') and record.get('is_admin'))
+    return web.json_response({
+        'success': True,
+        'data': members,
+        'bot_is_admin': bot_is_admin,
+    })
+
+
+async def handle_set_group_member_mute(request: web.Request):
+    """从消息记录面板禁言单个群成员。"""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    group_id = str(body.get('group_id') or '').strip()
+    user_id = str(body.get('user_id') or '').strip()
+    appid = str(body.get('appid') or '').strip()
+    if not group_id or not user_id:
+        return web.json_response({'success': False, 'message': '缺少 group_id/user_id'}, status=400)
+
+    bot = _get_bot(appid)
+    if not bot:
+        return web.json_response({'success': False, 'message': '无可用机器人'}, status=400)
+
+    record = await bot.sender.get_group_record(group_id)
+    if not record or not record.get('in_group'):
+        return web.json_response({'success': False, 'message': '机器人不在该群或群信息未同步'}, status=409)
+    if not record.get('is_admin'):
+        return web.json_response({'success': False, 'message': '机器人不是该群管理员，无法执行禁言'}, status=403)
+
+    member = next((item for item in record.get('users') or []
+                   if isinstance(item, dict) and str(item.get('userid') or '') == user_id), {})
+    role = str(member.get('member_role') or member.get('role') or '')
+    if member.get('is_bot'):
+        return web.json_response({'success': False, 'message': '不能禁言机器人账号'}, status=400)
+    if role in ('owner', 'admin'):
+        return web.json_response({'success': False, 'message': '不能禁言群主或群管理员'}, status=400)
+
+    try:
+        minutes = int(body.get('minutes', 30))
+    except (TypeError, ValueError):
+        minutes = 0
+    if not 1 <= minutes <= 43200:
+        return web.json_response({'success': False, 'message': '禁言时长必须为 1 至 43200 分钟'}, status=400)
+    expire_at = (datetime.now().astimezone() + timedelta(minutes=minutes)).isoformat(timespec='seconds')
+    payload = {'op': 'add', 'member_openid': user_id, 'mute_expire_at': expire_at}
+
+    success, data = await bot.sender.set_group_member_mute(group_id, [payload])
+    if not success:
+        message = data.get('message', '平台拒绝了禁言操作') if isinstance(data, dict) else str(data)
+        return web.json_response(
+            {'success': False, 'message': message, 'data': data},
+            status=502,
+        )
+    log.info(
+        '[%s] 面板禁言群成员: group=%s member=%s minutes=%s',
+        getattr(bot, 'appid', appid), group_id, user_id, minutes,
+    )
+    return web.json_response({
+        'success': True,
+        'message': f'已禁言 {minutes} 分钟',
+        'data': {'mute_expire_at': expire_at},
+    })

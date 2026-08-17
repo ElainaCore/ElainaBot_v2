@@ -110,6 +110,7 @@ def get_routes() -> list:
         web.post('/api/message/remarks/delete', _(message_handler.handle_delete_remark)),
         web.post('/api/message/group-info/refresh', _(message_handler.handle_refresh_group_info)),
         web.post('/api/message/group-roles', _(message_handler.handle_get_group_roles)),
+        web.post('/api/message/group-member/mute', _(message_handler.handle_set_group_member_mute)),
         # ── 统计 ──
         web.get('/api/statistics', _(statistics_handler.handle_get_statistics)),
         web.get('/api/statistics/core', _(statistics_handler.handle_get_core)),
@@ -193,6 +194,8 @@ def get_routes() -> list:
         web.get('/api/openapi/menu-panel/panels', _(openapi_menu_panel.handle_get_panels)),
         web.post('/api/openapi/menu-panel/panels', _(openapi_menu_panel.handle_create_panel)),
         web.put('/api/openapi/menu-panel/panels/save', _(openapi_menu_panel.handle_save_panels)),
+        web.get('/api/openapi/menu-panel/config/export', _(openapi_menu_panel.handle_export_config)),
+        web.post('/api/openapi/menu-panel/config/import', _(openapi_menu_panel.handle_import_config)),
         web.get('/api/openapi/menu-panel/panel', _(openapi_menu_panel.handle_get_panel)),
         web.put('/api/openapi/menu-panel/panel', _(openapi_menu_panel.handle_update_panel)),
         web.delete('/api/openapi/menu-panel/panel', _(openapi_menu_panel.handle_delete_panel)),

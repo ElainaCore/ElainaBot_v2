@@ -6,6 +6,12 @@ from aiohttp import web
 
 _manager = None
 
+_CONFIG_FORMAT = 'elainabot-function-config'
+_CONFIG_VERSION = 1
+_PANEL_SCOPES = ('c2c', 'group', 'channel', 'dm')
+_MENU_TYPES = {'send_message', 'link', 'switch', 'menu'}
+_CHILD_MENU_TYPES = {'send_message', 'link'}
+
 
 def set_context(bot_manager):
     global _manager
@@ -194,6 +200,269 @@ async def handle_update_targets(request):
     )
     message = '关联对象已更新'
     return _success(data, message=message) if success else _failure(data)
+
+
+async def _list_all_panels(sender, scope):
+    records = []
+    cursor = ''
+    for _ in range(100):
+        data, error = await sender.get_panels(
+            scope,
+            cursor=cursor,
+            limit=50,
+            return_error=True,
+        )
+        if error:
+            return None, error
+        page = data if isinstance(data, dict) else {}
+        page_records = page.get('records', [])
+        if not isinstance(page_records, list):
+            return None, _api_error('指令面板 records 必须为数组')
+        records.extend(record for record in page_records if isinstance(record, dict))
+        next_cursor = str(page.get('next_cursor') or '')
+        if page.get('is_end') or not next_cursor:
+            return records, None
+        if next_cursor == cursor:
+            return None, _api_error('指令面板分页游标未推进')
+        cursor = next_cursor
+    return None, _api_error('指令面板分页超过安全上限')
+
+
+def _menu_item_for_import(item, *, child=False):
+    if not isinstance(item, dict):
+        raise ValueError('菜单项必须为 JSON 对象')
+    item_type = str(item.get('type') or '').strip().lower()
+    allowed = _CHILD_MENU_TYPES if child else _MENU_TYPES
+    if item_type not in allowed:
+        raise ValueError(f'不支持的菜单类型: {item_type or "空"}')
+    name = str(item.get('name') or '').strip()
+    if not name:
+        raise ValueError('菜单项缺少名称')
+    result = {'type': item_type, 'name': name}
+    if item_type == 'send_message':
+        value = str(item.get('send_message') or '').strip()
+        if not value:
+            raise ValueError(f'菜单“{name}”缺少指令')
+        result['send_message'] = value
+    elif item_type == 'link':
+        value = str(item.get('link') or '').strip()
+        if not value.lower().startswith('https://'):
+            raise ValueError(f'菜单“{name}”的链接必须以 https:// 开头')
+        result['link'] = value
+    elif item_type == 'switch':
+        switch = item.get('switch')
+        if not isinstance(switch, dict) or not str(switch.get('switch_id') or '').strip():
+            raise ValueError(f'菜单“{name}”缺少开关标识')
+        result['switch'] = {
+            'switch_id': str(switch['switch_id']).strip(),
+            'default': bool(switch.get('default')),
+        }
+    else:
+        children = item.get('sub_menu_items', [])
+        if not isinstance(children, list) or len(children) > 5:
+            raise ValueError(f'菜单“{name}”的子项必须为不超过 5 项的数组')
+        result['sub_menu_items'] = [
+            _menu_item_for_import(value, child=True) for value in children
+        ]
+    return result
+
+
+def _menu_for_import(menu):
+    if menu is None:
+        return None
+    if not isinstance(menu, dict):
+        raise ValueError('menu 必须为 JSON 对象或 null')
+    items = menu.get('items', [])
+    if not isinstance(items, list) or len(items) > 10:
+        raise ValueError('menu.items 必须为不超过 10 项的数组')
+    return {'items': [_menu_item_for_import(item) for item in items]}
+
+
+def _panel_item_for_import(item):
+    if not isinstance(item, dict):
+        raise ValueError('指令项必须为 JSON 对象')
+    item_type = str(item.get('type') or '').strip().lower()
+    if item_type not in ('command', 'link'):
+        raise ValueError(f'不支持的指令类型: {item_type or "空"}')
+    name = str(item.get('name') or '').strip()
+    if not name:
+        raise ValueError('指令项缺少名称')
+    result = {'type': item_type, 'name': name}
+    desc = str(item.get('desc') or '').strip()
+    if desc:
+        result['desc'] = desc
+    if item.get('only_admin'):
+        result['only_admin'] = True
+    if item_type == 'link':
+        link = str(item.get('link') or '').strip()
+        if not link.lower().startswith('https://'):
+            raise ValueError(f'指令“{name}”的链接必须以 https:// 开头')
+        result['link'] = link
+    return result
+
+
+def _panel_for_import(record):
+    if not isinstance(record, dict):
+        raise ValueError('panels 中的每项都必须为 JSON 对象')
+    scope = str(record.get('scope') or '').strip().lower()
+    if scope not in _PANEL_SCOPES:
+        raise ValueError(f'不支持的指令场景: {scope or "空"}')
+    target_type = str(record.get('target_type') or 'all').strip().lower()
+    if target_type not in ('all', 'specific'):
+        raise ValueError('target_type 只能为 all 或 specific')
+    if target_type == 'specific' and scope not in ('c2c', 'group'):
+        raise ValueError('channel 和 dm 场景不支持指定对象')
+    panel = record.get('panel')
+    if not isinstance(panel, dict):
+        raise ValueError('指令配置缺少 panel 对象')
+    items = panel.get('items', [])
+    if not isinstance(items, list) or not 1 <= len(items) <= 20:
+        raise ValueError('panel.items 必须为 1 至 20 项的数组')
+    result = {
+        'scope': scope,
+        'target_type': target_type,
+        'panel': {
+            'items': [_panel_item_for_import(item) for item in items],
+            'remark': str(panel.get('remark') or '').strip(),
+        },
+    }
+    if target_type == 'specific':
+        key = 'user_openids' if scope == 'c2c' else 'group_openids'
+        values = record.get(key, [])
+        if not isinstance(values, list) or not 1 <= len(values) <= 20:
+            raise ValueError(f'{key} 必须为 1 至 20 项的数组')
+        result[key] = list(dict.fromkeys(str(value).strip() for value in values if str(value).strip()))
+        if not result[key]:
+            raise ValueError(f'{key} 不能为空')
+    return result
+
+
+def _config_for_import(config):
+    if not isinstance(config, dict):
+        raise ValueError('导入文件必须为 JSON 对象')
+    if config.get('format') != _CONFIG_FORMAT:
+        raise ValueError('不是 ElainaBot 功能配置文件')
+    if config.get('version') != _CONFIG_VERSION:
+        raise ValueError(f'不支持的配置版本: {config.get("version")}')
+    menu = _menu_for_import(config.get('menu'))
+    raw_panels = config.get('panels', [])
+    if not isinstance(raw_panels, list):
+        raise ValueError('panels 必须为数组')
+    panels = [_panel_for_import(record) for record in raw_panels]
+    global_scopes = [record['scope'] for record in panels if record['target_type'] == 'all']
+    if len(global_scopes) != len(set(global_scopes)):
+        raise ValueError('每个场景最多包含一个全局指令面板')
+    return {'menu': menu, 'panels': panels}
+
+
+async def handle_export_config(request):
+    """导出不绑定机器人的完整功能配置。"""
+    sender, denied = _require_sender(request.query.get('appid', ''))
+    if denied:
+        return denied
+    menu_data, error = await sender.get_global_menu(return_error=True)
+    if error:
+        return _failure(error)
+    menu = menu_data.get('menu') if isinstance(menu_data, dict) else None
+    exported_panels = []
+    for scope in _PANEL_SCOPES:
+        records, error = await _list_all_panels(sender, scope)
+        if error:
+            return _failure(error)
+        for record in records:
+            detail = record
+            panel_id = str(record.get('panel_id') or '')
+            if panel_id:
+                loaded, error = await sender.get_panel(panel_id, return_error=True)
+                if error:
+                    return _failure(error)
+                if isinstance(loaded, dict):
+                    detail = {**record, **loaded}
+            panel = detail.get('panel')
+            if not isinstance(panel, dict):
+                return _failure(_api_error('面板详情缺少 panel 对象'))
+            portable = {
+                'scope': scope,
+                'target_type': str(detail.get('target_type') or 'all').lower(),
+                'panel': {
+                    'items': panel.get('items', []),
+                    'remark': str(panel.get('remark') or ''),
+                },
+            }
+            if portable['target_type'] == 'specific':
+                key = 'user_openids' if scope == 'c2c' else 'group_openids'
+                portable[key] = detail.get(key, [])
+            exported_panels.append(portable)
+    try:
+        config = _config_for_import({
+            'format': _CONFIG_FORMAT,
+            'version': _CONFIG_VERSION,
+            'menu': menu,
+            'panels': exported_panels,
+        })
+    except ValueError as error:
+        return _failure(_api_error(f'平台配置无法导出: {error}'))
+    return _success({
+        'format': _CONFIG_FORMAT,
+        'version': _CONFIG_VERSION,
+        **config,
+    })
+
+
+async def handle_import_config(request):
+    """使用可移植 JSON 覆盖当前指定机器人的完整功能配置。"""
+    body, sender, denied = await _body_sender(request)
+    if denied:
+        return denied
+    try:
+        config = _config_for_import(body.get('config'))
+    except ValueError as error:
+        return _failure(str(error), status=400)
+
+    existing_ids = []
+    for scope in _PANEL_SCOPES:
+        records, error = await _list_all_panels(sender, scope)
+        if error:
+            return _failure(error)
+        existing_ids.extend(str(record.get('panel_id') or '') for record in records)
+    existing_ids = list(dict.fromkeys(panel_id for panel_id in existing_ids if panel_id))
+
+    deleted = 0
+    for panel_id in existing_ids:
+        success, data = await sender.delete_panel(panel_id)
+        if not success:
+            return _failure({
+                'message': f'导入未完成，删除原指令面板失败: {data.get("message", "未知错误") if isinstance(data, dict) else data}',
+                'detail': data,
+            })
+        deleted += 1
+
+    created = 0
+    for record in config['panels']:
+        success, data = await sender.create_panel(
+            record['scope'],
+            record['panel'],
+            target_type=record['target_type'],
+            user_openids=record.get('user_openids'),
+            group_openids=record.get('group_openids'),
+        )
+        if not success:
+            return _failure({
+                'message': f'导入未完成，创建指令面板失败: {data.get("message", "未知错误") if isinstance(data, dict) else data}',
+                'detail': data,
+            })
+        created += 1
+
+    success, data = await sender.update_global_menu(config['menu'])
+    if not success:
+        return _failure({
+            'message': f'指令已导入，但菜单更新失败: {data.get("message", "未知错误") if isinstance(data, dict) else data}',
+            'detail': data,
+        })
+    return _success(
+        {'deleted_panels': deleted, 'created_panels': created},
+        message='功能配置已导入当前机器人',
+    )
 
 
 async def _append_panel_items(
