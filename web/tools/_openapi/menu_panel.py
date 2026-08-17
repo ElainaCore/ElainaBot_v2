@@ -416,8 +416,8 @@ async def handle_import_config(request):
         return denied
     try:
         config = _config_for_import(body.get('config'))
-    except ValueError as error:
-        return _failure(str(error), status=400)
+    except ValueError as validation_error:
+        return _failure(str(validation_error), status=400)
 
     existing_ids = []
     for scope in _PANEL_SCOPES:
