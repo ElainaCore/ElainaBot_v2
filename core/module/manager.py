@@ -1,7 +1,6 @@
 #!/usr/bin/env python
 """拓展模块管理器 — 自动发现、依赖安装、启停管理"""
 
-import ast
 import asyncio
 import importlib
 import importlib.util
@@ -12,6 +11,7 @@ import sys
 from core.base.context import BaseContext
 from core.base.logger import EXTENSION, get_logger, report_error
 from core.base.pip_helper import install_requirements as _install_deps
+from core.base.python_source import read_dict_assignment
 from core.module.hook import get_hook_manager
 
 log = get_logger(EXTENSION, '管理器')
@@ -125,20 +125,30 @@ class ModuleManager:
             os.makedirs(self._dir, exist_ok=True)
             return
         for name in sorted(os.listdir(self._dir)):
-            mod_dir = os.path.join(self._dir, name)
-            if not os.path.isdir(mod_dir) or name.startswith('_'):
-                continue
-            if not self._find_entry(mod_dir):
-                continue
-            info = ModuleInfo(name, mod_dir)
-            meta = self._read_manifest(mod_dir)
-            info.display_name = meta.get('name') or name
-            for key in ('description', 'version', 'author', 'github', 'releases'):
-                val = meta.get(key)
-                if val is not None:
-                    setattr(info, key, str(val))
-            self._modules[name] = info
+            self.discover_module(name)
         log.info(f'发现 {len(self._modules)} 个模块: {", ".join(f"{n}@{m.version}" for n, m in self._modules.items())}')
+
+    def discover_module(self, name):
+        """发现或刷新单个未运行模块，供安装后立即启用。"""
+        if not name or name.startswith('_'):
+            return None
+        mod_dir = os.path.join(self._dir, name)
+        if not os.path.isdir(mod_dir) or not self._find_entry(mod_dir):
+            return None
+
+        current = self._modules.get(name)
+        if current and current.instance is not None:
+            return current
+
+        info = ModuleInfo(name, mod_dir)
+        meta = self._read_manifest(mod_dir)
+        info.display_name = meta.get('name') or name
+        for key in ('description', 'version', 'author', 'github', 'releases'):
+            val = meta.get(key)
+            if val is not None:
+                setattr(info, key, str(val))
+        self._modules[name] = info
+        return info
 
     # ==================== 持久化开关 ====================
 
@@ -251,6 +261,17 @@ class ModuleManager:
             await self.disable(name, _persist=False)
         return await self.enable(name, _persist=False)
 
+    async def refresh_and_enable(self, name):
+        """刷新已安装模块并启用，统一市场安装和更新的生命周期。"""
+        if self.is_enabled(name):
+            await self.disable(name, _persist=False)
+        if self.discover_module(name) is None:
+            return False
+
+        # 启动失败时仍保留启用意图，环境修复后可在下次启动重试。
+        self.set_module_enabled_persist(name, True)
+        return await self.enable(name, _persist=False)
+
     # ==================== 查询 ====================
 
     def get(self, name):
@@ -316,22 +337,7 @@ class ModuleManager:
     def _read_manifest(mod_dir):
         """从 main.py 的 __module_meta__ 读取模块元数据"""
         entry = os.path.join(mod_dir, 'main.py')
-        if not os.path.isfile(entry):
-            return dict(_DEFAULT_MANIFEST)
-        try:
-            with open(entry, encoding='utf-8') as f:
-                tree = ast.parse(f.read())
-            for node in ast.iter_child_nodes(tree):
-                if (
-                    isinstance(node, ast.Assign)
-                    and len(node.targets) == 1
-                    and isinstance(node.targets[0], ast.Name)
-                    and node.targets[0].id == '__module_meta__'
-                ):
-                    return ast.literal_eval(node.value)
-        except Exception as e:
-            log.warning(f'读取模块元数据失败 [{mod_dir}]: {e}')
-        return dict(_DEFAULT_MANIFEST)
+        return read_dict_assignment(entry, '__module_meta__') or dict(_DEFAULT_MANIFEST)
 
     async def shutdown(self):
         """关闭所有已启用模块 (不改变持久化状态, 重启后按用户设置恢复)"""

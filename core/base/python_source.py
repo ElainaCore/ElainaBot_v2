@@ -1,10 +1,11 @@
-"""Python 源码静态读取工具"""
+"""Python 源码静态读取工具。"""
 
 import ast
 import os
 
 
 def read_dict_assignment(file_path: str, variable_name: str) -> dict | None:
+    """静态读取模块顶层字典赋值，不执行目标源码。"""
     if not os.path.isfile(file_path):
         return None
     try:

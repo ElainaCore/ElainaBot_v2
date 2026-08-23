@@ -1,11 +1,14 @@
-"""DAU 统计图片渲染 (PIL)"""
+"""日活统计图片渲染。"""
 
 import os
+from functools import lru_cache
 from io import BytesIO
 
+from plugins._shared import mask_id
+
 # ==================== 配色 ====================
-_BG_TOP = (11, 92, 255)       # 头图渐变起
-_BG_BOTTOM = (77, 141, 255)   # 头图渐变止
+_BG_TOP = (11, 92, 255)  # 头图渐变起
+_BG_BOTTOM = (77, 141, 255)  # 头图渐变止
 _PAGE_BG = (243, 245, 249)
 _CARD = (255, 255, 255)
 _TEXT = (31, 35, 41)
@@ -21,14 +24,14 @@ _BAR_BG = (237, 241, 247)
 _SHADOW = (23, 43, 99)
 
 _ACCENTS = (
-    ((11, 92, 255), (232, 240, 255)),    # 蓝
-    ((0, 168, 112), (227, 249, 240)),    # 绿
-    ((250, 140, 22), (255, 243, 230)),   # 橙
-    ((114, 46, 209), (243, 235, 255)),   # 紫
+    ((11, 92, 255), (232, 240, 255)),  # 蓝
+    ((0, 168, 112), (227, 249, 240)),  # 绿
+    ((250, 140, 22), (255, 243, 230)),  # 橙
+    ((114, 46, 209), (243, 235, 255)),  # 紫
 )
 _RANK_COLORS = ((255, 172, 20), (160, 174, 192), (219, 154, 108))  # 金银铜
 
-# 自定义字体目录: 放置任意 ttf/ttc/otf 中文字体即可优先使用 (bold 文件名含 bold/bd 时作为粗体)
+# 自定义字体目录：放入中文字体即可优先使用，文件名含粗体标记时作为粗体
 _CUSTOM_FONT_DIR = os.path.join(os.path.dirname(__file__), 'fonts')
 
 _FONT_PATHS = [
@@ -54,9 +57,24 @@ _FONT_BOLD_PATHS = [
 
 # 文件名含这些关键字的字体视为中文字体
 _CJK_NAME_HINTS = (
-    'cjk', 'wqy', 'msyh', 'yahei', 'simhei', 'simsun', 'pingfang',
-    'sourcehan', 'source-han', 'notosanssc', 'notoserifsc', 'sarasa',
-    'harmonyos', 'alibaba', 'fallback', 'uming', 'ukai', 'zenhei',
+    'cjk',
+    'wqy',
+    'msyh',
+    'yahei',
+    'simhei',
+    'simsun',
+    'pingfang',
+    'sourcehan',
+    'source-han',
+    'notosanssc',
+    'notoserifsc',
+    'sarasa',
+    'harmonyos',
+    'alibaba',
+    'fallback',
+    'uming',
+    'ukai',
+    'zenhei',
 )
 
 _font_file = None
@@ -64,7 +82,7 @@ _font_bold_file = None
 
 
 def _scan_font_dirs():
-    """递归扫描字体目录, 返回第一个疑似中文字体"""
+    """递归扫描字体目录，返回首个可用的中文字体。"""
     dirs = [
         _CUSTOM_FONT_DIR,
         '/usr/share/fonts',
@@ -87,7 +105,7 @@ def _scan_font_dirs():
 
 
 def _find_font():
-    """定位中文字体; 找不到返回 '' (调用方应回退文本)"""
+    """定位中文字体，找不到时返回空字符串。"""
     global _font_file, _font_bold_file
     if _font_file is not None:
         return _font_file
@@ -128,29 +146,32 @@ def _fmt_num(n):
     return f'{n:,}'
 
 
-def _mask_id(s, n=3):
-    s = str(s)
-    return s if len(s) <= n * 2 else f'{s[:n]}****{s[-n:]}'
-
-
 def _text_w(draw, text, font):
     box = draw.textbbox((0, 0), text, font=font)
     return box[2] - box[0]
 
 
-def _card_shadow(img, box, radius):
-    """卡片柔和投影"""
+@lru_cache(maxsize=8)
+def _shadow_layer(width, height, radius):
+    """按卡片尺寸缓存柔和阴影图层。"""
     from PIL import Image, ImageDraw, ImageFilter
 
+    pad = 40
+    layer = Image.new('RGBA', (width + pad * 2, height + pad * 2), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(layer)
+    draw.rounded_rectangle(
+        (pad, pad + 6, pad + width, pad + 6 + height),
+        radius=radius,
+        fill=(*_SHADOW, 26),
+    )
+    return layer.filter(ImageFilter.GaussianBlur(12))
+
+
+def _card_shadow(img, box, radius):
+    """粘贴与卡片尺寸匹配的缓存阴影。"""
     x0, y0, x1, y1 = box
     pad = 40
-    layer = Image.new('RGBA', (x1 - x0 + pad * 2, y1 - y0 + pad * 2), (0, 0, 0, 0))
-    ld = ImageDraw.Draw(layer)
-    ld.rounded_rectangle(
-        (pad, pad + 6, pad + (x1 - x0), pad + 6 + (y1 - y0)),
-        radius=radius, fill=(*_SHADOW, 26),
-    )
-    layer = layer.filter(ImageFilter.GaussianBlur(12))
+    layer = _shadow_layer(x1 - x0, y1 - y0, radius)
     img.paste(layer, (x0 - pad, y0 - pad), layer)
 
 
@@ -159,8 +180,8 @@ def _card(img, d, box, radius=20):
     d.rounded_rectangle(box, radius=radius, fill=_CARD)
 
 
-def _delta_pill(d, x, y, diff, h=40):
-    """涨跌胶囊, 返回宽度"""
+def _delta_pill(d, x, y, diff, h=40, *, paint=True):
+    """计算涨跌胶囊宽度，并按需绘制。"""
     if diff is None:
         return 0
     if diff > 0:
@@ -171,13 +192,14 @@ def _delta_pill(d, x, y, diff, h=40):
         txt, fg, bg = '· 0', _FLAT, _FLAT_BG
     f = _font(24, bold=True)
     w = _text_w(d, txt, f) + 28
-    d.rounded_rectangle((x, y, x + w, y + h), radius=h // 2, fill=bg)
-    d.text((x + 14, y + (h - 24) // 2 - 4), txt, font=f, fill=fg)
+    if paint:
+        d.rounded_rectangle((x, y, x + w, y + h), radius=h // 2, fill=bg)
+        d.text((x + 14, y + (h - 24) // 2 - 4), txt, font=f, fill=fg)
     return w
 
 
 def render_dau_image(stats, title, sub_title='', y_stats=None, elapsed_ms=None):
-    """渲染 DAU 统计卡片, 返回 PNG bytes; PIL 或中文字体不可用时返回 None"""
+    """渲染日活统计卡片；图像库或中文字体不可用时返回空值。"""
     try:
         from PIL import Image, ImageDraw
     except ImportError:
@@ -199,9 +221,8 @@ def render_dau_image(stats, title, sub_title='', y_stats=None, elapsed_ms=None):
     rank_h = 104 + list_rows * 84
     has_lifecycle = 'group_join' in stats
     small_rows = 2 if has_lifecycle else 1
-    # 内容底部 = 卡片起点(header_h-60) + 指标区 + 小卡区 + 排行区 + 页脚
-    height = (header_h - 60) + (metric_h * 2 + gap * 2 + 22) \
-        + (small_h + gap) * small_rows + 14 + (rank_h + 40) + 70
+    # 总高度由头图、指标区、辅助指标区、排行区和页脚组成
+    height = (header_h - 60) + (metric_h * 2 + gap * 2 + 22) + (small_h + gap) * small_rows + 14 + (rank_h + 40) + 70
 
     img = Image.new('RGB', (width, height), _PAGE_BG)
     d = ImageDraw.Draw(img)
@@ -233,7 +254,7 @@ def render_dau_image(stats, title, sub_title='', y_stats=None, elapsed_ms=None):
 
     y = header_h - 60
 
-    # ===== 指标卡 2x2 (悬浮于头图) =====
+    # ===== 二乘二指标卡（悬浮于头图） =====
     def _y(key):
         return y_stats.get(key) if y_stats else None
 
@@ -252,18 +273,18 @@ def render_dau_image(stats, title, sub_title='', y_stats=None, elapsed_ms=None):
         # 图标块
         ix, iy = cx + 32, cy + 32
         d.rounded_rectangle((ix, iy, ix + 56, iy + 56), radius=16, fill=accent_bg)
-        if i == 0:  # 单人: 头+肩
+        if i == 0:  # 单人头像
             d.ellipse((ix + 20, iy + 11, ix + 36, iy + 27), fill=accent_fg)
             d.pieslice((ix + 12, iy + 29, ix + 44, iy + 59), 180, 360, fill=accent_fg)
-        elif i == 1:  # 双人: 两组头+肩
+        elif i == 1:  # 双人头像
             d.ellipse((ix + 12, iy + 14, ix + 25, iy + 27), fill=accent_fg)
             d.pieslice((ix + 6, iy + 29, ix + 31, iy + 53), 180, 360, fill=accent_fg)
             d.ellipse((ix + 32, iy + 14, ix + 45, iy + 27), fill=accent_fg)
             d.pieslice((ix + 26, iy + 29, ix + 51, iy + 53), 180, 360, fill=accent_fg)
-        elif i == 2:  # 上行: 向上箭头
+        elif i == 2:  # 上行箭头
             d.polygon([(ix + 28, iy + 11), (ix + 42, iy + 27), (ix + 14, iy + 27)], fill=accent_fg)
             d.rounded_rectangle((ix + 23, iy + 26, ix + 33, iy + 45), radius=3, fill=accent_fg)
-        else:  # 下行: 向下箭头
+        else:  # 下行箭头
             d.rounded_rectangle((ix + 23, iy + 11, ix + 33, iy + 30), radius=3, fill=accent_fg)
             d.polygon([(ix + 28, iy + 45), (ix + 42, iy + 29), (ix + 14, iy + 29)], fill=accent_fg)
         d.text((cx + 108, cy + 34), label, font=_font(26), fill=_TEXT_SECONDARY)
@@ -271,24 +292,28 @@ def render_dau_image(stats, title, sub_title='', y_stats=None, elapsed_ms=None):
         d.text((cx + 108, cy + 72), _fmt_num(val), font=num_font, fill=_TEXT)
         if y_val is not None:
             diff = int(val) - int(y_val)
-            pw = _delta_pill(d, -1000, -1000, diff)  # 预算宽度
+            pw = _delta_pill(d, 0, 0, diff, paint=False)
             _delta_pill(d, cx + card_w - 32 - pw, cy + 32, diff)
 
     y += metric_h * 2 + gap * 2 + 22
 
-    # ===== 小卡: 私聊/最活跃时段 (+可选 加群/退群) =====
+    # ===== 辅助指标：私聊、活跃时段，以及可选的加群和退群 =====
     small_cards = [
-        ('私聊消息', _fmt_num(stats.get('private', 0)),
-         _y('private'), stats.get('private', 0), None, 'chat', ((0, 153, 214), (227, 244, 253))),
-        ('最活跃时段', f"{stats.get('peak_hour', 0)}:00",
-         None, None, f"{_fmt_num(stats.get('peak_hour_count', 0))}条", 'clock', ((233, 84, 152), (253, 233, 242))),
+        ('私聊消息', _fmt_num(stats.get('private', 0)), _y('private'), stats.get('private', 0), None, 'chat', ((0, 153, 214), (227, 244, 253))),
+        (
+            '最活跃时段',
+            f'{stats.get("peak_hour", 0)}:00',
+            None,
+            None,
+            f'{_fmt_num(stats.get("peak_hour_count", 0))}条',
+            'clock',
+            ((233, 84, 152), (253, 233, 242)),
+        ),
     ]
     if has_lifecycle:
         small_cards += [
-            ('今日加群', _fmt_num(stats.get('group_join', 0)),
-             None, None, None, 'plus', ((0, 168, 112), (227, 249, 240))),
-            ('今日退群', _fmt_num(stats.get('group_leave', 0)),
-             None, None, None, 'minus', ((227, 77, 89), (253, 236, 238))),
+            ('今日加群', _fmt_num(stats.get('group_join', 0)), None, None, None, 'plus', ((0, 168, 112), (227, 249, 240))),
+            ('今日退群', _fmt_num(stats.get('group_leave', 0)), None, None, None, 'minus', ((227, 77, 89), (253, 236, 238))),
         ]
     for i, (label, val, y_val, raw, extra, icon, (icon_fg, icon_bg)) in enumerate(small_cards):
         cx = pad + (i % 2) * (card_w + gap)
@@ -320,9 +345,7 @@ def render_dau_image(stats, title, sub_title='', y_stats=None, elapsed_ms=None):
     y += (small_h + gap) * small_rows + 14
 
     # ===== 排行榜 =====
-    for i, (label, items, key) in enumerate(
-        (('最活跃群组', top_groups, 'group_id'), ('最活跃用户', top_users, 'user_id'))
-    ):
+    for i, (label, items, key) in enumerate((('最活跃群组', top_groups, 'group_id'), ('最活跃用户', top_users, 'user_id'))):
         cx = pad + i * (card_w + gap)
         _card(img, d, (cx, y, cx + card_w, y + rank_h))
         accent_fg, _bg = _ACCENTS[i]
@@ -341,22 +364,25 @@ def render_dau_image(stats, title, sub_title='', y_stats=None, elapsed_ms=None):
             rf = _font(26, bold=True)
             d.text(
                 (cx + 32 + (44 - _text_w(d, str(j + 1), rf)) // 2, ry + 2),
-                str(j + 1), font=rf, fill=(255, 255, 255),
+                str(j + 1),
+                font=rf,
+                fill=(255, 255, 255),
             )
-            d.text((cx + 96, ry - 2), _mask_id(it.get(key, '')), font=_font(26), fill=_TEXT)
+            d.text((cx + 96, ry - 2), mask_id(it.get(key, '')), font=_font(26), fill=_TEXT)
             cf = _font(24, bold=True)
             cnt_txt = f'{_fmt_num(cnt)}条'
             d.text(
                 (cx + card_w - 32 - _text_w(d, cnt_txt, cf), ry),
-                cnt_txt, font=cf, fill=accent_fg,
+                cnt_txt,
+                font=cf,
+                fill=accent_fg,
             )
             # 比例条
             bar_x, bar_y = cx + 96, ry + 44
             bar_w = card_w - 96 - 32
             d.rounded_rectangle((bar_x, bar_y, bar_x + bar_w, bar_y + 12), radius=6, fill=_BAR_BG)
             fill_w = max(12, int(bar_w * (cnt / max_c)))
-            d.rounded_rectangle(
-                (bar_x, bar_y, bar_x + fill_w, bar_y + 12), radius=6, fill=accent_fg)
+            d.rounded_rectangle((bar_x, bar_y, bar_x + fill_w, bar_y + 12), radius=6, fill=accent_fg)
 
     y += rank_h + 40
 

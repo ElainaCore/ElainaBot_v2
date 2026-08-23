@@ -8,6 +8,7 @@ import zipfile
 from aiohttp import web
 
 from core.application import get_app
+from core.base.python_source import read_dict_assignment
 from web.tools._market.fetch import (
     _download_file,
 )
@@ -21,7 +22,6 @@ from web.tools._market.shared import (
     get_github_mirror,
     log,
 )
-from web.tools._python_source import read_dict_assignment
 from web.tools._zipsafe import is_within
 
 # 共享单文件插件目录 (位于 plugins/ 下), 仅当 single 插件显式声明 alone=True 时使用
@@ -382,25 +382,64 @@ def _migrate_legacy_groupguard_templates(dest_dir):
     shutil.copy2(legacy_path, data_path)
 
 
-async def _install_module(github_url, module_name, subdir_path='', branch='main', mirror=None):
-    """安装/更新模块。"""
-    safe = _safe_name(module_name) or 'unknown'
-    log.info(f'模块安装: {safe} ← {_github_to_archive(github_url, branch)}')
+async def _install_repository_item(
+    github_url,
+    item_name,
+    subdir_path='',
+    *,
+    branch='main',
+    mirror=None,
+    dest_root=None,
+    dest_label='plugins',
+):
+    """下载仓库 ZIP，并将指定目录安装到目标根目录。"""
     content = await _download_repo_zip(github_url, branch, mirror)
     if content is None:
         return {'success': False, 'message': '下载失败, 请检查网络或镜像'}
     if content[:4] != b'PK\x03\x04':
         return {'success': False, 'message': '下载内容不是有效的 zip 文件'}
-
-    module_path = subdir_path or f'modules/{safe}'
     return _extract_zip_subset(
         content,
-        module_name,
-        subdir_path=module_path,
-        dest_root=_modules_dir(),
-        dest_label='modules',
+        item_name,
+        subdir_path=subdir_path,
+        dest_root=dest_root,
+        dest_label=dest_label,
         preserve_data=True,
     )
+
+
+async def _install_module(github_url, module_name, subdir_path='', branch='main', mirror=None):
+    """安装/更新模块。"""
+    safe = _safe_name(module_name) or 'unknown'
+    log.info(f'模块安装: {safe} ← {_github_to_archive(github_url, branch)}')
+    return await _install_repository_item(
+        github_url,
+        module_name,
+        subdir_path or f'modules/{safe}',
+        branch=branch,
+        mirror=mirror,
+        dest_root=_modules_dir(),
+        dest_label='modules',
+    )
+
+
+async def _auto_enable_module(module_name):
+    """安装后持久启用模块，并在当前进程中立即启动。"""
+    if not module_name:
+        return
+    try:
+        app = get_app()
+        mm = app.module_manager if app else None
+        if not mm:
+            log.warning(f'模块已安装但管理器未初始化 [{module_name}]')
+            return
+
+        if await mm.refresh_and_enable(module_name):
+            log.info(f'模块 {module_name} 已自动启用')
+        else:
+            log.warning(f'模块自动启用失败 [{module_name}]')
+    except Exception as e:
+        log.warning(f'模块自动启用失败 [{module_name}]: {e}')
 
 
 async def _auto_enable_plugin(reload_name):
@@ -421,13 +460,12 @@ async def _install_complete(github_url, plugin_name, subdir_path='', branch='mai
     """完整插件: 拉取仓库 zip, 解压整仓库或指定子目录到 plugins/<name>/ (支持一仓库多插件)"""
     label = f' [子目录 {subdir_path}]' if subdir_path else ''
     log.info(f'完整插件安装: {_safe_name(plugin_name)} ← {_github_to_archive(github_url, branch)}{label}')
-    content = await _download_repo_zip(github_url, branch, mirror)
-    if content is None:
-        return {'success': False, 'message': '下载失败, 请检查网络或镜像'}
-    if content[:4] != b'PK\x03\x04':
-        return {'success': False, 'message': '下载内容不是有效的 zip 文件'}
-    return _extract_zip_subset(
-        content, plugin_name, subdir_path=subdir_path, preserve_data=True
+    return await _install_repository_item(
+        github_url,
+        plugin_name,
+        subdir_path,
+        branch=branch,
+        mirror=mirror,
     )
 
 
@@ -490,7 +528,10 @@ async def handle_market_install(request: web.Request):
     try:
         # 模块
         if item_type == TYPE_MODULE:
-            return web.json_response(await _install_module(github_url, item_name, file_path, branch, mirror))
+            result = await _install_module(github_url, item_name, file_path, branch, mirror)
+            if result.get('success'):
+                await _auto_enable_module(_safe_name(item_name))
+            return web.json_response(result)
 
         # 独立插件 (single)
         if item_type == TYPE_SINGLE:
@@ -518,6 +559,17 @@ async def _unload_plugin_runtime(plugin_name):
             await app.plugin_manager.unload(plugin_name)
     except Exception as e:
         log.debug(f'卸载插件 {plugin_name} 失败: {e}')
+
+
+async def _disable_module_runtime(module_name):
+    """卸载模块文件前停止运行，并清除持久启用状态。"""
+    try:
+        app = get_app()
+        mm = app.module_manager if app else None
+        if mm:
+            await mm.disable(module_name)
+    except Exception as e:
+        log.warning(f'模块停止失败 [{module_name}]: {e}')
 
 
 async def handle_market_uninstall(request: web.Request):
@@ -561,7 +613,10 @@ async def handle_market_uninstall(request: web.Request):
         return web.json_response({'success': False, 'message': f'{label} 不存在'})
 
     try:
-        await _unload_plugin_runtime(safe)
+        if item_type == TYPE_MODULE:
+            await _disable_module_runtime(safe)
+        else:
+            await _unload_plugin_runtime(safe)
         if keep_data and os.path.isdir(os.path.join(dest_dir, 'data')):
             _clear_dir_except_data(dest_dir)
             log.info(f'{label} 已卸载 (保留 data/)')

@@ -1,10 +1,10 @@
-"""用户统计: DAU、用户/群统计 (每个机器人独立统计)"""
+"""用户、群组和日活统计，每个机器人独立计算。"""
 
 import asyncio
 import json as _json
 import struct
-import time
 from datetime import datetime, timedelta
+from time import perf_counter
 
 from core.base.config import cfg
 from core.base.logger import PLUGIN, get_logger
@@ -14,6 +14,7 @@ from core.storage.lifecycle_stats import (
     compute_lifecycle_counts,
     lifecycle_counts_from_rows,
 )
+from plugins._shared import mask_id
 
 from ._dau_image import render_dau_image
 from ._reply import reply
@@ -22,7 +23,7 @@ log = get_logger(PLUGIN, '系统管理')
 
 
 def _get_bot(event):
-    """获取当前事件对应的 BotInstance"""
+    """获取当前事件对应的机器人实例。"""
     from core.application import get_app
 
     app = get_app()
@@ -30,7 +31,7 @@ def _get_bot(event):
 
 
 def _get_hosting():
-    """获取图床模块实例 (未启用返回 None)"""
+    """获取图床模块实例；未启用时返回空值。"""
     from core.application import get_app
 
     app = get_app()
@@ -39,7 +40,7 @@ def _get_hosting():
 
 
 async def _upload_dau_image(bot, image_bytes):
-    """依次尝试已开启的图床上传, 失败自动换下一个; 全部失败返回 None"""
+    """依次尝试已启用的图床，全部失败时返回空值。"""
     hosting = _get_hosting()
     if not hosting:
         return None
@@ -47,20 +48,17 @@ async def _upload_dau_image(bot, image_bytes):
 
 
 async def _reply_dau(event, bot, stats, date, elapsed_ms, y_stats=None, is_today=False):
-    """优先图床发图, 无可用图床或上传失败时回退文本"""
+    """优先发送统计图片，图床不可用时回退到文本。"""
     now = datetime.now()
     time_suffix = f' (截至{now.hour:02d}:{now.minute:02d})' if is_today else ''
-    loop = asyncio.get_running_loop()
     try:
-        image = await loop.run_in_executor(
-            None,
-            lambda: render_dau_image(
-                stats,
-                f'{date.strftime("%m-%d")} 活跃统计',
-                sub_title=f'{bot.name}{time_suffix}',
-                y_stats=y_stats,
-                elapsed_ms=elapsed_ms,
-            ),
+        image = await asyncio.to_thread(
+            render_dau_image,
+            stats,
+            f'{date.strftime("%m-%d")} 活跃统计',
+            sub_title=f'{bot.name}{time_suffix}',
+            y_stats=y_stats,
+            elapsed_ms=elapsed_ms,
         )
     except Exception:
         image = None
@@ -77,16 +75,12 @@ async def _reply_dau(event, bot, stats, date, elapsed_ms, y_stats=None, is_today
 
 
 def _png_size(data):
-    """从 PNG 头(IHDR)读取宽高"""
+    """从图片头部读取宽高。"""
     return struct.unpack('>II', data[16:24])
 
 
-def _mask_id(s, n=3):
-    return s if len(s) <= n * 2 else f'{s[:n]}****{s[-n:]}'
-
-
 def _count_json_array(raw):
-    """统计 JSON 数组长度 (不依赖 SQLite JSON 扩展)"""
+    """统计 JSON 数组长度，不依赖 SQLite 的 JSON 扩展。"""
     if not raw or raw == '[]':
         return 0
     try:
@@ -96,13 +90,13 @@ def _count_json_array(raw):
 
 
 def _count_group_users(all_groups):
-    """逐群解析 users JSON 数人数并排序 (纯 CPU, 在线程池执行)"""
+    """逐群解析用户列表并按人数降序排列。"""
     counts = [(g['group_id'], _count_json_array(g.get('users'))) for g in (all_groups or [])]
     counts.sort(key=lambda x: x[1], reverse=True)
     return counts
 
 
-# 单次扫描内完成当前群人数/最大群/排名, 不将全部 users JSON 搬回 Python
+# 单次扫描完成当前群人数、最大群和排名，避免搬运全部用户数据
 _GROUP_STATS_SQL = """
     WITH c AS MATERIALIZED (
         SELECT group_id,
@@ -119,7 +113,7 @@ _GROUP_STATS_SQL = """
 
 
 async def _query_group_stats(ls, cur_gid):
-    """返回 (当前群人数, 最大群id, 最大群人数, 当前群排名); SQLite 无 JSON 函数时回退 Python 统计"""
+    """查询当前群人数、最大群及排名，数据库不支持时回退到本地统计。"""
     try:
         rows = await ls.db_fetch_all(_GROUP_STATS_SQL, (cur_gid or '',))
         r = rows[0] if rows else {}
@@ -141,10 +135,10 @@ def _fmt_diff(label, val, y_val, emoji):
     return f'{emoji} {label}: {val}'
 
 
-# 活跃统计仅计接收消息, 全量群仅计艾特机器人的
+# 活跃统计只计算接收消息，全量群只计算提及机器人的消息
 _RECV = "direction != 'send' AND COALESCE(at_bot, 1) != 0"
 
-# 单次扫描覆盖索引完成全部计数类统计 (只引用 idx_msg_stats_cover 内列, 不回表)
+# 使用覆盖索引在单次扫描中完成全部计数，避免回表
 _AGG_SQL = f"""
     SELECT COUNT(*) AS total,
            COUNT(CASE WHEN group_id = 'c2c' OR group_id = '' THEN 1 END) AS private,
@@ -158,7 +152,7 @@ _AGG_SQL = f"""
 
 
 def _query_today_stats_sync(bot):
-    """实时查询今日消息统计 — 合并为少量覆盖索引扫描, 避免多次全表扫描"""
+    """用少量覆盖索引扫描实时查询今日消息统计。"""
     today = datetime.now().strftime('%Y-%m-%d')
     q = bot.log_service.query
 
@@ -198,17 +192,16 @@ def _query_today_stats_sync(bot):
             'SELECT type, user_id, group_id FROM log ORDER BY id',
             date=today,
         )
-        counts = compute_lifecycle_counts(
-            (r.get('type', ''), r.get('user_id', ''), r.get('group_id', '')) for r in lifecycle
-        )
+        counts = compute_lifecycle_counts((r.get('type', ''), r.get('user_id', ''), r.get('group_id', '')) for r in lifecycle)
     stats['group_join'] = counts['group_join_count']
     stats['group_leave'] = counts['group_leave_count']
     return stats
 
 
 def _build_dau_message(event, stats, date, elapsed_ms, y_stats=None, is_today=False):
-    """构建 DAU 统计消息"""
-    time_suffix = f' (截至{datetime.now().hour:02d}:{datetime.now().minute:02d})' if is_today else ''
+    """构建日活统计消息。"""
+    now = datetime.now()
+    time_suffix = f' (截至{now.hour:02d}:{now.minute:02d})' if is_today else ''
     info = [
         f'<@{event.user_id}>',
         f'📊 {date.strftime("%m-%d")} 活跃统计{time_suffix}',
@@ -262,31 +255,31 @@ def _build_dau_message(event, stats, date, elapsed_ms, y_stats=None, is_today=Fa
     )
 
     if 'group_join' in stats:
-        info.append(f"➕ 今日加群: {stats.get('group_join', 0)}")
-        info.append(f"➖ 今日退群: {stats.get('group_leave', 0)}")
+        info.append(f'➕ 今日加群: {stats.get("group_join", 0)}')
+        info.append(f'➖ 今日退群: {stats.get("group_leave", 0)}')
 
     peak_hour = stats.get('peak_hour', 0)
     peak_count = stats.get('peak_hour_count', 0)
     if peak_hour or peak_count:
         info.append(f'⏰ 最活跃时段: {peak_hour}点 ({peak_count}条)')
 
-    # Top 群
+    # 最活跃群组
     top_groups = stats.get('top_groups', [])
     if top_groups:
         info.append('🔝 最活跃群组:')
         for i, g in enumerate(top_groups[:2], 1):
             gid = g.get('group_id', '')
             cnt = g.get('c', g.get('message_count', 0))
-            info.append(f'  {i}. {_mask_id(gid)} ({cnt}条)')
+            info.append(f'  {i}. {mask_id(gid)} ({cnt}条)')
 
-    # Top 用户
+    # 最活跃用户
     top_users = stats.get('top_users', [])
     if top_users:
         info.append('👑 最活跃用户:')
         for i, u in enumerate(top_users[:2], 1):
             uid = u.get('user_id', '')
             cnt = u.get('c', u.get('message_count', 0))
-            info.append(f'  {i}. {_mask_id(uid)} ({cnt}条)')
+            info.append(f'  {i}. {mask_id(uid)} ({cnt}条)')
 
     info.append(f'🕒 查询耗时: {elapsed_ms}ms')
     return '\n'.join(info)
@@ -301,19 +294,17 @@ async def get_stats(event, match):
     if not bot:
         return await reply(event, '❌ 无法获取机器人实例')
 
-    t0 = time.time()
+    started_at = perf_counter()
     ls = bot.log_service
 
-    # 并行查询 data.db 中的用户/群/好友数
+    # 并行查询用户、群组、好友和当前群统计
     users_q = ls.db_fetch_value('SELECT COUNT(*) FROM users', default=0)
     groups_q = ls.db_fetch_value('SELECT COUNT(*) FROM groups_users', default=0)
     members_q = ls.db_fetch_value('SELECT COUNT(*) FROM members', default=0)
     cur_gid = event.group_id if event.is_group else None
     group_stats_q = _query_group_stats(ls, cur_gid)
 
-    user_count, group_count, member_count, (cur, top_gid, top_cnt, rank) = await asyncio.gather(
-        users_q, groups_q, members_q, group_stats_q
-    )
+    user_count, group_count, member_count, (cur, top_gid, top_cnt, rank) = await asyncio.gather(users_q, groups_q, members_q, group_stats_q)
 
     info = [
         f'<@{event.user_id}>',
@@ -328,17 +319,17 @@ async def get_stats(event, match):
     info.append(f'👥 所有用户数: {user_count}')
 
     if top_gid is not None:
-        info.append(f'🔝 最大群: {_mask_id(top_gid)} ({top_cnt}人)')
+        info.append(f'🔝 最大群: {mask_id(top_gid)} ({top_cnt}人)')
 
     if cur_gid and cur is not None and rank is not None:
         info.append(f'📈 当前群排名: 第{rank}名')
 
-    elapsed = round((time.time() - t0) * 1000)
+    elapsed = round((perf_counter() - started_at) * 1000)
     info.append(f'🕒 查询耗时: {elapsed}ms')
     await reply(event, '\n'.join(info))
 
 
-# ==================== DAU ====================
+# ==================== 日活统计 ====================
 
 
 @handler(
@@ -360,36 +351,34 @@ async def handle_dau(event, match):
 
 
 async def _handle_today_dau(event, bot):
-    t0 = time.time()
-    loop = asyncio.get_running_loop()
+    started_at = perf_counter()
 
     stats, y_stats = await asyncio.gather(
-        loop.run_in_executor(None, _query_today_stats_sync, bot),
-        loop.run_in_executor(None, _query_yesterday_same_period_sync, bot),
+        asyncio.to_thread(_query_today_stats_sync, bot),
+        asyncio.to_thread(_query_yesterday_same_period_sync, bot),
     )
     if not stats:
         return await reply(event, f'<@{event.user_id}>\n❌ 今日暂无消息数据')
 
-    elapsed = round((time.time() - t0) * 1000)
+    elapsed = round((perf_counter() - started_at) * 1000)
     await _reply_dau(event, bot, stats, datetime.now(), elapsed, y_stats=y_stats, is_today=True)
 
 
 def _query_yesterday_same_period_sync(bot):
-    """查询昨日同时段统计 — 单次覆盖索引扫描完成全部计数"""
+    """用单次覆盖索引扫描查询昨日同时段统计。"""
     now = datetime.now()
     yesterday = (now - timedelta(days=1)).strftime('%Y-%m-%d')
     bound = f'{yesterday} {now.hour:02d}:{now.minute:02d}:00'
 
-    agg = bot.log_service.query(
-        'message', f'{_AGG_SQL} WHERE timestamp <= ?', (bound,), date=yesterday)
+    agg = bot.log_service.query('message', f'{_AGG_SQL} WHERE timestamp <= ?', (bound,), date=yesterday)
     if not agg or not agg[0]['total']:
         return None
     return dict(agg[0])
 
 
 async def _handle_history_dau(event, bot, date_str):
-    """查询历史 DAU (从 dau.db)"""
-    t0 = time.time()
+    """从日活数据库查询历史统计。"""
+    started_at = perf_counter()
 
     year = datetime.now().year
     month, day = int(date_str[:2]), int(date_str[2:])
@@ -411,7 +400,7 @@ async def _handle_history_dau(event, bot, date_str):
     if not data:
         return await reply(event, f'<@{event.user_id}>\n❌ {date_str[:2]}-{date_str[2:]} 无 DAU 数据')
 
-    # 将 dau.db 行转为统计格式
+    # 将数据库记录转换为统一统计结构
     detail = data.get('message_stats_detail', {})
     if isinstance(detail, str):
         import json
@@ -436,5 +425,5 @@ async def _handle_history_dau(event, bot, date_str):
         'top_users': detail.get('top_users', []),
     }
 
-    elapsed = round((time.time() - t0) * 1000)
+    elapsed = round((perf_counter() - started_at) * 1000)
     await _reply_dau(event, bot, stats, target, elapsed)

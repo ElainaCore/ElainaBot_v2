@@ -1,19 +1,19 @@
-"""基础信息指令: 我的id、关于、消息信息、原始数据"""
+"""基础信息指令：延迟、标识、关于和原始事件数据。"""
 
 import json
 import platform
+from datetime import datetime
+from time import perf_counter, time
 
 from core.base.config import cfg
 from core.plugin.decorators import handler
 
 from ._reply import reply
 
-# ==================== ping ====================
+# ==================== 延迟检测 ====================
 
 
 def _parse_ts(ts):
-    from datetime import datetime
-
     if ts is None:
         return None
     try:
@@ -28,32 +28,27 @@ def _parse_ts(ts):
 
 @handler(r'^ping$', name='Ping', desc='测试QQ消息接口延迟', owner_only=True)
 async def ping(event, match):
-    import time
-
-    import aiohttp
-
     from core.application import get_app
 
-    t0 = time.time()
-    bot = get_app().get_bot(event.appid)
+    started_at = perf_counter()
+    app = get_app()
+    bot = app.get_bot(event.appid) if app else None
     try:
-        async with (
-            aiohttp.ClientSession() as s,
-            s.get(
-                f'{bot.token_manager.api_base}/gateway/bot',
-                timeout=aiohttp.ClientTimeout(total=5),
-            ),
-        ):
-            api_ms = round((time.time() - t0) * 1000)
+        if not bot:
+            raise RuntimeError('机器人实例不可用')
+        success, _data = await bot.sender.get_json('/gateway/bot', timeout=5)
+        if not success:
+            raise RuntimeError('消息接口请求失败')
+        api_ms = round((perf_counter() - started_at) * 1000)
     except Exception:
         api_ms = -1
     api_text = f'{api_ms}ms' if api_ms >= 0 else '超时'
     ts = _parse_ts(event.timestamp)
-    msg_ms = round((time.time() - ts) * 1000) if ts else '未知'
+    msg_ms = round((time() - ts) * 1000) if ts else '未知'
     await reply(event, f'pong 🏓\nAPI延迟: {api_text}\n消息延迟: {msg_ms}ms' if msg_ms != '未知' else f'pong 🏓\nAPI延迟: {api_text}')
 
 
-# ==================== 我的id ====================
+# ==================== 我的标识 ====================
 
 
 @handler(r'^我的id$', name='我的ID', desc='查看自己的用户/群组ID')
@@ -81,7 +76,7 @@ async def getid(event, match):
 async def about_info(event, match):
     python_version = platform.python_version()
 
-    # 获取当前 bot 信息
+    # 获取当前机器人信息
     bot_name = 'Elaina'
     robot_qq = ''
     appid = event.appid or ''
@@ -94,7 +89,7 @@ async def about_info(event, match):
     except (AttributeError, TypeError):
         pass
 
-    # 获取版本号
+    # 获取内核版本和插件统计
     kernel_version = '2.0'
     try:
         from core.application import get_app

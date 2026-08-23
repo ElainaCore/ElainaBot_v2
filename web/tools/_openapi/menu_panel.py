@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from aiohttp import web
 
+from web.response import json_body as _json_body
+from web.response import ok as _success
+
 _manager = None
 
 _CONFIG_FORMAT = 'elainabot-function-config'
@@ -16,15 +19,6 @@ _CHILD_MENU_TYPES = {'send_message', 'link'}
 def set_context(bot_manager):
     global _manager
     _manager = bot_manager
-
-
-def _success(data=None, *, message=''):
-    return web.json_response({
-        'success': True,
-        'code': 0,
-        'message': message,
-        'data': data,
-    })
 
 
 def _api_error(message):
@@ -51,14 +45,6 @@ def _failure(error, *, default='操作失败', status=None):
         },
         status=status,
     )
-
-
-async def _json_body(request):
-    try:
-        body = await request.json()
-    except Exception:
-        return None
-    return body if isinstance(body, dict) else None
 
 
 def _get_sender(appid):

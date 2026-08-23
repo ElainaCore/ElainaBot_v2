@@ -12,13 +12,13 @@ from typing import cast
 
 from aiohttp import BodyPartReader, web
 
+from core.base.python_source import read_dict_assignment
 from web.tools._plugin_mgr.shared import (
     bot_manager,
     get_mm,
     list_config_files,
     modules_dir,
 )
-from web.tools._python_source import read_dict_assignment
 from web.tools._zipsafe import is_within, replace_dir_from_zip
 
 _SAFE_MODULE_NAME = re.compile(r'^[A-Za-z0-9_.-]+$')

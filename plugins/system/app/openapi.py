@@ -1,14 +1,13 @@
-"""开放平台查询: 扫码登录 / bot通知 / bot列表 / bot数据 / 切换appid"""
+"""开放平台扫码登录、通知、机器人列表和数据查询。"""
 
 import asyncio
 import contextlib
-import json
-import os
-import time
+from pathlib import Path
 
 from core.base.config import cfg
 from core.base.logger import PLUGIN, get_logger
-from core.plugin.decorators import handler, on_load
+from core.plugin.decorators import handler, on_load, on_unload
+from plugins._shared import load_json, save_json
 
 from ._reply import reply, sender_reply
 
@@ -16,17 +15,16 @@ log = get_logger(PLUGIN, '开放平台')
 
 # ==================== 数据管理 ====================
 
-_PLUGIN_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_BASE_DIR = os.path.dirname(os.path.dirname(_PLUGIN_DIR))
-# 旧开放平台凭证: web/open/openapi.json (与 web 面板 handler 一致)
-_OLD_OPEN_DIR = os.path.join(_BASE_DIR, 'web', 'open')
-os.makedirs(_OLD_OPEN_DIR, exist_ok=True)
+_PLUGIN_DIR = Path(__file__).resolve().parent.parent
+_BASE_DIR = _PLUGIN_DIR.parent.parent
+# 继续读取旧版网页面板使用的开放平台凭证文件
+_DATA_FILE = _BASE_DIR / 'web' / 'open' / 'openapi.json'
 
-_DATA_FILE = os.path.join(_OLD_OPEN_DIR, 'openapi.json')
-
-_user_data = {}  # {user_id: login_data}
-_login_tasks = {}  # {user_id: (timestamp, qr)}
-_last_login_time = {}  # {user_id: timestamp}  防重复登录
+_user_data: dict[str, dict] = {}
+_data_loaded = False
+_save_lock = asyncio.Lock()
+_login_tasks: dict[str, tuple[float, asyncio.Task | None]] = {}
+_last_login_time: dict[str, float] = {}
 
 _api = None
 
@@ -44,43 +42,32 @@ def _get_api():
 
 
 def _load_data():
-    global _user_data
-    try:
-        if os.path.exists(_DATA_FILE):
-            with open(_DATA_FILE, encoding='utf-8') as f:
-                _user_data = json.load(f)
-    except Exception:
-        _user_data = {}
+    global _data_loaded, _user_data
+    data = load_json(_DATA_FILE, {})
+    _user_data = data if isinstance(data, dict) else {}
+    _data_loaded = True
 
 
-def _save_data():
-    try:
-        os.makedirs(_OLD_OPEN_DIR, exist_ok=True)
-        with open(_DATA_FILE, 'w', encoding='utf-8') as f:
-            json.dump(_user_data, f, indent=2, ensure_ascii=False)
-    except (OSError, TypeError, ValueError):
-        pass
+async def _save_data():
+    async with _save_lock:
+        snapshot = dict(_user_data)
+        await asyncio.to_thread(save_json, _DATA_FILE, snapshot)
 
 
 def _get_ud(user_id):
-    """获取用户登录数据，不存在返回 None"""
-    if not _user_data:
+    """获取用户登录数据，不存在时返回空值。"""
+    if not _data_loaded:
         _load_data()
     return _user_data.get(user_id)
 
 
-def _save_ud(user_id, data):
+async def _save_ud(user_id, data):
     _user_data[user_id] = data
-    _save_data()
+    await _save_data()
 
 
 def _use_md(event):
     return cfg.get_bot_setting(event.appid, 'message.use_markdown', True)
-
-
-def _owner_ids(event):
-    bot_cfg = cfg.get_bot_config(event.appid)
-    return bot_cfg.get('owner_ids', []) if bot_cfg else []
 
 
 def _nav_buttons():
@@ -98,16 +85,8 @@ def _login_button():
     return [[{'text': '登录', 'data': '管理登录', 'type': 1, 'style': 1}]]
 
 
-async def _reply_not_logged_in(event):
-    content = f'<@{event.user_id}> 未查询到你的登录信息'
-    if _use_md(event):
-        await reply(event, content, buttons=_login_button())
-    else:
-        await reply(event, content)
-
-
-async def _reply_expired(event):
-    content = f'<@{event.user_id}>登录状态失效'
+async def _reply_login_required(event, message):
+    content = f'<@{event.user_id}>{message}'
     if _use_md(event):
         await reply(event, content, buttons=_login_button())
     else:
@@ -118,6 +97,18 @@ async def _reply_expired(event):
 def _init():
     _load_data()
     log.info('开放平台查询插件已加载')
+
+
+@on_unload
+async def _shutdown():
+    """取消尚未结束的扫码登录轮询任务。"""
+    tasks = [task for _started_at, task in _login_tasks.values() if task and not task.done()]
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+    _login_tasks.clear()
+    _last_login_time.clear()
 
 
 # ==================== 管理登录 ====================
@@ -131,87 +122,98 @@ async def login(event, match):
         return
 
     user_id = event.user_id
-    now = time.time()
+    loop = asyncio.get_running_loop()
+    now = loop.time()
+    for uid, timestamp in tuple(_last_login_time.items()):
+        if now - timestamp >= 20:
+            _last_login_time.pop(uid, None)
 
-    # 防重复
-    if user_id in _last_login_time and now - _last_login_time[user_id] < 20:
+    # 防止短时间内重复创建二维码和轮询任务
+    if user_id in _last_login_time:
         return
-    if user_id in _login_tasks and now - _login_tasks[user_id][0] < 15:
-        await reply(event, '15秒内你已经申请一次登录了，请稍后重试。')
+    active_login = _login_tasks.get(user_id)
+    if active_login and (active_login[1] is None or not active_login[1].done()):
+        await reply(event, '登录请求正在处理中，请稍后重试。')
         return
 
     _login_tasks[user_id] = (now, None)
+    task = None
+    try:
+        data = await api.create_login_qr()
+        url = data.get('url')
+        qr = data.get('qr')
+        if not url or not qr:
+            await reply(event, '获取登录二维码失败，请稍后重试')
+            return
 
-    data = await api.create_login_qr()
-    url = data.get('url')
-    qr = data.get('qr')
-    if not url or not qr:
-        await reply(event, '获取登录二维码失败，请稍后重试')
-        _login_tasks.pop(user_id, None)
-        return
+        content = f'<@{user_id}>\n[QQ开发平台管理端登录]\n登录具有时效性，请尽快登录\n\n>当你选择登录，代表你已经同意将数据托管给伊蕾娜Bot。'
 
-    content = f'<@{user_id}>\n[QQ开发平台管理端登录]\n登录具有时效性，请尽快登录\n\n>当你选择登录，代表你已经同意将数据托管给伊蕾娜Bot。'
+        if _use_md(event):
+            login_btn = {'text': '点击登录', 'data': url, 'type': 0, 'style': 4}
+            if event.is_group:
+                login_btn['list'] = [user_id]
+            await reply(event, content, buttons=[[login_btn]])
+        else:
+            display_url = url
+            if '://' in url:
+                protocol, rest = url.split('://', 1)
+                domain, separator, path = rest.partition('/')
+                if '.' in domain:
+                    segments = domain.split('.')
+                    segments[-1] = segments[-1].upper()
+                    domain = '.'.join(segments)
+                display_url = f'{protocol}://{domain}{separator}{path}'
+            await reply(event, f'{content}\n\n登录链接: {display_url}')
 
-    if _use_md(event):
-        login_btn = {'text': '点击登录', 'data': url, 'type': 0, 'style': 4}
-        if event.is_group:
-            login_btn['list'] = [user_id]
-        await reply(event, content, buttons=[[login_btn]])
-    else:
-        display_url = url
-        if '://' in url:
-            protocol, rest = url.split('://', 1)
-            domain, separator, path = rest.partition('/')
-            if '.' in domain:
-                segments = domain.split('.')
-                segments[-1] = segments[-1].upper()
-                domain = '.'.join(segments)
-            display_url = f'{protocol}://{domain}{separator}{path}'
-        await reply(event, f'{content}\n\n登录链接: {display_url}')
-
-    # 后台轮询登录状态 (handler 返回后框架会清空 event._sender, 需在此提前捕获)
-    sender = event._sender
-    use_md = _use_md(event)
-    asyncio.create_task(_poll_login(event, sender, user_id, qr, use_md))
+        # 处理器返回后事件发送器会被清空，因此提前保留发送器引用
+        sender = event._sender
+        use_md = _use_md(event)
+        task = asyncio.create_task(_poll_login(event, sender, user_id, qr, use_md))
+        _login_tasks[user_id] = (now, task)
+    finally:
+        if task is None:
+            _login_tasks.pop(user_id, None)
 
 
 async def _poll_login(event, sender, user_id, qr, use_md):
     api = _get_api()
-    deadline = time.time() + 60
-    while time.time() < deadline:
-        await asyncio.sleep(3)
-        try:
-            res = await api.get_qr_login_info(qrcode=qr)
-            if res.get('code') == 0:
-                login_data = res.get('data', {}).get('data', {})
-                login_data['type'] = 'ok'
-                _save_ud(user_id, login_data)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + 60
+    try:
+        while loop.time() < deadline:
+            await asyncio.sleep(3)
+            try:
+                res = await api.get_qr_login_info(qrcode=qr)
+            except Exception as exc:
+                log.debug(f'轮询登录态异常: {exc}')
+                continue
+            if res.get('code') != 0:
+                continue
 
-                app_type = login_data.get('appType')
-                app_type_str = '小程序' if app_type == '0' else '机器人' if app_type == '2' else '未知'
-                content = (
-                    f'[{login_data.get("uin")}]登录成功\n\n'
-                    f'>登录类型：{app_type_str}\nAppId：{login_data.get("appId")}\n切换+appid可以切换机器人'
-                )
-                buttons = _nav_buttons() if use_md else None
-                try:
-                    await sender_reply(sender, event, content, buttons=buttons)
-                except Exception as e:
-                    log.warning(f'登录成功回复失败: {e}')
+            login_data = res.get('data', {}).get('data', {})
+            login_data['type'] = 'ok'
+            await _save_ud(user_id, login_data)
 
-                _last_login_time[user_id] = time.time()
-                _login_tasks.pop(user_id, None)
-                return
-        except Exception as e:
-            log.debug(f'轮询登录态异常: {e}')
+            app_type = login_data.get('appType')
+            app_type_str = '小程序' if app_type == '0' else '机器人' if app_type == '2' else '未知'
+            content = f'[{login_data.get("uin")}]登录成功\n\n>登录类型：{app_type_str}\nAppId：{login_data.get("appId")}\n切换+appid可以切换机器人'
+            buttons = _nav_buttons() if use_md else None
+            try:
+                await sender_reply(sender, event, content, buttons=buttons)
+            except Exception as exc:
+                log.warning(f'登录成功回复失败: {exc}')
 
-    # 超时
-    with contextlib.suppress(Exception):
-        await sender_reply(sender, event, f'<@{user_id}>登录失效，请重新尝试')
-    _login_tasks.pop(user_id, None)
+            _last_login_time[user_id] = loop.time()
+            return
+
+        # 登录二维码超时后发送失效提示
+        with contextlib.suppress(Exception):
+            await sender_reply(sender, event, f'<@{user_id}>登录失效，请重新尝试')
+    finally:
+        _login_tasks.pop(user_id, None)
 
 
-# ==================== bot通知 ====================
+# ==================== 机器人通知 ====================
 
 
 @handler(r'^bot通知$', name='bot通知', desc='查看开放平台私信通知')
@@ -221,22 +223,22 @@ async def get_message(event, match):
         return
     ud = _get_ud(event.user_id)
     if not ud:
-        await _reply_not_logged_in(event)
+        await _reply_login_required(event, ' 未查询到你的登录信息')
         return
 
     res = await api.get_private_messages(uin=ud.get('uin'), quid=ud.get('developerId'), ticket=ud.get('ticket'))
 
     if res.get('code') != 0:
-        await _reply_expired(event)
+        await _reply_login_required(event, '登录状态失效')
         return
 
     msglist = [f'Uin:{ud.get("uin")}\nAppid:{ud.get("appId")}\n\n```python']
     messages = res.get('messages', [])
-    for j in range(min(len(messages), 8)):
+    for j, message in enumerate(messages[:8]):
         if j > 0:
             msglist.append('——————')
-        message_content = messages[j].get('content', '').split('\n\n')[0].strip()
-        message_time = messages[j].get('send_time', '')
+        message_content = message.get('content', '').split('\n\n')[0].strip()
+        message_time = message.get('send_time', '')
         msglist.append(message_content)
         msglist.append(message_time)
     msglist.append('\n```\n')
@@ -248,7 +250,7 @@ async def get_message(event, match):
         await reply(event, content)
 
 
-# ==================== bot列表 ====================
+# ==================== 机器人列表 ====================
 
 
 @handler(r'^bot列表$', name='bot列表', desc='查看已绑定的机器人列表')
@@ -258,23 +260,23 @@ async def get_botlist(event, match):
         return
     ud = _get_ud(event.user_id)
     if not ud:
-        await _reply_not_logged_in(event)
+        await _reply_login_required(event, ' 未查询到你的登录信息')
         return
 
     res = await api.get_bot_list(uin=ud.get('uin'), quid=ud.get('developerId'), ticket=ud.get('ticket'))
 
     if res.get('code') != 0:
-        await _reply_expired(event)
+        await _reply_login_required(event, '登录状态失效')
         return
 
     msglist = [f'Uin:{ud.get("uin")}']
     apps = res.get('data', {}).get('apps', [])
-    for j in range(len(apps)):
+    for j, app in enumerate(apps):
         if j > 0:
             msglist.append('')
-        app_name = apps[j].get('app_name', '')
-        app_id = apps[j].get('app_id', '')
-        app_desc = apps[j].get('app_desc', '')
+        app_name = app.get('app_name', '')
+        app_id = app.get('app_id', '')
+        app_desc = app.get('app_desc', '')
         msglist.append(f'<qqbot-cmd-input text="切换appid+{app_id}" show="{app_id}/{app_name}" />')
         if app_desc:
             quoted_desc = app_desc.replace('\n', '\n> ')
@@ -287,7 +289,7 @@ async def get_botlist(event, match):
         await reply(event, content)
 
 
-# ==================== bot数据 ====================
+# ==================== 机器人数据 ====================
 
 
 @handler(r'^bot数据(\d+|max)$', name='bot数据', desc='查看bot消息/群/好友数据统计')
@@ -297,7 +299,7 @@ async def get_botdata(event, match):
         return
     ud = _get_ud(event.user_id)
     if not ud:
-        await _reply_not_logged_in(event)
+        await _reply_login_required(event, ' 未查询到你的登录信息')
         return
 
     days = match.group(1)
@@ -308,12 +310,10 @@ async def get_botdata(event, match):
         appid=ud.get('appId'),
     )
 
-    data1 = await api.get_bot_data(**cred, data_type=1)
-    data2 = await api.get_bot_data(**cred, data_type=2)
-    data3 = await api.get_bot_data(**cred, data_type=3)
+    data1, data2, data3 = await asyncio.gather(*(api.get_bot_data(**cred, data_type=data_type) for data_type in (1, 2, 3)))
 
     if any(x.get('retcode', -1) != 0 for x in [data1, data2, data3]):
-        await _reply_expired(event)
+        await _reply_login_required(event, '登录状态失效')
         return
 
     msg_data = data1.get('data', {}).get('msg_data', [])
@@ -356,9 +356,7 @@ async def get_botdata(event, match):
     max_days = min(len(msg_data), len(group_data), len(friend_data))
     actual_days = max_days if days == 'max' else min(int(days), max_days)
 
-    total_up = 0
-    for i in range(len(msg_data)):
-        total_up += int(fmt(msg_data, i)['上行消息人数'])
+    total_up = sum(int(fmt(msg_data, i)['上行消息人数']) for i in range(len(msg_data)))
     avg_dau = f'{total_up / 30:.2f}' if msg_data else '0'
 
     day_list = [day_str(i) for i in range(actual_days)]
@@ -375,7 +373,7 @@ async def get_botdata(event, match):
         await reply(event, content)
 
 
-# ==================== 切换appid ====================
+# ==================== 切换应用标识 ====================
 
 
 @handler(r'^切换appid\s*(.+)$', name='切换appid', desc='切换当前操作的机器人AppID')
@@ -385,7 +383,7 @@ async def switch_appid(event, match):
         return
     ud = _get_ud(event.user_id)
     if not ud:
-        await _reply_not_logged_in(event)
+        await _reply_login_required(event, ' 未查询到你的登录信息')
         return
 
     new_appid = match.group(1).strip()
@@ -398,11 +396,11 @@ async def switch_appid(event, match):
         await reply(event, f'当前已经是使用AppID: {current_appid}')
         return
 
-    # 验证 AppID 是否有效
+    # 验证应用标识是否属于当前账号
     res = await api.get_bot_list(uin=ud.get('uin'), quid=ud.get('developerId'), ticket=ud.get('ticket'))
 
     if res.get('code') != 0:
-        await _reply_expired(event)
+        await _reply_login_required(event, '登录状态失效')
         return
 
     apps = res.get('data', {}).get('apps', [])
@@ -421,7 +419,7 @@ async def switch_appid(event, match):
 
     old_appid = ud.get('appId')
     ud['appId'] = new_appid
-    _save_ud(event.user_id, ud)
+    await _save_ud(event.user_id, ud)
 
     content = f'AppID已切换成功\n\n```python\n原AppID: {old_appid}\n新AppID: {new_appid}\n机器人: {app_name}\n```\n'
 

@@ -1,27 +1,25 @@
 """系统管理与示例插件"""
 
 import importlib
-import os
+from pathlib import Path
 
 from core.base.logger import PLUGIN, get_logger
 from core.plugin.decorators import on_load, on_unload
 
 # ==================== 插件元数据 ====================
-# 插件作者可在此处填写信息, 将在 Web 面板中展示
+# 插件作者可在此填写信息，并在网页面板中展示
 __plugin_meta__ = {
     'name': '系统管理',
     'author': 'ElainaBot',
     'description': '框架内置系统插件, 提供基础信息、管理、查询、示例等功能',
-    'version': '1.0.5',
+    'version': '1.1.0',
     'github': 'https://github.com/ElainaCore/ElainaBot_v2',
 }
 
-# 动态加载 app 下所有子模块, 触发 @handler / 侧边栏页面等注册
-_app_dir = os.path.join(os.path.dirname(__file__), 'app')
-for _name in os.listdir(_app_dir):
-    if _name.endswith('.py') and not _name.startswith('_'):
-        mod_name = _name[:-3]
-        importlib.import_module(f'plugins.system.app.{mod_name}')
+# 按固定顺序加载应用目录中的公开子模块，触发处理器和页面注册
+_APP_DIR = Path(__file__).parent / 'app'
+for _path in sorted(_APP_DIR.glob('[!_]*.py')):
+    importlib.import_module(f'plugins.system.app.{_path.stem}')
 
 log = get_logger(PLUGIN, '系统管理')
 

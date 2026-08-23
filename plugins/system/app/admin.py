@@ -1,16 +1,17 @@
-"""管理指令: dm调试、重启、黑名单管理"""
+"""管理指令：调试消息、重启、更新和黑名单。"""
 
 import asyncio
 import datetime
-import json
 import os
 import re
 import sys
+from pathlib import Path
 
 from core.base.config import cfg
 from core.base.logger import PLUGIN, get_logger
 from core.plugin._blacklist import get_blacklist_map, set_blacklist_map
 from core.plugin.decorators import handler, on_load
+from plugins._shared import load_json, mask_id, save_json
 
 from ._reply import reply
 
@@ -18,43 +19,17 @@ log = get_logger(PLUGIN, '系统管理')
 
 # ==================== 数据文件 ====================
 
-# 插件 data 目录 (plugins/system/data/)
-_PLUGIN_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_DATA_DIR = os.path.join(_PLUGIN_DIR, 'data')
-os.makedirs(_DATA_DIR, exist_ok=True)
-
-_RESTART_STATUS_FILE = os.path.join(_DATA_DIR, 'restart_status.json')
+# 插件运行数据目录
+_PLUGIN_DIR = Path(__file__).resolve().parent.parent
+_RESTART_STATUS_FILE = _PLUGIN_DIR / 'data' / 'restart_status.json'
 
 
-def _load_json(path, default=None):
-    if default is None:
-        default = {}
-    if not os.path.isfile(path):
-        return default
-    try:
-        with open(path, encoding='utf-8') as f:
-            return json.load(f)
-    except Exception:
-        return default
-
-
-def _save_json(path, data):
-    with open(path, 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-
-
-def _mask_id(id_str, mask_char='*'):
-    if not id_str or len(id_str) <= 6:
-        return id_str
-    return id_str[:3] + mask_char * 4 + id_str[-3:]
-
-
-# ==================== DM 调试消息 ====================
+# ==================== 私信调试消息 ====================
 
 
 @handler(r'^dm(.+)$', name='DM调试', desc='dm+内容 发送调试消息', owner_only=True)
 async def send_dm(event, match):
-    # 使用原始内容, 使 <@xxx> 可原样发送
+    # 使用原始内容，使用户提及标记可以原样发送
     m = re.match(r'^dm(.+)$', event.raw_content or '', re.S)
     content = (m.group(1) if m else match.group(1)).strip()
     if not content:
@@ -65,7 +40,7 @@ async def send_dm(event, match):
     for old, new in [('\\n', '\n'), ('\\t', '\t'), ('\\r', '\r'), ('\\\\', '\\')]:
         content = content.replace(old, new)
 
-    # 解析按钮配置: 按钮 [(text,data,type,enter,style)]
+    # 解析按钮配置，字段依次为文字、数据、类型、回车和样式
     button_pattern = r'按钮\s*\[([^\]]+)\]'
     button_matches = list(re.finditer(button_pattern, content))
     buttons = None
@@ -102,22 +77,20 @@ async def send_dm(event, match):
 # ==================== 重启 ====================
 
 
-def _save_restart_status(event):
-    _save_json(
-        _RESTART_STATUS_FILE,
-        {
-            'restart_time': datetime.datetime.now().isoformat(),
-            'completed': False,
-            'message_id': event.message_id,
-            'appid': event.appid,
-            'user_id': event.user_id,
-            'group_id': event.group_id if event.is_group else 'c2c',
-        },
-    )
+async def _save_restart_status(event):
+    data = {
+        'restart_time': datetime.datetime.now().isoformat(),
+        'completed': False,
+        'message_id': event.message_id,
+        'appid': event.appid,
+        'user_id': event.user_id,
+        'group_id': event.group_id if event.is_group else 'c2c',
+    }
+    await asyncio.to_thread(save_json, _RESTART_STATUS_FILE, data)
 
 
 def _do_restart():
-    """优雅重启: 走 Application 流程, 刷写 SQLite 缓冲再 os.execv"""
+    """通过应用生命周期执行重启，并在退出前写回数据库缓冲。"""
     try:
         from core.application import get_app
 
@@ -129,14 +102,14 @@ def _do_restart():
             return
     except ImportError:
         pass
-    # 兜底: Application 不可用时直接重启
+    # 应用实例不可用时直接替换当前进程
     python = sys.executable
     os.execv(python, [python] + sys.argv)
 
 
 @handler(r'^重启$', name='重启', desc='重启机器人进程', owner_only=True)
 async def restart_bot(event, match):
-    _save_restart_status(event)
+    await _save_restart_status(event)
     await reply(event, '🔄 正在重启...')
     await asyncio.sleep(0.5)
     _do_restart()
@@ -159,7 +132,7 @@ def _get_framework_updater():
 
 
 def _slice_changelog(commits, current_version):
-    """只保留当前版本之后的提交 (不含当前版本)"""
+    """只保留当前版本之后的提交，不包含当前版本。"""
     cur = (current_version or '')[:8]
     if not cur or cur == 'unknown':
         return commits
@@ -217,7 +190,7 @@ async def update_framework(event, match):
     if not result.get('success'):
         return await reply(event, f'❌ 更新失败: {result.get("message", "未知错误")}')
 
-    _save_restart_status(event)
+    await _save_restart_status(event)
     await reply(event, f'✅ {result.get("message", "更新成功")}\n🔄 正在重启...')
     await asyncio.sleep(0.5)
     _do_restart()
@@ -227,7 +200,7 @@ async def update_framework(event, match):
 
 
 async def _send_restart_notice(data):
-    """等待机器人就绪后, 用重启前保存的 msg_id 被动回复重启完成提示 (群聊/私聊)"""
+    """等待机器人就绪，再用重启前保存的消息标识发送完成提示。"""
     try:
         import random
 
@@ -236,7 +209,7 @@ async def _send_restart_notice(data):
         app = get_app()
         if not app:
             return
-        # 插件加载早于机器人启动, 需等待 bot 实例就绪
+        # 插件早于机器人加载，需要等待至少一个机器人实例就绪
         bots = []
         for _ in range(60):
             bots = list(app._bots.values()) if hasattr(app, '_bots') else []
@@ -272,16 +245,16 @@ async def _send_restart_notice(data):
 @on_load
 async def _check_restart_status():
     """启动时检查是否有未完成的重启状态"""
-    if not os.path.isfile(_RESTART_STATUS_FILE):
+    if not _RESTART_STATUS_FILE.is_file():
         return
     try:
-        data = _load_json(_RESTART_STATUS_FILE)
+        data = await asyncio.to_thread(load_json, _RESTART_STATUS_FILE)
         if data.get('completed', True):
             return
 
-        # 标记完成
+        # 先标记为已处理，避免下次启动重复通知
         data['completed'] = True
-        _save_json(_RESTART_STATUS_FILE, data)
+        await asyncio.to_thread(save_json, _RESTART_STATUS_FILE, data)
 
         asyncio.create_task(_send_restart_notice(data))
     except Exception as e:
@@ -296,7 +269,7 @@ def _bl_lines(lines, bl_map):
         lines.append('✅ 空')
         return
     for idx, (bid, reason) in enumerate(sorted(bl_map.items()), 1):
-        lines.append(f'{idx}. {_mask_id(bid)}' + (f'（{reason}）' if reason else ''))
+        lines.append(f'{idx}. {mask_id(bid)}' + (f'（{reason}）' if reason else ''))
 
 
 @handler(r'^黑名单帮助$', name='黑名单帮助', desc='查看黑名单管理帮助', owner_only=True)

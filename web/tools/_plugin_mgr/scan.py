@@ -5,6 +5,7 @@ from datetime import datetime
 
 from aiohttp import web
 
+from core.base.python_source import read_dict_assignment
 from web.tools._plugin_mgr.shared import (
     ENTRY_CANDIDATES,
     find_entry,
@@ -12,7 +13,6 @@ from web.tools._plugin_mgr.shared import (
     log,
     plugins_dir,
 )
-from web.tools._python_source import read_dict_assignment
 
 # ==================== 插件元信息查询 ====================
 
