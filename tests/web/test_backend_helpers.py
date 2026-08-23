@@ -1,11 +1,11 @@
 from types import SimpleNamespace
 
+from core.base.python_source import read_dict_assignment
 from web.tools._bots import iter_bots
 from web.tools._market.install import (
     _clear_dir_except_data,
     _migrate_legacy_groupguard_templates,
 )
-from web.tools._python_source import read_dict_assignment
 
 
 def test_iter_bots_filters_explicit_manager():
