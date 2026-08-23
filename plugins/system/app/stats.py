@@ -14,10 +14,10 @@ from core.storage.lifecycle_stats import (
     compute_lifecycle_counts,
     lifecycle_counts_from_rows,
 )
-from ._shared import mask_id
 
 from ._dau_image import render_dau_image
 from ._reply import reply
+from ._shared import mask_id
 
 log = get_logger(PLUGIN, '系统管理')
 
@@ -67,7 +67,7 @@ async def _reply_dau(event, bot, stats, date, elapsed_ms, y_stats=None, is_today
         if url:
             if cfg.get_bot_setting(event.appid, 'message.use_markdown', True):
                 w, h = _png_size(image)
-                md = f'<@{event.user_id}>![活跃统计 #{w}px #{h}px]({url})'
+                md = f'<@{event.user_id}>\n![活跃统计 #{w}px #{h}px]({url})'
                 return await reply(event, md)
             return await event.reply_image(url, f'<@{event.user_id}>')
     msg = _build_dau_message(event, stats, date, elapsed_ms, y_stats=y_stats, is_today=is_today)
