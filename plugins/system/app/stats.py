@@ -14,7 +14,7 @@ from core.storage.lifecycle_stats import (
     compute_lifecycle_counts,
     lifecycle_counts_from_rows,
 )
-from plugins._shared import mask_id
+from ._shared import mask_id
 
 from ._dau_image import render_dau_image
 from ._reply import reply

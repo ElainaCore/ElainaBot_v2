@@ -4,7 +4,7 @@ import os
 from functools import lru_cache
 from io import BytesIO
 
-from plugins._shared import mask_id
+from ._shared import mask_id
 
 # ==================== 配色 ====================
 _BG_TOP = (11, 92, 255)  # 头图渐变起

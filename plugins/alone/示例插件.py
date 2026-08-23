@@ -9,7 +9,14 @@ from aiohttp import web
 
 from core.plugin.decorators import handler, on_unload
 from core.plugin.web_pages import register_page, register_route, unregister_page
-from plugins._shared import mask_id
+
+
+def mask_id(value: object, visible: int = 3, mask: str = '****') -> str:
+    """隐藏标识符中间部分，并保留两端指定数量的字符。"""
+    text = str(value or '')
+    if visible <= 0:
+        return mask if text else ''
+    return text if len(text) <= visible * 2 else f'{text[:visible]}{mask}{text[-visible:]}'
 
 _PLUGIN_DIR = Path(__file__).resolve().parent
 IMG = 'https://i0.hdslb.com/bfs/openplatform/559162218f455ea859c783dceeda65cb1c724f4c.png'
