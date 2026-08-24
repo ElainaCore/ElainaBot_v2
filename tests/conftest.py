@@ -1,15 +1,27 @@
 """pytest 全局 fixtures"""
 
 import os
+import shutil
 import sys
 import tempfile
+from pathlib import Path
 
 import pytest
+
+# 测试产物不应污染工作区；Pytest 缓存由 pyproject.toml 禁用。
+sys.dont_write_bytecode = True
 
 # 确保项目根在 sys.path 中
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_sessionfinish(session, exitstatus):
+    """清除测试包自身在 conftest 加载前生成的字节码缓存。"""
+    for cache_dir in Path(ROOT, 'tests').rglob('__pycache__'):
+        shutil.rmtree(cache_dir, ignore_errors=True)
 
 
 # ==================== 配置 Fixtures ====================
@@ -130,7 +142,7 @@ def _reset_web_singletons():
 
 @pytest.fixture
 def api_config_dir():
-    """创建临时 API 配置目录, 包含 settings.yaml + bot.yaml, 并初始化 web auth"""
+    """创建临时项目目录，所有 API 写操作必须限制在该目录内。"""
     import os
     import tempfile
 
@@ -139,6 +151,9 @@ def api_config_dir():
     _reset_web_singletons()
 
     with tempfile.TemporaryDirectory() as tmpdir:
+        config_dir = os.path.join(tmpdir, 'config')
+        os.makedirs(config_dir, exist_ok=True)
+
         # settings.yaml
         settings = {
             'server': {'host': '0.0.0.0', 'port': 15200},
@@ -152,7 +167,7 @@ def api_config_dir():
             },
             'pip': {'auto_install': False, 'mirror': ''},
         }
-        with open(os.path.join(tmpdir, 'settings.yaml'), 'w') as f:
+        with open(os.path.join(config_dir, 'settings.yaml'), 'w') as f:
             yaml.dump(settings, f)
 
         # bot.yaml
@@ -188,7 +203,7 @@ def api_config_dir():
                 }
             ],
         }
-        with open(os.path.join(tmpdir, 'bot.yaml'), 'w') as f:
+        with open(os.path.join(config_dir, 'bot.yaml'), 'w') as f:
             yaml.dump(bots, f)
 
         # 初始化 web auth (需要 base_dir 下存在 data/web/ 目录)
@@ -202,7 +217,7 @@ def api_config_dir():
 
         ConfigManager._instance = None
         mgr = ConfigManager()
-        mgr.init(tmpdir)
+        mgr.init(config_dir)
 
         yield tmpdir
 
@@ -218,14 +233,13 @@ def setup_app(api_config_dir):
 
     # 初始化 cfg (conftest 中 _reset_web_singletons 已清理)
     cfg._ready = False
-    cfg.init(api_config_dir)
+    cfg.init(os.path.join(api_config_dir, 'config'))
 
     # 重新初始化 auth (使用测试配置目录)
     _auth.init(api_config_dir)
 
-    # 设置 api 上下文
-    _api._bot_manager = None
-    _api._base_dir = api_config_dir
+    # 使用生产环境同一入口设置所有拆分工具模块，防止测试写入真实仓库。
+    _api.set_context(None, api_config_dir)
 
     app = web.Application()
     app.router.add_routes(_api.get_routes())

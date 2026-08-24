@@ -51,7 +51,8 @@ async def e2e_app(dist_dir, api_config_dir):
     # 重置并初始化
     ConfigManager._instance = None
     mgr = ConfigManager()
-    mgr.init(api_config_dir)
+    mgr.init(os.path.join(api_config_dir, 'config'))
+    _api.set_context(None, api_config_dir)
 
     _auth.valid_sessions.clear()
     _auth.ip_access_data.clear()

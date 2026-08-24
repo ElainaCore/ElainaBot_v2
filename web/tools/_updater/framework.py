@@ -397,7 +397,7 @@ class FrameworkUpdater:
                         shutil.copy2(src, tmp)
                         staged.append((tmp, dst))
                 for tmp, dst in staged:
-                    # 保留原文件的可执行位 (zip 解压丢失, 否则 docker-entrypoint.sh 等覆盖后容器无法重启)
+                    # 保留原文件的可执行位（zip 解压会丢失，否则容器入口脚本覆盖后无法重启）
                     with contextlib.suppress(OSError):
                         os.chmod(tmp, os.stat(tmp).st_mode | (os.stat(dst).st_mode & 0o111))
                     os.replace(tmp, dst)

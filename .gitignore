@@ -35,6 +35,14 @@ modules/modules_enabled.json
 modules/onebot_adapter/data/
 
 # --- Project: Test Output ---
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+junit.xml
 tests/stress/results/
 
 # --- Project: Backups ---

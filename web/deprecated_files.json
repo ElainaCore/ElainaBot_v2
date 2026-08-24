@@ -27,5 +27,12 @@
   "bot_restarter.py",
   "core/message/parsers.py",
   "core/base/zipsafe.py",
-  "core/extension/"
+  "core/extension/",
+  "Dockerfile",
+  ".dockerignore",
+  "docker-compose.yml",
+  "docker-compose.build.yml",
+  "PLUGIN_DEVELOPMENT.md",
+  "modules/image_hosting/README.md",
+  "install.sh"
 ]

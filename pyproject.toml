@@ -36,6 +36,7 @@ packages = []
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+addopts = "-p no:cacheprovider"
 testpaths = ["tests"]
 pythonpath = ["."]
 markers = [

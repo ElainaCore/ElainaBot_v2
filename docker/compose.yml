@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   elainabot:
     image: elainabot/elainabot:latest
@@ -8,9 +6,9 @@ services:
     ports:
       - "5200:5200"
     volumes:
-      - ./config:/app/config
-      - ./plugins:/app/plugins
-      - ./modules:/app/modules
-      - ./data:/app/data
+      - ../config:/app/config
+      - ../plugins:/app/plugins
+      - ../modules:/app/modules
+      - ../data:/app/data
     environment:
-      - TZ=Asia/Shanghai
+      TZ: Asia/Shanghai

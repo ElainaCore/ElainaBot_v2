@@ -34,13 +34,16 @@ def set_context(base_dir: str, bot_manager=None):
 
 
 def _load_data():
-    global _openapi_user_data
+    loaded = {}
     try:
         if os.path.exists(_data_file):
             with open(_data_file, encoding='utf-8') as f:
-                _openapi_user_data = json.load(f)
+                loaded = json.load(f)
     except Exception:
-        _openapi_user_data = {}
+        loaded = {}
+    _openapi_user_data.clear()
+    if isinstance(loaded, dict):
+        _openapi_user_data.update(loaded)
 
 
 def _save_data():
@@ -54,18 +57,20 @@ def _save_data():
 
 def _load_v2():
     """加载新开放平台凭证 (data/open/<user_id>.json)"""
-    global _openapi_v2_data
-    _openapi_v2_data = {}
+    loaded = {}
     try:
         if not _v2_dir or not os.path.isdir(_v2_dir):
+            _openapi_v2_data.clear()
             return
         for name in os.listdir(_v2_dir):
             if not name.endswith('.json'):
                 continue
             with open(os.path.join(_v2_dir, name), encoding='utf-8') as f:
-                _openapi_v2_data[name[:-5]] = json.load(f)
+                loaded[name[:-5]] = json.load(f)
     except Exception:
-        _openapi_v2_data = {}
+        loaded = {}
+    _openapi_v2_data.clear()
+    _openapi_v2_data.update(loaded)
 
 
 def _save_v2(user_id):

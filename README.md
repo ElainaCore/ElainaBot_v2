@@ -14,7 +14,7 @@ ElainaBot v2 是一个基于 Python 的 QQ 官方机器人框架，采用纯异�
 </p>
 <br clear="left" />
 
-> 项目仅供学习交流使用，严禁用于非法行为。交流群：[1085402468](https://qm.qq.com/q/5O3xGoe4so)。
+> 项目仅供学习交流使用，严禁用于非法行为。交流群：[164178653](https://qm.qq.com/q/iNI4IyQdqw)。
 
 ## 🚀 快速开始
 
@@ -39,13 +39,14 @@ ElainaBot_v2/
 ├── plugins/         # 插件目录 (热加载)
 ├── modules/         # 模块目录
 ├── web/             # Web 面板后端
-└── templates/       # 消息模板
+├── docker/          # Docker 构建与 Compose 配置
+└── docs/            # 开发文档
 ```
 
 ## 🔌 开发与扩展
 
-- **插件开发** — [插件开发文档](PLUGIN_DEVELOPMENT.md)，包含插件结构、事件处理、消息 API、入群审批、群禁言和 Web 面板扩展。
-- **图床模块** — 通过 `get_app().module_manager.get("image_hosting")` 获取；公开 API、配置和示例见 [Image Hosting 文档](modules/image_hosting/README.md)。
+- **开发文档** — [文档目录](docs/README.md)；其中[插件开发文档](docs/plugin-development.md)包含插件结构、事件处理、消息 API、入群审批、群禁言和 Web 面板扩展。
+- **图床模块** — 通过 `get_app().module_manager.get("image_hosting")` 获取；公开 API、配置和示例见 [Image Hosting 文档](docs/image-hosting.md)。
 
 ## 🛒 插件市场
 
@@ -62,7 +63,9 @@ ElainaBot_v2/
 **docker compose（推荐）**
 
 ```bash
-mkdir elainabot && cd elainabot && curl -O https://raw.githubusercontent.com/ElainaCore/ElainaBot_v2/main/docker-compose.yml && docker compose up -d
+mkdir -p elainabot/docker && cd elainabot
+curl -o docker/compose.yml https://raw.githubusercontent.com/ElainaCore/ElainaBot_v2/main/docker/compose.yml
+docker compose -f docker/compose.yml up -d
 ```
 
 **docker run**
@@ -97,5 +100,11 @@ docker run -d \
 ```bash
 git clone https://github.com/ElainaCore/ElainaBot_v2.git
 cd ElainaBot_v2
-docker compose -f docker-compose.build.yml up -d --build
+docker compose -f docker/compose.build.yml up -d --build
+```
+
+也可以直接构建镜像：
+
+```bash
+docker build -f docker/Dockerfile -t elainabot/elainabot:local .
 ```

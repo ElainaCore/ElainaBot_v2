@@ -2,7 +2,7 @@
 
 本文档说明插件结构、配置、事件处理、消息 API、群管理 API、Web 面板扩展和模块接入。
 
-> 开发插件前，请先完成项目根目录 [README.md](README.md) 中的运行配置，并确认机器人已正常连接。
+> 开发插件前，请先完成项目根目录 [README.md](../README.md) 中的运行配置，并确认机器人已正常连接。
 
 ## 目录
 
@@ -1184,7 +1184,7 @@ else:
 
 统一入口 `upload_any()` 会按优先级尝试可用图床，返回第一个 HTTP URL，全部失败时返回 `None`。指定图床的返回结构可能不同，需要按对应图床 API 判断。
 
-配置、图床列表、动态方法和扩展规范见 [Image Hosting 模块接入文档](modules/image_hosting/README.md)。模块实例由框架管理生命周期。
+配置、图床列表、动态方法和扩展规范见 [Image Hosting 模块接入文档](image-hosting.md)。模块实例由框架管理生命周期。
 
 ---
 
@@ -1225,8 +1225,8 @@ except Exception as error:
 
 | 路径 | 内容 |
 | --- | --- |
-| [plugins/alone/示例插件.py](plugins/alone/示例插件.py) | 媒体、卡片、按钮、交互、群资料、入群审批、禁言、引用、主动消息和 Web 扩展示例 |
-| [plugins/system/main.py](plugins/system/main.py) | 内置系统插件的组织方式和管理命令 |
-| [modules/image_hosting/README.md](modules/image_hosting/README.md) | 统一图床完整 API 与配置 |
+| [plugins/alone/示例插件.py](../plugins/alone/示例插件.py) | 媒体、卡片、按钮、交互、群资料、入群审批、禁言、引用、主动消息和 Web 扩展示例 |
+| [plugins/system/main.py](../plugins/system/main.py) | 内置系统插件的组织方式和管理命令 |
+| [docs/image-hosting.md](image-hosting.md) | 统一图床完整 API 与配置 |
 
 插件可以在 Web 面板的“插件”页面启用、禁用或重载；禁用状态保存在 `data/plugins_disabled.json`。
