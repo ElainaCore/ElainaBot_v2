@@ -258,16 +258,6 @@ class _DispatchMixin:
                 continue
             # 场景过滤 (位掩码): handler 要求的场景位 & 事件不具备的场景位 → 不匹配
             if h['_smask'] & ~scene:
-                # 群聊专属指令在私聊环境 → 告知用户并终止
-                if h['group_only'] and not is_non_at:
-                    self._fire_chain(matched, event, user_id, et, content)
-                    spawn(
-                        event.reply(
-                            template_name='group_only',
-                            template_vars={'user_id': user_id},
-                        )
-                    )
-                    return True
                 continue
             # 权限
             if h['owner_only'] and not self._is_owner(event):

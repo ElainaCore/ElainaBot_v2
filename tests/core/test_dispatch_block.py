@@ -55,9 +55,9 @@ def _make_manager(handlers):
     return pm
 
 
-async def _dispatch_and_collect(pm, content='test'):
+async def _dispatch_and_collect(pm, content='test', event=None):
     sender = MockMessageSender(APPID)
-    event = EventFactory.group_at_message(content, appid=APPID)
+    event = event or EventFactory.group_at_message(content, appid=APPID)
     handled = await pm.dispatch(event, sender)
     # 等待 fire-and-forget 的 handler 链执行完毕
     for _ in range(50):
@@ -86,6 +86,32 @@ async def test_block_true_intercepts_subsequent_plugins():
     pm = _make_manager(_build_two_handlers(sink, block_first=True))
     await _dispatch_and_collect(pm)
     assert sink == ['first']
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_group_only_command_skips_to_next_direct_handler():
+    """私聊中跳过场景不符的群指令，继续匹配下一个插件。"""
+    sink: list[str] = []
+    _pending_handlers.clear()
+
+    @handler(r'^same$', name='Group command', priority=10, group_only=True, block=True)
+    async def _group(event, match):
+        sink.append('group')
+
+    @handler(r'^same$', name='Direct command')
+    async def _direct(event, match):
+        sink.append('direct')
+
+    pm = _make_manager(list(_pending_handlers))
+    _pending_handlers.clear()
+
+    handled = await _dispatch_and_collect(
+        pm, event=EventFactory.direct_message('same', appid=APPID),
+    )
+
+    assert handled is True
+    assert sink == ['direct']
 
 
 def _build_fallback_handlers(sink, fallback=True):
