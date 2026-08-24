@@ -4,6 +4,7 @@ import io
 import json
 import os
 import zipfile
+from pathlib import Path
 
 import pytest
 
@@ -83,6 +84,42 @@ def test_extract_subdir_missing(base):
     content = _make_repo_zip({'a/x.py': '1'})
     r = install._extract_zip_subset(content, 'P', subdir_path='不存在')
     assert not r['success']
+
+
+def test_update_preserves_data_and_config(base):
+    plugin_dir = os.path.join(base, 'plugins', 'P')
+    os.makedirs(os.path.join(plugin_dir, 'data'), exist_ok=True)
+    os.makedirs(os.path.join(plugin_dir, 'config'), exist_ok=True)
+    data_file = os.path.join(plugin_dir, 'data', 'state.json')
+    config_file = os.path.join(plugin_dir, 'config', 'config.toml')
+    with open(data_file, 'w', encoding='utf-8') as file:
+        file.write('local data')
+    with open(config_file, 'w', encoding='utf-8') as file:
+        file.write('local config')
+    with open(os.path.join(plugin_dir, 'old.py'), 'w', encoding='utf-8') as file:
+        file.write('old')
+
+    content = _make_repo_zip(
+        {
+            'main.py': 'new',
+            'data/state.json': 'package data',
+            'data/default.json': 'default data',
+            'config/config.toml': 'package config',
+            'config/example.toml': 'example config',
+        }
+    )
+    result = install._extract_zip_subset(content, 'P', preserve_data=True)
+
+    assert result['success'], result
+    assert not os.path.exists(os.path.join(plugin_dir, 'old.py'))
+    assert Path(data_file).read_text(encoding='utf-8') == 'local data'
+    assert Path(config_file).read_text(encoding='utf-8') == 'local config'
+    assert Path(plugin_dir, 'data', 'default.json').read_text(
+        encoding='utf-8'
+    ) == 'default data'
+    assert Path(plugin_dir, 'config', 'example.toml').read_text(
+        encoding='utf-8'
+    ) == 'example config'
 
 
 # ==================== single: 共享 alone 目录 (alone=True 默认) ====================

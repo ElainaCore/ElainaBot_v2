@@ -3,7 +3,7 @@ from types import SimpleNamespace
 from core.base.python_source import read_dict_assignment
 from web.tools._bots import iter_bots
 from web.tools._market.install import (
-    _clear_dir_except_data,
+    _clear_dir_except_persistent,
     _migrate_legacy_groupguard_templates,
 )
 
@@ -34,21 +34,25 @@ def test_read_dict_assignment(tmp_path):
     assert read_dict_assignment(str(source), '__plugin_meta__') is None
 
 
-def test_clear_dir_except_data(tmp_path):
+def test_clear_dir_except_persistent(tmp_path):
     data_dir = tmp_path / 'data'
     data_dir.mkdir()
     (data_dir / 'config.json').write_text('{}', encoding='utf-8')
+    config_dir = tmp_path / 'config'
+    config_dir.mkdir()
+    (config_dir / 'config.toml').write_text('[plugin]\nenabled = true\n', encoding='utf-8')
     (tmp_path / 'main.py').write_text('', encoding='utf-8')
     cache_dir = tmp_path / 'cache'
     cache_dir.mkdir()
     (cache_dir / 'state').write_text('', encoding='utf-8')
 
-    _clear_dir_except_data(str(tmp_path))
+    _clear_dir_except_persistent(str(tmp_path))
 
-    assert [path.name for path in tmp_path.iterdir()] == ['data']
+    assert {path.name for path in tmp_path.iterdir()} == {'config', 'data'}
     assert (data_dir / 'config.json').is_file()
+    assert (config_dir / 'config.toml').is_file()
 
-    _clear_dir_except_data(str(tmp_path / 'missing'))
+    _clear_dir_except_persistent(str(tmp_path / 'missing'))
 
 
 def test_migrate_legacy_groupguard_templates(tmp_path):

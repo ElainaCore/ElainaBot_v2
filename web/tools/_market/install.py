@@ -26,6 +26,7 @@ from web.tools._zipsafe import is_within
 
 # 共享单文件插件目录 (位于 plugins/ 下), 仅当 single 插件显式声明 alone=True 时使用
 _ALONE_DIR = 'alone'
+_PERSISTENT_DIRS = frozenset({'config', 'data'})
 
 # 插件类型 (来源于市场清单的 type 字段, 不再依据是否有 path 推断)
 TYPE_COMPLETE = 'complete'  # 完整插件: 整仓库 / 仓库内某子目录, 装到 plugins/<name>/
@@ -313,7 +314,7 @@ def _extract_zip_subset(
 
             if preserve_data:
                 _migrate_legacy_groupguard_templates(dest_dir)
-                _clear_dir_except_data(dest_dir)
+                _clear_dir_except_persistent(dest_dir)
             os.makedirs(dest_dir, exist_ok=True)
             extracted = []
             for fp in selected:
@@ -326,7 +327,8 @@ def _extract_zip_subset(
                 if not is_within(dest_dir, dest):
                     log.warning(f'跳过越界成员 (疑似路径穿越): {fp!r}')
                     continue
-                if preserve_data and rel.startswith('data/') and os.path.exists(dest):
+                top_dir = rel.split('/', 1)[0]
+                if preserve_data and top_dir in _PERSISTENT_DIRS and os.path.exists(dest):
                     continue
                 os.makedirs(os.path.dirname(dest) or dest_dir, exist_ok=True)
                 with zf.open(fp) as src, open(dest, 'wb') as dst:
@@ -352,13 +354,13 @@ def _extract_zip_subset(
         return {'success': False, 'message': str(e)}
 
 
-def _clear_dir_except_data(dest_dir):
-    """清理目录, 保留 data/ 用户配置"""
+def _clear_dir_except_persistent(dest_dir):
+    """清理插件代码，保留 data/ 与 config/ 中的用户持久化内容。"""
     if not os.path.isdir(dest_dir):
         return
 
     for item in os.listdir(dest_dir):
-        if item == 'data':
+        if item in _PERSISTENT_DIRS:
             continue
         p = os.path.join(dest_dir, item)
         if os.path.isdir(p):
@@ -368,7 +370,7 @@ def _clear_dir_except_data(dest_dir):
 
 
 def _migrate_legacy_groupguard_templates(dest_dir):
-    """Move the legacy GroupGuard template file into its persistent data directory."""
+    """将群管旧版根目录模板移入会被保留的 data/。"""
     if os.path.basename(os.path.normpath(dest_dir)).casefold() not in {
         'groupguard',
         '群管',
@@ -617,10 +619,15 @@ async def handle_market_uninstall(request: web.Request):
             await _disable_module_runtime(safe)
         else:
             await _unload_plugin_runtime(safe)
-        if keep_data and os.path.isdir(os.path.join(dest_dir, 'data')):
-            _clear_dir_except_data(dest_dir)
-            log.info(f'{label} 已卸载 (保留 data/)')
-            return web.json_response({'success': True, 'message': f'已卸载 {label} (保留数据)'})
+        if keep_data and any(
+            os.path.isdir(os.path.join(dest_dir, name)) for name in _PERSISTENT_DIRS
+        ):
+            _migrate_legacy_groupguard_templates(dest_dir)
+            _clear_dir_except_persistent(dest_dir)
+            log.info(f'{label} 已卸载 (保留 data/ 与 config/)')
+            return web.json_response(
+                {'success': True, 'message': f'已卸载 {label} (保留 data/ 与 config/)'}
+            )
         else:
             shutil.rmtree(dest_dir)
             log.info(f'{label} 已卸载')
