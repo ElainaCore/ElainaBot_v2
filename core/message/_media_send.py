@@ -78,7 +78,10 @@ class _MediaSendMixin:
         type_name = self._MEDIA_TYPE_NAMES.get(file_type, '媒体')
         file_info = None
 
-        if is_url:
+        if is_url and file_type == 3:
+            # QQ 语音统一转为 Tencent SILK，不能绕过转换器直接上传源 URL。
+            data = await self.download_media(data)
+        elif is_url:
             for _ in range(max_try):
                 file_info = await upload_media_via_url(
                     self,
@@ -94,7 +97,7 @@ class _MediaSendMixin:
             if not file_info:
                 data = await self.download_media(data)
 
-        # 本地发送语音: 默认先转 silk v3 再上传 (已是 silk / 转换失败则原样发送)
+        # 语音默认先转 Tencent SILK 再上传（已是 SILK / 转换失败则原样发送）。
         if file_type == 3 and not file_info and isinstance(data, bytes):
             data = await convert_to_silk(data)
 

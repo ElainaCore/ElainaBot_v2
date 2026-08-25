@@ -11,6 +11,9 @@ build/
 venv/
 .env/
 .venv
+/.bootstrap/
+.venv.backup-*/
+.venv.failed-*/
 
 # --- IDE / Editor ---
 .vscode/

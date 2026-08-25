@@ -346,6 +346,12 @@ class MessageSender(_HttpMixin, _MediaSendMixin, _SenderLogMixin):
         return await self._send_media(event, image_data, 1, content, **kw)
 
     async def reply_voice(self, event, voice_data, content='', **kw):
+        if (
+            isinstance(voice_data, str)
+            and not voice_data.startswith(('http://', 'https://'))
+            and await asyncio.get_running_loop().run_in_executor(None, os.path.isfile, voice_data)
+        ):
+            voice_data = await asyncio.get_running_loop().run_in_executor(None, self._read_file_sync, voice_data)
         return await self._send_media(event, voice_data, 3, content, **kw)
 
     async def reply_video(self, event, video_data, content='', **kw):
