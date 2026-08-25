@@ -7,7 +7,8 @@ import platform
 import shutil
 import subprocess
 import tempfile
-from functools import lru_cache, partial
+from concurrent.futures import ThreadPoolExecutor
+from functools import lru_cache
 from pathlib import Path
 
 from core.base.logger import FRAMEWORK, get_logger
@@ -16,13 +17,26 @@ log = get_logger(FRAMEWORK, 'silk转换')
 
 SUPPORTED_RATES = (8000, 12000, 16000, 24000, 32000, 44100, 48000)
 DEFAULT_RATE = 24000
+DEFAULT_BITRATE = 24000
+DEFAULT_COMPLEXITY = 0
 _SILK_HEADERS = (b'\x02#!SILK_V3', b'#!SILK_V3')
 _RUNTIME_ROOT = Path(__file__).resolve().parents[1] / 'silk_converter'
+_CONVERT_TIMEOUT = 60
+_MAX_CONCURRENT_CONVERSIONS = 2
+_pool: ThreadPoolExecutor | None = None
 
 
 def is_silk(data: bytes) -> bool:
     """判断字节流是否已经是 SILK v3。"""
     return isinstance(data, bytes) and data.startswith(_SILK_HEADERS)
+
+
+def is_audio_candidate(data: bytes) -> bool:
+    """拒绝明显的网页/API 错误响应，其余格式交给 FFmpeg 判断。"""
+    if not isinstance(data, bytes) or len(data) < 4:
+        return False
+    head = data[:64].lstrip().lower()
+    return not head.startswith((b'<', b'{', b'['))
 
 
 def _runtime_id() -> str | None:
@@ -72,6 +86,8 @@ def audio_to_silk(data: bytes, rate: int = DEFAULT_RATE) -> bytes:
         return data
     if rate not in SUPPORTED_RATES:
         raise ValueError(f'采样率 {rate} 不受支持, 可选: {SUPPORTED_RATES}')
+    if not is_audio_candidate(data):
+        raise ValueError('输入不是转换器支持的音频数据')
 
     converter = _find_converter()
     if not converter:
@@ -81,13 +97,25 @@ def audio_to_silk(data: bytes, rate: int = DEFAULT_RATE) -> bytes:
         source = Path(directory) / 'input.audio'
         output = Path(directory) / 'output.silk'
         source.write_bytes(data)
+        command = [
+            converter,
+            str(source),
+            '--output',
+            str(output),
+            '--rate',
+            str(rate),
+            '--bitrate',
+            str(DEFAULT_BITRATE),
+            '--complexity',
+            str(DEFAULT_COMPLEXITY),
+        ]
         creationflags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
         process = subprocess.run(
-            [converter, str(source), '--output', str(output), '--rate', str(rate)],
+            command,
             capture_output=True,
             check=False,
             creationflags=creationflags,
-            timeout=180,
+            timeout=_CONVERT_TIMEOUT,
         )
         if process.returncode != 0:
             error = process.stderr.decode(errors='replace').strip()
@@ -100,16 +128,33 @@ def audio_to_silk(data: bytes, rate: int = DEFAULT_RATE) -> bytes:
         return silk
 
 
+def _get_pool() -> ThreadPoolExecutor:
+    global _pool
+    if _pool is None:
+        _pool = ThreadPoolExecutor(max_workers=_MAX_CONCURRENT_CONVERSIONS, thread_name_prefix='silk-converter')
+    return _pool
+
+
 def shutdown_pool() -> None:
-    """保留旧生命周期接口；独立转换器不维护进程池。"""
+    """停止接收转换任务并取消尚未执行的排队任务。"""
+    global _pool
+    pool, _pool = _pool, None
+    if pool:
+        pool.shutdown(wait=False, cancel_futures=True)
 
 
 async def convert_to_silk(data: bytes, rate: int = DEFAULT_RATE) -> bytes:
-    """在线程中调用转换器；失败时回退原数据，避免阻断消息发送。"""
+    """最多并行执行两个转换；多余任务排队等待，不跳过正常转换。"""
     if is_silk(data):
         return data
+    if not is_audio_candidate(data):
+        log.warning('语音数据不是受支持的音频格式, 已跳过 SILK 转换')
+        return data
+
     try:
-        return await asyncio.to_thread(partial(audio_to_silk, data, rate))
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(_get_pool(), audio_to_silk, data, rate)
     except Exception as error:
-        log.warning(f'语音转 SILK 失败, 使用原数据发送: {error}')
+        detail = ' '.join(str(error).split())
+        log.warning(f'语音转 SILK 失败, 使用原数据发送: {detail[:500]}')
         return data
