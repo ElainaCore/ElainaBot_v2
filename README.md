@@ -27,7 +27,7 @@ pip install -r requirements.txt
 python main.py
 ```
 
-启动后访问 [Web 面板](http://localhost:5200/web/) 完成配置，默认密码为 `admin`。Webhook 回调地址可在面板中点击机器人名称右侧的感叹号图标查看。
+也可以直接下载整个项目。在 Windows 中运行 `start.bat` 后，启动器会按需安装脚本专用的 `pywebview`，并读取 `config/settings.yaml` 中的 `server.port` 打开独立的“ElainaBot 管理面板”桌面窗口；再次运行脚本时，如果该端口上的面板已经启动，则只重新打开桌面窗口，不会重复启动框架。该组件不属于框架内置依赖，其他安装或启动方式不会自动安装。其他启动方式可通过配置的端口访问 Web 面板完成配置，默认密码为 `admin`。Webhook 回调地址可在面板中点击机器人名称右侧的感叹号图标查看。
 
 ## 📁 框架结构
 
