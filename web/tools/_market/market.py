@@ -51,6 +51,9 @@ async def handle_market_list(request: web.Request):
                 p['local_version'] = local_ver
                 p['has_update'] = _version_lt(local_ver, p.get('version', ''))
 
+    # 稳定地将可更新项前置，同组项目继续保持插件市场清单中的原始顺序。
+    plugins.sort(key=lambda p: not p.get('has_update', False))
+
     return web.json_response({'success': True, 'data': plugins, 'total': len(plugins)})
 
 
