@@ -36,23 +36,31 @@ class _MediaSendMixin:
             if mid:
                 spawn(self._auto_recall(event, mid, delay))
 
-    async def download_media(self, url: str):
+    async def download_media(self, url: str, *, silent: bool = False):
         try:
             client = await self._ensure_client()
             resp = await client.get(url)
             cl = int(resp.headers.get('content-length', 0))
             if cl > _MAX_MEDIA_DOWNLOAD:
-                log.warning(f'[{self._appid}] 媒体过大 ({cl} bytes), 跳过下载')
+                if not silent:
+                    log.warning(f'[{self._appid}] 媒体过大 ({cl} bytes), 跳过下载')
                 return None
             body = resp.content
             if len(body) > _MAX_MEDIA_DOWNLOAD:
-                log.warning(f'[{self._appid}] 媒体实际大小超限 ({len(body)} bytes), 丢弃')
+                if not silent:
+                    log.warning(f'[{self._appid}] 媒体实际大小超限 ({len(body)} bytes), 丢弃')
                 del body
                 return None
             return body
         except Exception as e:
-            log.warning(f'[{self._appid}] 下载媒体失败: {e}')
+            if not silent:
+                log.warning(f'[{self._appid}] 下载媒体失败: {e}')
             return None
+
+    def _report_voice_failure(self, reason, *, event=None, url=None):
+        response = getattr(event, 'error', None) if event is not None else None
+        message = f'[{self._appid}] 语音发送失败: {reason}'
+        self._report_send_error(message, response, {'url': url} if url else None)
 
     async def _send_media(
         self,
@@ -70,6 +78,8 @@ class _MediaSendMixin:
     ):
         upload_ep = _resolve_upload_ep(target_group_id, target_user_id, event)
         if not upload_ep:
+            if file_type == 3:
+                self._report_voice_failure('无法解析媒体上传路径', event=event)
             return None
 
         # 网络地址: 优先直接将 URL 传给 QQ API 上传，失败则回退下载后上传
@@ -80,7 +90,7 @@ class _MediaSendMixin:
 
         if is_url and file_type == 3:
             # QQ 语音统一转为 Tencent SILK，不能绕过转换器直接上传源 URL。
-            data = await self.download_media(data)
+            data = await self.download_media(data, silent=True)
         elif is_url:
             for _ in range(max_try):
                 file_info = await upload_media_via_url(
@@ -102,8 +112,12 @@ class _MediaSendMixin:
             data = await convert_to_silk(data)
 
         if not file_info and not isinstance(data, bytes):
-            if original_url:
-                log.warning(f'[{self._appid}] {type_name}发送失败: URL直传与本地下载均失败 (url={original_url}, resp={event.error if event else None})')
+            if original_url or file_type == 3:
+                reason = 'URL直传与本地下载均失败' if original_url else '语音数据无效'
+                if file_type == 3:
+                    self._report_voice_failure(reason, event=event, url=original_url)
+                else:
+                    log.warning(f'[{self._appid}] {type_name}发送失败: URL直传与本地下载均失败 (url={original_url}, resp={event.error if event else None})')
             return None
 
         if original_url:
@@ -114,11 +128,12 @@ class _MediaSendMixin:
         if not file_info:
             file_info = await upload_media_bytes(self, data, file_type, upload_ep, file_name=file_name, event=event)
         if not file_info:
-            if original_url:
-                log.warning(
-                    f'[{self._appid}] {type_name}发送失败: URL直传与本地上传均失败 '
-                    f'(url={original_url}, resp={event.error if event else None})'
-                )
+            if original_url or file_type == 3:
+                reason = 'URL直传与本地上传均失败' if original_url else '本地上传失败'
+                if file_type == 3:
+                    self._report_voice_failure(reason, event=event, url=original_url)
+                else:
+                    log.warning(f'[{self._appid}] {type_name}发送失败: URL直传与本地上传均失败 (url={original_url}, resp={event.error if event else None})')
             return None
         return await self._send_media_payload(
             event,

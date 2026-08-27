@@ -27,7 +27,7 @@ pip install -r requirements.txt
 python main.py
 ```
 
-也可以直接下载整个项目。在 Windows 中运行 `start.bat` 后，启动器会按需安装脚本专用的 `pywebview`，并读取 `config/settings.yaml` 中的 `server.port` 打开独立的“ElainaBot 管理面板”桌面窗口；再次运行脚本时，如果该端口上的面板已经启动，则只重新打开桌面窗口，不会重复启动框架。该组件不属于框架内置依赖，其他安装或启动方式不会自动安装。其他启动方式可通过配置的端口访问 Web 面板完成配置，默认密码为 `admin`。Webhook 回调地址可在面板中点击机器人名称右侧的感叹号图标查看。
+或下载项目。在 Windows 中直接运行 `start.bat` 即可
 
 ## 📁 框架结构
 
@@ -45,7 +45,7 @@ ElainaBot_v2/
 
 ## 🔌 开发与扩展
 
-- **开发文档** — [文档目录](docs/README.md)；其中[插件开发文档](docs/plugin-development.md)包含插件结构、事件处理、消息 API、入群审批、群禁言和 Web 面板扩展。
+- **开发文档** — [插件开发文档](docs/plugin-development.md)包含插件结构、事件处理、消息 API、入群审批、群禁言和 Web 面板扩展。
 - **图床模块** — 通过 `get_app().module_manager.get("image_hosting")` 获取；公开 API、配置和示例见 [Image Hosting 文档](docs/image-hosting.md)。
 
 ## 🛒 插件市场

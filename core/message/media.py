@@ -16,6 +16,11 @@ log = get_logger(FRAMEWORK, '媒体上传')
 CHUNK_THRESHOLD = 5 * 1024 * 1024  # 5MB
 
 
+def _log_upload_issue(file_type, message):
+    if file_type != 3:
+        log.warning(message)
+
+
 # ==================== 上传 ====================
 
 
@@ -36,10 +41,10 @@ async def upload_media_bytes(sender, file_bytes, file_type, endpoint, *, file_na
                 last_err = '分片上传返回空结果 (无 file_info)'
             except Exception as e:
                 last_err = e
-                log.warning(f'[{sender._appid}] 分片上传第{retry + 1}次失败: {e}')
+                _log_upload_issue(file_type, f'[{sender._appid}] 分片上传第{retry + 1}次失败: {e}')
                 if retry < 2:
                     await asyncio.sleep(2 * (retry + 1))
-        log.warning(f'[{sender._appid}] 分片上传3次均失败, 最后错误: {last_err}')
+        _log_upload_issue(file_type, f'[{sender._appid}] 分片上传3次均失败, 最后错误: {last_err}')
         return None
 
     req_data = {
@@ -63,7 +68,7 @@ async def upload_media_bytes(sender, file_bytes, file_type, endpoint, *, file_na
             if event:
                 event.error = resp
             else:
-                log.warning(f'[{sender._appid}] 上传API失败: {resp} (endpoint={endpoint})')
+                _log_upload_issue(file_type, f'[{sender._appid}] 上传API失败: {resp} (endpoint={endpoint})')
             return None
         file_info = resp.get('file_info')
         if file_info:
@@ -74,7 +79,7 @@ async def upload_media_bytes(sender, file_bytes, file_type, endpoint, *, file_na
     if event:
         event.error = last_resp
     else:
-        log.warning(f'[{sender._appid}] 上传失败: 无 file_info (endpoint={endpoint}, resp={last_resp})')
+        _log_upload_issue(file_type, f'[{sender._appid}] 上传失败: 无 file_info (endpoint={endpoint}, resp={last_resp})')
     return None
 
 
@@ -157,7 +162,7 @@ async def chunked_upload(sender, file_path, file_type, endpoint, *, file_name=No
         success, prep = await sender.post_json(f'{scope}/upload_prepare', prep_data)
         if success:
             break
-        log.warning(f'[{sender._appid}] upload_prepare 第{prep_retry + 1}次失败: {prep}')
+        _log_upload_issue(file_type, f'[{sender._appid}] upload_prepare 第{prep_retry + 1}次失败: {prep}')
         if prep_retry < 2:
             await asyncio.sleep(1.5 * (prep_retry + 1))
     if not success:

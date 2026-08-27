@@ -11,10 +11,6 @@ from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 from pathlib import Path
 
-from core.base.logger import FRAMEWORK, get_logger
-
-log = get_logger(FRAMEWORK, 'silk转换')
-
 SUPPORTED_RATES = (8000, 12000, 16000, 24000, 32000, 44100, 48000)
 DEFAULT_RATE = 24000
 DEFAULT_BITRATE = 24000
@@ -109,7 +105,7 @@ def audio_to_silk(data: bytes, rate: int = DEFAULT_RATE) -> bytes:
             '--complexity',
             str(DEFAULT_COMPLEXITY),
         ]
-        creationflags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+        creationflags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
         process = subprocess.run(
             command,
             capture_output=True,
@@ -148,13 +144,10 @@ async def convert_to_silk(data: bytes, rate: int = DEFAULT_RATE) -> bytes:
     if is_silk(data):
         return data
     if not is_audio_candidate(data):
-        log.warning('语音数据不是受支持的音频格式, 已跳过 SILK 转换')
         return data
 
     try:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(_get_pool(), audio_to_silk, data, rate)
-    except Exception as error:
-        detail = ' '.join(str(error).split())
-        log.warning(f'语音转 SILK 失败, 使用原数据发送: {detail[:500]}')
+    except Exception:
         return data
