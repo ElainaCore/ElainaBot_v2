@@ -6,17 +6,46 @@ set "ELAINABOT_ROOT=%~dp0"
 set "ELAINABOT_FIRST_ARGUMENT=%~1"
 set "ELAINABOT_SECOND_ARGUMENT=%~2"
 chcp 65001 >nul
+set "PYTHONUTF8=1"
+set "PYTHONIOENCODING=utf-8"
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -OutputFormat Text -EncodedCommand JABsAD0ARwBlAHQALQBDAG8AbgB0AGUAbgB0ACAALQBMAGkAdABlAHIAYQBsAFAAYQB0AGgAIAAkAGUAbgB2ADoARQBMAEEASQBOAEEAQgBPAFQAXwBXAEkATgBEAE8AVwBTAF8ATABBAFUATgBDAEgARQBSACAALQBFAG4AYwBvAGQAaQBuAGcAIABVAFQARgA4ADsAJABtAD0AWwBhAHIAcgBhAHkAXQA6ADoASQBuAGQAZQB4AE8AZgAoACQAbAAsACcAIwAgAIVRTF0gAFAAbwB3AGUAcgBTAGgAZQBsAGwAIADjTgF4JwApADsAaQBmACgAJABtAC0AbAB0ADAAKQB7AHQAaAByAG8AdwAgACcAKmd+YjBShVFMXYR2IABQAG8AdwBlAHIAUwBoAGUAbABsACAA404BeAIwJwB9ADsAJABwAD0AJABsAFsAKAAkAG0AKwAxACkALgAuACgAJABsAC4AQwBvAHUAbgB0AC0AMQApAF0ALQBqAG8AaQBuAFsARQBuAHYAaQByAG8AbgBtAGUAbgB0AF0AOgA6AE4AZQB3AEwAaQBuAGUAOwAmACgAWwBzAGMAcgBpAHAAdABiAGwAbwBjAGsAXQA6ADoAQwByAGUAYQB0AGUAKAAkAHAAKQApAA==
 set "ELAINABOT_EXIT_CODE=%ERRORLEVEL%"
 exit /b %ELAINABOT_EXIT_CODE%
 
 # 内嵌 PowerShell 代码
+$Utf8Encoding = New-Object Text.UTF8Encoding($false)
+[Console]::InputEncoding = $Utf8Encoding
+[Console]::OutputEncoding = $Utf8Encoding
+$OutputEncoding = $Utf8Encoding
+$env:PYTHONUTF8 = '1'
+$env:PYTHONIOENCODING = 'utf-8'
+
+function Write-ConsoleLine {
+    param(
+        [Parameter(Mandatory = $true)][string]$Message,
+        [ConsoleColor]$Color = [Console]::ForegroundColor
+    )
+
+    if ([Console]::IsOutputRedirected) {
+        [Console]::WriteLine($Message)
+        return
+    }
+
+    $previousColor = [Console]::ForegroundColor
+    try {
+        [Console]::ForegroundColor = $Color
+        [Console]::WriteLine($Message)
+    } finally {
+        [Console]::ForegroundColor = $previousColor
+    }
+}
+
 $SetupOnly = $false
 $FirstArgument = [string]$env:ELAINABOT_FIRST_ARGUMENT
 $SecondArgument = [string]$env:ELAINABOT_SECOND_ARGUMENT
 
 if ($SecondArgument) {
-    Write-Host '[ElainaBot] 错误：不支持多个启动参数。' -ForegroundColor Red
+    Write-ConsoleLine '[ElainaBot] 错误：不支持多个启动参数。' Red
     exit 2
 }
 
@@ -25,15 +54,15 @@ switch ($FirstArgument.ToLowerInvariant()) {
     '-setuponly' { $SetupOnly = $true }
     '--setup-only' { $SetupOnly = $true }
     '-h' {
-        Write-Host '用法：start.bat [-SetupOnly]'
+        Write-ConsoleLine '用法：start.bat [-SetupOnly]'
         exit 0
     }
     '--help' {
-        Write-Host '用法：start.bat [-SetupOnly]'
+        Write-ConsoleLine '用法：start.bat [-SetupOnly]'
         exit 0
     }
     default {
-        Write-Host "[ElainaBot] 错误：未知参数：$FirstArgument" -ForegroundColor Red
+        Write-ConsoleLine "[ElainaBot] 错误：未知参数：$FirstArgument" Red
         exit 2
     }
 }
@@ -55,7 +84,7 @@ Set-Location $RootDir
 
 function Write-Step {
     param([string]$Message)
-    Write-Host "[ElainaBot] $Message" -ForegroundColor Cyan
+    Write-ConsoleLine "[ElainaBot] $Message" Cyan
 }
 
 function Refresh-ProcessPath {
@@ -70,7 +99,7 @@ function Invoke-Checked {
         [Parameter(Mandatory = $true)][string[]]$Arguments
     )
 
-    & $FilePath @Arguments | Out-Host
+    & $FilePath @Arguments
     if ($LASTEXITCODE -ne 0) {
         throw "命令执行失败，退出代码 ${LASTEXITCODE}：$FilePath $($Arguments -join ' ')"
     }
@@ -80,7 +109,7 @@ function Invoke-PipInstall {
     param([Parameter(Mandatory = $true)][string[]]$Arguments)
 
     Write-Step '正在优先使用清华 PyPI 镜像安装依赖...'
-    & $VenvPython -m pip install --disable-pip-version-check --index-url $PipMirror @Arguments | Out-Host
+    & $VenvPython -m pip install --disable-pip-version-check --index-url $PipMirror @Arguments
     if ($LASTEXITCODE -eq 0) {
         return
     }
@@ -386,8 +415,9 @@ import sys
 
 from core.base.config import cfg
 
-cfg.init(os.path.join(sys.argv[1], 'config'))
-value = cfg.get('settings', 'server.port')
+config_dir = os.path.join(sys.argv[1], 'config')
+cfg.init(config_dir)
+value = cfg.get('settings', 'server.port', 5200)
 try:
     port = int(value)
 except (TypeError, ValueError):
@@ -550,6 +580,6 @@ try {
     }
     exit $frameworkExitCode
 } catch {
-    Write-Host "[ElainaBot] 错误：$($_.Exception.Message)" -ForegroundColor Red
+    Write-ConsoleLine "[ElainaBot] 错误：$($_.Exception.Message)" Red
     exit 1
 }
