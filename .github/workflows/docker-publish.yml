@@ -1,0 +1,87 @@
+name: Reusable Docker publish
+
+on:
+  workflow_call:
+    inputs:
+      source_sha:
+        description: Source commit from the calling workflow
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      HAS_DOCKERHUB: ${{ secrets.DOCKER_USERNAME != '' && secrets.DOCKER_PASSWORD != '' }}
+
+    steps:
+      - name: Checkout source revision
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.source_sha }}
+          path: source
+
+      - name: Checkout Docker assets
+        uses: actions/checkout@v5
+        with:
+          ref: ci-assets
+          path: ci-assets
+          sparse-checkout: docker
+          persist-credentials: false
+
+      - name: Stage Docker build assets
+        run: |
+          mkdir -p source/.ci
+          cp ci-assets/docker/Dockerfile source/.ci/Dockerfile
+          cp ci-assets/docker/Dockerfile.dockerignore source/.ci/Dockerfile.dockerignore
+          cp ci-assets/docker/entrypoint.sh source/.ci/entrypoint.sh
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Lowercase repository owner
+        run: echo "REPO_OWNER=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+
+      # 未配置 Docker Hub 密钥时跳过, 保证 GHCR 推送不受影响
+      - name: Login to Docker Hub
+        if: env.HAS_DOCKERHUB == 'true'
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and Push to Docker Hub
+        if: env.HAS_DOCKERHUB == 'true'
+        uses: docker/build-push-action@v7
+        with:
+          context: source
+          file: source/.ci/Dockerfile
+          push: true
+          tags: |
+            elainabot/elainabot:latest
+            elainabot/elainabot:${{ inputs.source_sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and Push to GitHub Container Registry
+        uses: docker/build-push-action@v7
+        with:
+          context: source
+          file: source/.ci/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ env.REPO_OWNER }}/elainabot:latest
+            ghcr.io/${{ env.REPO_OWNER }}/elainabot:${{ inputs.source_sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

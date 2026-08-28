@@ -1,0 +1,55 @@
+name: Reusable CI
+
+on:
+  workflow_call:
+    inputs:
+      source_sha:
+        description: Source commit from the calling workflow
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source revision
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.source_sha }}
+          path: source
+
+      - name: Checkout test assets
+        uses: actions/checkout@v5
+        with:
+          ref: ci-assets
+          path: ci-assets
+          sparse-checkout: tests
+          persist-credentials: false
+
+      - name: Stage tests with the source revision
+        run: cp -R ci-assets/tests source/tests
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        working-directory: source
+        run: |
+          pip install -r requirements.txt
+          pip install "pytest>=9.1,<10.0" pytest-asyncio pytest-cov "mypy>=2.2,<3.0" "ruff>=0.15,<0.16" types-PyYAML
+
+      - name: Ruff
+        working-directory: source
+        run: ruff check .
+
+      - name: Mypy
+        working-directory: source
+        run: mypy core web main.py
+
+      - name: Pytest
+        working-directory: source
+        run: pytest -q

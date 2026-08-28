@@ -1,0 +1,32 @@
+# Benchmark calibration scenarios
+# Run with: python -m tests.stress benchmark --suite plugin_dispatch --repeat 5
+
+global:
+  output_dir: "tests/stress/results"
+  mock_mode: "simulate"
+  report_formats: ["console", "json"]
+
+suites:
+  plugin_dispatch:
+    enabled: true
+    overrides:
+      handler_counts: [10, 50, 100, 200]
+      match_positions: ["last"]
+      rate_per_second: 0  # unlimited
+      duration_per_scenario: 5
+
+  interceptor_pipeline:
+    enabled: true
+    overrides:
+      interceptor_counts: [1, 5, 10, 20, 50]
+      interceptor_work_types: ["noop"]
+      events_per_scenario: 500
+
+  message_reply:
+    enabled: true
+    overrides:
+      rates: [0]  # unlimited
+      log_queue_sizes: [10000]
+      before_send_hooks: [0]
+      after_send_hooks: [0]
+      duration_per_rate: 10

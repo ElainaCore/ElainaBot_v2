@@ -1,0 +1,33 @@
+# 生产稳态规模压测场景
+#   20w 群 / 150w 用户 / 每天 100w 消息 / 50 msg/s 峰值
+# 运行: python -m tests.stress run --config tests/stress/configs/production_scale.yaml --suite production_scale
+#
+# 说明: prewarm_* 控制预热人口规模 (内存占用), 默认按 ~8GB 机器调优。
+#       内存充裕时可将 prewarm_groups / prewarm_users 提升至全量。
+
+global:
+  output_dir: "tests/stress/results"
+  mock_mode: "simulate"
+  report_formats: ["console", "json", "html"]
+  fail_on_error_rate: 0.01
+  fail_on_memory_leak_mb: 800
+
+suites:
+  production_scale:
+    enabled: true
+    description: "20w群/150w用户/100w日消息/50msg峰值 端到端稳态压测"
+    duration_seconds: 0          # run_phase 自管两个相位时长
+    cooldown_seconds: 5
+    overrides:
+      groups: 200000
+      users: 1500000
+      daily_messages: 1000000
+      peak_rate: 50
+      sustained_seconds: 30
+      ceiling_seconds: 15
+      handler_count: 50
+      dedup: true
+      workers: 32
+      prewarm_groups: 50000
+      prewarm_users: 300000
+      prewarm_group_size: 30

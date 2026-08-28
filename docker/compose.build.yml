@@ -1,0 +1,19 @@
+services:
+  elainabot:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: elainabot/elainabot:local
+    container_name: elainabot_v2
+    restart: unless-stopped
+    ports:
+      - "5200:5200"
+    volumes:
+      - ../config:/app/config
+      - ../plugins:/app/plugins
+      - ../modules:/app/modules
+      - ../data:/app/data
+    environment:
+      TZ: Asia/Shanghai
+    tty: true
+    stdin_open: true
