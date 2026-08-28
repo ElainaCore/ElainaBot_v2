@@ -72,6 +72,12 @@ $ErrorActionPreference = 'Stop'
 
 $BootstrapVersion = '5'
 $PythonVersion = '3.13'
+$DefaultPythonInstallMirror = 'https://registry.npmmirror.com/-/binary/python-build-standalone'
+$PythonInstallMirror = if (-not [string]::IsNullOrWhiteSpace($env:ELAINABOT_PYTHON_MIRROR)) {
+    $env:ELAINABOT_PYTHON_MIRROR.Trim().TrimEnd('/')
+} else {
+    $DefaultPythonInstallMirror
+}
 $PipMirror = 'https://pypi.tuna.tsinghua.edu.cn/simple'
 $OfficialPipSource = 'https://pypi.org/simple'
 $WebPanelPackage = 'pywebview>=6.2,<7'
@@ -87,19 +93,13 @@ function Write-Step {
     Write-ConsoleLine "[ElainaBot] $Message" Cyan
 }
 
-function Refresh-ProcessPath {
-    $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
-    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-    $env:Path = (@($env:Path, $userPath, $machinePath) | Where-Object { $_ }) -join ';'
-}
-
 function Invoke-Checked {
     param(
         [Parameter(Mandatory = $true)][string]$FilePath,
         [Parameter(Mandatory = $true)][string[]]$Arguments
     )
 
-    & $FilePath @Arguments
+    & $FilePath @Arguments | Out-Host
     if ($LASTEXITCODE -ne 0) {
         throw "命令执行失败，退出代码 ${LASTEXITCODE}：$FilePath $($Arguments -join ' ')"
     }
@@ -109,7 +109,7 @@ function Invoke-PipInstall {
     param([Parameter(Mandatory = $true)][string[]]$Arguments)
 
     Write-Step '正在优先使用清华 PyPI 镜像安装依赖...'
-    & $VenvPython -m pip install --disable-pip-version-check --index-url $PipMirror @Arguments
+    & $VenvPython -m pip install --disable-pip-version-check --index-url $PipMirror @Arguments | Out-Host
     if ($LASTEXITCODE -eq 0) {
         return
     }
@@ -185,33 +185,38 @@ function Find-PreferredPython {
     return $null
 }
 
-function Install-PythonWithWinget {
-    $wingetPath = Get-CommandPath 'winget'
-    if (-not $wingetPath) {
-        return $null
-    }
+function Test-UvSupportsPythonMirror {
+    param([Parameter(Mandatory = $true)][string]$UvPath)
 
-Write-Step '未找到 Python 3.13，正在安装 Python 3.13...'
-    Invoke-Checked $wingetPath @(
-        'install', '--id', 'Python.Python.3.13', '--exact', '--source', 'winget',
-        '--scope', 'user', '--accept-package-agreements', '--accept-source-agreements', '--silent'
-    )
-    Refresh-ProcessPath
-return Find-PreferredPython
+    $previousPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $helpOutput = (& $UvPath python install --help 2>&1 | Out-String)
+        $helpExitCode = $LASTEXITCODE
+    } catch {
+        return $false
+    } finally {
+        $ErrorActionPreference = $previousPreference
+    }
+    return $helpExitCode -eq 0 -and $helpOutput -match '(?m)^\s*--mirror\s'
 }
 
 function Ensure-Uv {
     $uvPath = Get-CommandPath 'uv'
-    if ($uvPath) {
+    if ($uvPath -and (Test-UvSupportsPythonMirror -UvPath $uvPath)) {
         return $uvPath
     }
 
     $localUv = Join-Path $ToolsDir 'uv.exe'
-    if (Test-Path -LiteralPath $localUv) {
+    if ((Test-Path -LiteralPath $localUv) -and (Test-UvSupportsPythonMirror -UvPath $localUv)) {
         return $localUv
     }
 
-    Write-Step '正在安装项目专用的 Python 环境引导工具...'
+    if ($uvPath -or (Test-Path -LiteralPath $localUv)) {
+        Write-Step '现有 Python 环境引导工具版本过旧，正在更新项目专用版本...'
+    } else {
+        Write-Step '正在安装项目专用的 Python 环境引导工具...'
+    }
     New-Item -ItemType Directory -Path $ToolsDir -Force | Out-Null
     $installerPath = Join-Path ([IO.Path]::GetTempPath()) 'elainabot-uv-install.ps1'
     try {
@@ -228,7 +233,41 @@ function Ensure-Uv {
     if (-not (Test-Path -LiteralPath $localUv)) {
         throw '无法安装项目专用的 Python 环境引导工具。'
     }
+    if (-not (Test-UvSupportsPythonMirror -UvPath $localUv)) {
+        throw '项目专用的 Python 环境引导工具不支持镜像下载，请稍后重试。'
+    }
     return $localUv
+}
+
+function Install-ManagedPython {
+    param([Parameter(Mandatory = $true)][string]$UvPath)
+
+    $hadNoProgress = Test-Path Env:UV_NO_PROGRESS
+    $previousNoProgress = if ($hadNoProgress) {
+        [Environment]::GetEnvironmentVariable('UV_NO_PROGRESS', 'Process')
+    } else {
+        $null
+    }
+    try {
+        Remove-Item Env:UV_NO_PROGRESS -ErrorAction SilentlyContinue
+        Write-Step "[1/6] 正在通过镜像下载项目专用的 Python $PythonVersion（将显示实时进度）..."
+        & $UvPath --color always python install --no-bin --no-registry --mirror $PythonInstallMirror $PythonVersion | Out-Host
+        if ($LASTEXITCODE -eq 0) {
+            return
+        }
+
+        Write-Step 'Python 镜像下载失败，正在切换到官方源...'
+        & $UvPath --color always python install --no-bin --no-registry $PythonVersion | Out-Host
+        if ($LASTEXITCODE -ne 0) {
+            throw "Python $PythonVersion 下载失败，镜像源和官方源均不可用。"
+        }
+    } finally {
+        if ($hadNoProgress) {
+            $env:UV_NO_PROGRESS = $previousNoProgress
+        } else {
+            Remove-Item Env:UV_NO_PROGRESS -ErrorAction SilentlyContinue
+        }
+    }
 }
 
 function Backup-InvalidVenv {
@@ -252,18 +291,9 @@ function Ensure-VirtualEnvironment {
     }
 
     Backup-InvalidVenv
-$python = Find-PreferredPython
-    if (-not $python) {
-        try {
-            $python = Install-PythonWithWinget
-        } catch {
-            Write-Step 'winget 无法安装 Python 3.13，将改用项目专用的 Python。'
-            $python = $null
-        }
-    }
-
+    $python = Find-PreferredPython
     if ($python) {
-Write-Step "[1/6] 已找到 Python 3.13：$($python.Version)"
+        Write-Step "[1/6] 已找到 Python 3.13：$($python.Version)"
         Write-Step '[2/6] 正在创建项目虚拟环境：.venv...'
         & $python.FilePath @($python.Arguments) -m venv $VenvDir
         if ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $VenvPython)) {
@@ -278,9 +308,11 @@ Write-Step "[1/6] 已找到 Python 3.13：$($python.Version)"
     }
 
     $uvPath = Ensure-Uv
-    Write-Step "[1/6] 正在下载项目专用的 Python $PythonVersion..."
+    Install-ManagedPython -UvPath $uvPath
     Write-Step '[2/6] 正在创建项目虚拟环境：.venv...'
-    Invoke-Checked $uvPath @('venv', '--python', $PythonVersion, $VenvDir)
+    Invoke-Checked $uvPath @(
+        'venv', '--python', $PythonVersion, '--managed-python', '--no-python-downloads', $VenvDir
+    )
     if (-not (Test-Path -LiteralPath $VenvPython)) {
         throw '虚拟环境创建结束，但未找到可用的 python.exe。'
     }
