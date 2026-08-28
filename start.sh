@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-BOOTSTRAP_VERSION='4'
+BOOTSTRAP_VERSION='5'
 PYTHON_VERSION='3.13'
-PIP_MIRROR='https://pypi.tuna.tsinghua.edu.cn/simple'
-OFFICIAL_PIP_SOURCE='https://pypi.org/simple'
+DEFAULT_PYTHON_INSTALL_MIRROR='https://registry.npmmirror.com/-/binary/python-build-standalone'
+PYTHON_INSTALL_MIRROR="${ELAINABOT_PYTHON_MIRROR:-$DEFAULT_PYTHON_INSTALL_MIRROR}"
+PYTHON_INSTALL_MIRROR="${PYTHON_INSTALL_MIRROR%/}"
+PIP_MIRROR="${ELAINABOT_PIP_MIRROR:-https://pypi.tuna.tsinghua.edu.cn/simple}"
+OFFICIAL_PIP_SOURCE="${ELAINABOT_OFFICIAL_PIP_SOURCE:-https://pypi.org/simple}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_DIR="$ROOT_DIR/.venv"
 VENV_PYTHON="$VENV_DIR/bin/python"
@@ -93,18 +96,32 @@ ensure_downloader() {
     install_download_prerequisites
 }
 
+uv_supports_python_mirror() {
+    local uv_bin="$1"
+    local help_output=''
+    help_output="$("$uv_bin" python install --help 2>&1)" || return 1
+    [[ "$help_output" == *'--mirror'* ]]
+}
+
 ensure_uv() {
-    if command -v uv >/dev/null 2>&1; then
-        command -v uv
+    local system_uv=''
+    local local_uv="$TOOLS_DIR/uv"
+
+    if system_uv="$(command -v uv 2>/dev/null)" && uv_supports_python_mirror "$system_uv"; then
+        printf '%s\n' "$system_uv"
         return
     fi
-    if [[ -x "$TOOLS_DIR/uv" ]]; then
-        printf '%s\n' "$TOOLS_DIR/uv"
+    if [[ -x "$local_uv" ]] && uv_supports_python_mirror "$local_uv"; then
+        printf '%s\n' "$local_uv"
         return
     fi
 
-    ensure_downloader
-    step '正在安装项目专用的 Python 环境引导工具...' >&2
+    ensure_downloader >&2
+    if [[ -n "$system_uv" || -e "$local_uv" ]]; then
+        step '现有 Python 环境引导工具版本过旧，正在更新项目专用版本...' >&2
+    else
+        step '正在安装项目专用的 Python 环境引导工具...' >&2
+    fi
     mkdir -p "$TOOLS_DIR"
     local installer
     installer="$(mktemp "${TMPDIR:-/tmp}/elainabot-uv-install.XXXXXX")"
@@ -117,8 +134,28 @@ ensure_uv() {
     UV_INSTALL_DIR="$TOOLS_DIR" UV_NO_MODIFY_PATH=1 sh "$installer" >&2
     rm -f "$installer"
     trap - RETURN
-    [[ -x "$TOOLS_DIR/uv" ]] || fail '无法安装项目专用的 Python 环境引导工具。'
-    printf '%s\n' "$TOOLS_DIR/uv"
+    [[ -x "$local_uv" ]] || fail '无法安装项目专用的 Python 环境引导工具。'
+    uv_supports_python_mirror "$local_uv" || fail '项目专用的 Python 环境引导工具不支持镜像下载，请稍后重试。'
+    printf '%s\n' "$local_uv"
+}
+
+install_managed_python() {
+    local uv_bin="$1"
+
+    step "[1/5] 正在通过镜像下载项目专用的 Python $PYTHON_VERSION（将显示实时进度）..."
+    if (
+        unset UV_NO_PROGRESS
+        "$uv_bin" --color always python install --no-bin \
+            --mirror "$PYTHON_INSTALL_MIRROR" "$PYTHON_VERSION"
+    ); then
+        return
+    fi
+
+    step 'Python 镜像下载失败，正在切换到官方源...'
+    (
+        unset UV_NO_PROGRESS
+        "$uv_bin" --color always python install --no-bin "$PYTHON_VERSION"
+    ) || fail "Python $PYTHON_VERSION 下载失败，镜像源和官方源均不可用。"
 }
 
 backup_invalid_venv() {
@@ -138,8 +175,8 @@ ensure_virtual_environment() {
 
     backup_invalid_venv
     local python_bin=''
-if python_bin="$(find_preferred_python)"; then
-step "[1/5] 已找到 Python 3.13：$("$python_bin" -c 'import platform; print(platform.python_version())')"
+    if python_bin="$(find_preferred_python)"; then
+        step "[1/5] 已找到 Python 3.13：$("$python_bin" -c 'import platform; print(platform.python_version())')"
         step '[2/5] 正在创建项目虚拟环境：.venv...'
         if "$python_bin" -m venv "$VENV_DIR" && [[ -x "$VENV_PYTHON" ]]; then
             step '[2/5] 虚拟环境创建成功。'
@@ -153,9 +190,10 @@ step "[1/5] 已找到 Python 3.13：$("$python_bin" -c 'import platform; print(p
 
     local uv_bin
     uv_bin="$(ensure_uv)"
-    step "[1/5] 正在下载项目专用的 Python $PYTHON_VERSION..."
+    install_managed_python "$uv_bin"
     step '[2/5] 正在创建项目虚拟环境：.venv...'
-    "$uv_bin" venv --python "$PYTHON_VERSION" "$VENV_DIR"
+    "$uv_bin" --color always venv --python "$PYTHON_VERSION" \
+        --managed-python --no-python-downloads "$VENV_DIR"
     [[ -x "$VENV_PYTHON" ]] || fail '虚拟环境创建结束，但未找到可用的 Python。'
     step '[2/5] 虚拟环境创建成功。'
 }
@@ -238,6 +276,57 @@ ensure_dependencies() {
     step '[4/5] 依赖安装完成并通过验证。'
 }
 
+get_configured_web_port() {
+    "$VENV_PYTHON" - "$ROOT_DIR" <<'PY'
+import os
+import sys
+
+from core.base.config import cfg
+
+config_dir = os.path.join(sys.argv[1], 'config')
+cfg.init(config_dir)
+value = cfg.get('settings', 'server.port', 5200)
+try:
+    port = int(value)
+except (TypeError, ValueError):
+    raise SystemExit('配置项 server.port 必须是整数。')
+if not 1 <= port <= 65535:
+    raise SystemExit('配置项 server.port 必须在 1 到 65535 之间。')
+print(port)
+PY
+}
+
+local_port_open() {
+    "$VENV_PYTHON" - "$1" <<'PY'
+import socket
+import sys
+
+port = int(sys.argv[1])
+for host in ('127.0.0.1', '::1'):
+    try:
+        with socket.create_connection((host, port), timeout=0.8):
+            raise SystemExit(0)
+    except OSError:
+        pass
+raise SystemExit(1)
+PY
+}
+
+web_panel_available() {
+    "$VENV_PYTHON" - "$1" <<'PY'
+import sys
+import urllib.request
+
+port = int(sys.argv[1])
+opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+try:
+    with opener.open(f'http://127.0.0.1:{port}/web/', timeout=3) as response:
+        raise SystemExit(0 if 200 <= response.status < 400 else 1)
+except Exception:
+    raise SystemExit(1)
+PY
+}
+
 step '正在准备运行环境...'
 ensure_virtual_environment
 ensure_dependencies
@@ -248,6 +337,20 @@ if (( SETUP_ONLY == 1 )); then
     exit 0
 fi
 
-step '[5/5] 正在启动 ElainaBot 框架...'
-step 'Web 管理面板：http://localhost:5200/web/'
+web_port=''
+if ! web_port="$(get_configured_web_port)"; then
+    fail '无法读取 Web 管理面板端口，请检查 config/settings.yaml。'
+fi
+
+step "Web 管理面板：http://localhost:${web_port}/web/"
+step "[5/5] 正在检查配置端口 $web_port 是否已经开启..."
+if local_port_open "$web_port"; then
+    if web_panel_available "$web_port"; then
+        step "[5/5] 检测到 ElainaBot 已在端口 $web_port 运行，无需重复启动。"
+        exit 0
+    fi
+    fail "配置端口 $web_port 已被其他程序占用，但未检测到 ElainaBot 管理面板。"
+fi
+
+step "[5/5] 配置端口 $web_port 尚未开启，正在启动 ElainaBot 框架..."
 exec "$VENV_PYTHON" "$ROOT_DIR/main.py"
