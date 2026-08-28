@@ -1,19 +1,17 @@
-# ElainaBot CI assets
+# ElainaBot CI 资源
 
-This orphan branch stores test suites and Docker deployment assets outside the
-application source branch.
+这是一个独立的孤儿分支，用于在应用源代码分支之外保存测试套件和 Docker
+部署资源。
 
-- `tests/`: test suites used by the reusable CI workflow.
-- `docker/`: Dockerfile, entrypoint, and Compose definitions.
-- `.github/workflows/`: reusable workflows called by the thin workflow
-  entrypoints kept on `main`.
+- `tests/`：可复用 CI 工作流使用的测试套件。
+- `docker/`：Dockerfile、启动脚本和 Compose 配置。
+- `.github/workflows/`：由 `main` 分支中精简的工作流入口调用的可复用工作流。
 
-The workflows always check out the exact source revision that triggered the
-caller on `main`, then add the assets from this branch. Keep the branch name
-`ci-assets` stable and protect it from accidental deletion.
+工作流会先检出触发 `main` 调用方的准确源代码提交，再加入本分支中的资源。
+请保持分支名称 `ci-assets` 稳定，并启用分支保护以防止误删。
 
-For a local source build, clone `main`, copy the four files from `docker/` into
-a `.ci/` directory in that checkout, then run:
+如需在本地构建源代码镜像，请先克隆 `main`，再将 `docker/` 中的四个文件复制到该
+检出目录的 `.ci/` 文件夹，最后运行：
 
 ```bash
 docker compose -f .ci/compose.build.yml up -d --build
