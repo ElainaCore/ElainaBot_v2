@@ -6,26 +6,11 @@ on:
       - main
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   check:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.13"
-
-      - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
-          pip install "pytest>=9.1,<10.0" pytest-asyncio pytest-cov "mypy>=2.2,<3.0" "ruff>=0.15,<0.16" types-PyYAML
-
-      - name: Ruff
-        run: ruff check .
-
-      - name: Mypy
-        run: mypy core web main.py
-
-      - name: Pytest
-        run: pytest -q
+    uses: ElainaCore/ElainaBot_v2/.github/workflows/ci.yml@ci-assets
+    with:
+      source_sha: ${{ github.sha }}

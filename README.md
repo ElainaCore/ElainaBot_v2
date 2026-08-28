@@ -39,7 +39,6 @@ ElainaBot_v2/
 ├── plugins/         # 插件目录 (热加载)
 ├── modules/         # 模块目录
 ├── web/             # Web 面板后端
-├── docker/          # Docker 构建与 Compose 配置
 └── docs/            # 开发文档
 ```
 
@@ -64,7 +63,7 @@ ElainaBot_v2/
 
 ```bash
 mkdir -p elainabot/docker && cd elainabot
-curl -o docker/compose.yml https://raw.githubusercontent.com/ElainaCore/ElainaBot_v2/main/docker/compose.yml
+curl -o docker/compose.yml https://raw.githubusercontent.com/ElainaCore/ElainaBot_v2/ci-assets/docker/compose.yml
 docker compose -f docker/compose.yml up -d
 ```
 
@@ -100,11 +99,16 @@ docker run -d \
 ```bash
 git clone https://github.com/ElainaCore/ElainaBot_v2.git
 cd ElainaBot_v2
-docker compose -f docker/compose.build.yml up -d --build
+mkdir -p .ci
+curl -o .ci/Dockerfile https://raw.githubusercontent.com/ElainaCore/ElainaBot_v2/ci-assets/docker/Dockerfile
+curl -o .ci/Dockerfile.dockerignore https://raw.githubusercontent.com/ElainaCore/ElainaBot_v2/ci-assets/docker/Dockerfile.dockerignore
+curl -o .ci/entrypoint.sh https://raw.githubusercontent.com/ElainaCore/ElainaBot_v2/ci-assets/docker/entrypoint.sh
+curl -o .ci/compose.build.yml https://raw.githubusercontent.com/ElainaCore/ElainaBot_v2/ci-assets/docker/compose.build.yml
+docker compose -f .ci/compose.build.yml up -d --build
 ```
 
 也可以直接构建镜像：
 
 ```bash
-docker build -f docker/Dockerfile -t elainabot/elainabot:local .
+docker build -f .ci/Dockerfile -t elainabot/elainabot:local .
 ```
