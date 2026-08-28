@@ -116,7 +116,6 @@ class Bed(BaseBed):
                 'verification': verification,
             }
         except Exception as exc:
-            log.warning(f'CNB 上传失败: {exc}')
             return (False, str(exc))
 
     async def upload_url(self, image_data, filename='image.png', **kwargs):

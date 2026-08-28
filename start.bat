@@ -1,24 +1,32 @@
 @echo off
-setlocal
-cd /d "%~dp0"
-set "ELAINABOT_WINDOWS_LAUNCHER=%~f0"
-set "ELAINABOT_ROOT=%~dp0"
-set "ELAINABOT_FIRST_ARGUMENT=%~1"
-set "ELAINABOT_SECOND_ARGUMENT=%~2"
-chcp 65001 >nul
-set "PYTHONUTF8=1"
-set "PYTHONIOENCODING=utf-8"
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -OutputFormat Text -EncodedCommand JABsAD0ARwBlAHQALQBDAG8AbgB0AGUAbgB0ACAALQBMAGkAdABlAHIAYQBsAFAAYQB0AGgAIAAkAGUAbgB2ADoARQBMAEEASQBOAEEAQgBPAFQAXwBXAEkATgBEAE8AVwBTAF8ATABBAFUATgBDAEgARQBSACAALQBFAG4AYwBvAGQAaQBuAGcAIABVAFQARgA4ADsAJABtAD0AWwBhAHIAcgBhAHkAXQA6ADoASQBuAGQAZQB4AE8AZgAoACQAbAAsACcAIwAgAIVRTF0gAFAAbwB3AGUAcgBTAGgAZQBsAGwAIADjTgF4JwApADsAaQBmACgAJABtAC0AbAB0ADAAKQB7AHQAaAByAG8AdwAgACcAKmd+YjBShVFMXYR2IABQAG8AdwBlAHIAUwBoAGUAbABsACAA404BeAIwJwB9ADsAJABwAD0AJABsAFsAKAAkAG0AKwAxACkALgAuACgAJABsAC4AQwBvAHUAbgB0AC0AMQApAF0ALQBqAG8AaQBuAFsARQBuAHYAaQByAG8AbgBtAGUAbgB0AF0AOgA6AE4AZQB3AEwAaQBuAGUAOwAmACgAWwBzAGMAcgBpAHAAdABiAGwAbwBjAGsAXQA6ADoAQwByAGUAYQB0AGUAKAAkAHAAKQApAA==
-set "ELAINABOT_EXIT_CODE=%ERRORLEVEL%"
-exit /b %ELAINABOT_EXIT_CODE%
+@setlocal
+@cd /d "%~dp0"
+@set "ELAINABOT_WINDOWS_LAUNCHER=%~f0"
+@set "ELAINABOT_ROOT=%~dp0"
+@set "ELAINABOT_FIRST_ARGUMENT=%~1"
+@set "ELAINABOT_SECOND_ARGUMENT=%~2"
+@set "PYTHONUTF8=1"
+@set "PYTHONIOENCODING=utf-8"
+@powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -OutputFormat Text -EncodedCommand JABsAD0ARwBlAHQALQBDAG8AbgB0AGUAbgB0ACAALQBMAGkAdABlAHIAYQBsAFAAYQB0AGgAIAAkAGUAbgB2ADoARQBMAEEASQBOAEEAQgBPAFQAXwBXAEkATgBEAE8AVwBTAF8ATABBAFUATgBDAEgARQBSACAALQBFAG4AYwBvAGQAaQBuAGcAIABVAFQARgA4ADsAJABtAD0AWwBhAHIAcgBhAHkAXQA6ADoASQBuAGQAZQB4AE8AZgAoACQAbAAsACcAIwAgAIVRTF0gAFAAbwB3AGUAcgBTAGgAZQBsAGwAIADjTgF4JwApADsAaQBmACgAJABtAC0AbAB0ADAAKQB7AHQAaAByAG8AdwAgACcAKmd+YjBShVFMXYR2IABQAG8AdwBlAHIAUwBoAGUAbABsACAA404BeAIwJwB9ADsAJABwAD0AJABsAFsAKAAkAG0AKwAxACkALgAuACgAJABsAC4AQwBvAHUAbgB0AC0AMQApAF0ALQBqAG8AaQBuAFsARQBuAHYAaQByAG8AbgBtAGUAbgB0AF0AOgA6AE4AZQB3AEwAaQBuAGUAOwAmACgAWwBzAGMAcgBpAHAAdABiAGwAbwBjAGsAXQA6ADoAQwByAGUAYQB0AGUAKAAkAHAAKQApAA==
+@set "ELAINABOT_EXIT_CODE=%ERRORLEVEL%"
+@if not "%ELAINABOT_EXIT_CODE%"=="0" (
+    @echo(
+    @echo [ElainaBot] Startup failed with exit code %ELAINABOT_EXIT_CODE%.
+    @echo [ElainaBot] Review the error above, then press any key to close this window...
+    @pause >nul
+)
+@exit /b %ELAINABOT_EXIT_CODE%
 
 # 内嵌 PowerShell 代码
 $Utf8Encoding = New-Object Text.UTF8Encoding($false)
-[Console]::InputEncoding = $Utf8Encoding
-[Console]::OutputEncoding = $Utf8Encoding
-$OutputEncoding = $Utf8Encoding
+$WindowsVersion = [Environment]::OSVersion.Version
+$UseLegacyWindowsPath = $WindowsVersion.Major -lt 10
+$UseSystemBrowserPanel = $UseLegacyWindowsPath
+$ProgressPreference = 'SilentlyContinue'
 $env:PYTHONUTF8 = '1'
-$env:PYTHONIOENCODING = 'utf-8'
+$env:PYTHONIOENCODING = [Console]::OutputEncoding.WebName
+[Net.ServicePointManager]::SecurityProtocol =
+    [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
 function Write-ConsoleLine {
     param(
@@ -26,17 +34,12 @@ function Write-ConsoleLine {
         [ConsoleColor]$Color = [Console]::ForegroundColor
     )
 
-    if ([Console]::IsOutputRedirected) {
-        [Console]::WriteLine($Message)
-        return
-    }
-
-    $previousColor = [Console]::ForegroundColor
     try {
-        [Console]::ForegroundColor = $Color
-        [Console]::WriteLine($Message)
-    } finally {
-        [Console]::ForegroundColor = $previousColor
+        [Console]::Out.WriteLine($Message)
+    } catch {
+        # Some legacy consoles cannot accept Unicode writes; keep the failure readable.
+        $asciiMessage = [Text.RegularExpressions.Regex]::Replace($Message, '[^\x00-\x7F]', '?')
+        try { [Console]::Out.WriteLine($asciiMessage) } catch { }
     }
 }
 
@@ -71,7 +74,8 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $BootstrapVersion = '5'
-$PythonVersion = '3.13'
+$MinimumPythonVersion = '3.11'
+$ManagedPythonVersion = '3.13'
 $DefaultPythonInstallMirror = 'https://registry.npmmirror.com/-/binary/python-build-standalone'
 $PythonInstallMirror = if (-not [string]::IsNullOrWhiteSpace($env:ELAINABOT_PYTHON_MIRROR)) {
     $env:ELAINABOT_PYTHON_MIRROR.Trim().TrimEnd('/')
@@ -99,7 +103,7 @@ function Invoke-Checked {
         [Parameter(Mandatory = $true)][string[]]$Arguments
     )
 
-    & $FilePath @Arguments | Out-Host
+    & $FilePath @Arguments
     if ($LASTEXITCODE -ne 0) {
         throw "命令执行失败，退出代码 ${LASTEXITCODE}：$FilePath $($Arguments -join ' ')"
     }
@@ -109,7 +113,7 @@ function Invoke-PipInstall {
     param([Parameter(Mandatory = $true)][string[]]$Arguments)
 
     Write-Step '正在优先使用清华 PyPI 镜像安装依赖...'
-    & $VenvPython -m pip install --disable-pip-version-check --index-url $PipMirror @Arguments | Out-Host
+    & $VenvPython -m pip install --disable-pip-version-check --index-url $PipMirror @Arguments
     if ($LASTEXITCODE -eq 0) {
         return
     }
@@ -133,8 +137,7 @@ function Get-CommandPath {
 function Test-PythonCandidate {
     param(
         [string]$FilePath,
-        [string[]]$BaseArguments = @(),
-        [string]$RequiredVersion = ''
+        [string[]]$BaseArguments = @()
     )
 
     if (-not $FilePath) {
@@ -142,11 +145,8 @@ function Test-PythonCandidate {
     }
     $previousPreference = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
-    $versionCheck = "import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)"
-    if ($RequiredVersion) {
-        $parts = $RequiredVersion.Split('.')
-        $versionCheck = "import sys; raise SystemExit(0 if sys.version_info[:2] == ($($parts[0]), $($parts[1])) else 1)"
-    }
+    $minimumParts = $MinimumPythonVersion.Split('.')
+    $versionCheck = "import sys; raise SystemExit(0 if sys.version_info >= ($($minimumParts[0]), $($minimumParts[1])) else 1)"
     try {
         & $FilePath @BaseArguments -c $versionCheck *> $null
         $probeExitCode = $LASTEXITCODE
@@ -169,15 +169,15 @@ function Test-PythonCandidate {
 function Find-PreferredPython {
     $pyLauncher = Get-CommandPath 'py'
     if ($pyLauncher) {
-        $candidate = Test-PythonCandidate -FilePath $pyLauncher -BaseArguments @('-3.13') -RequiredVersion $PythonVersion
+        $candidate = Test-PythonCandidate -FilePath $pyLauncher -BaseArguments @('-3')
         if ($candidate) {
             return $candidate
         }
     }
 
-    foreach ($name in @('python3.13', 'python3', 'python')) {
+    foreach ($name in @('python', 'python3', 'python3.14', 'python3.13', 'python3.12', 'python3.11')) {
         $path = Get-CommandPath $name
-        $candidate = Test-PythonCandidate -FilePath $path -RequiredVersion $PythonVersion
+        $candidate = Test-PythonCandidate -FilePath $path
         if ($candidate) {
             return $candidate
         }
@@ -220,12 +220,26 @@ function Ensure-Uv {
     New-Item -ItemType Directory -Path $ToolsDir -Force | Out-Null
     $installerPath = Join-Path ([IO.Path]::GetTempPath()) 'elainabot-uv-install.ps1'
     try {
-        Invoke-WebRequest -Uri 'https://astral.sh/uv/install.ps1' -OutFile $installerPath
+        Invoke-WebRequest -UseBasicParsing -Uri 'https://astral.sh/uv/install.ps1' -OutFile $installerPath
         $env:UV_INSTALL_DIR = $ToolsDir
         $env:UV_NO_MODIFY_PATH = '1'
-        Invoke-Checked 'powershell.exe' @(
-            '-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $installerPath
-        )
+        # The uv installer redraws progress in place. Capturing its output avoids
+        # duplicated Chinese status text in both Windows 11 and legacy cmd.exe.
+        $previousPreference = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'Continue'
+            $installerOutput = @(& powershell.exe @(
+                '-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $installerPath
+            ) 2>&1)
+            $installerExitCode = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $previousPreference
+        }
+        if ($installerExitCode -ne 0) {
+            $details = ($installerOutput | Select-Object -Last 5 | ForEach-Object { $_.ToString() }) -join ' '
+            if ([string]::IsNullOrWhiteSpace($details)) { $details = '未返回详细错误信息' }
+            throw "项目专用的 Python 环境引导工具安装失败，退出代码 ${installerExitCode}：${details}"
+        }
     } finally {
         Remove-Item -LiteralPath $installerPath -Force -ErrorAction SilentlyContinue
     }
@@ -249,17 +263,32 @@ function Install-ManagedPython {
         $null
     }
     try {
-        Remove-Item Env:UV_NO_PROGRESS -ErrorAction SilentlyContinue
-        Write-Step "[1/6] 正在通过镜像下载项目专用的 Python $PythonVersion（将显示实时进度）..."
-        & $UvPath --color always python install --no-bin --no-registry --mirror $PythonInstallMirror $PythonVersion | Out-Host
-        if ($LASTEXITCODE -eq 0) {
+        $env:UV_NO_PROGRESS = '1'
+        Write-Step "[1/6] 正在通过镜像下载项目专用的 Python $ManagedPythonVersion..."
+        $previousPreference = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'Continue'
+            $mirrorOutput = @(& $UvPath --color never python install --no-bin --no-registry --mirror $PythonInstallMirror $ManagedPythonVersion 2>&1)
+            $mirrorExitCode = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $previousPreference
+        }
+        if ($mirrorExitCode -eq 0) {
             return
         }
 
         Write-Step 'Python 镜像下载失败，正在切换到官方源...'
-        & $UvPath --color always python install --no-bin --no-registry $PythonVersion | Out-Host
-        if ($LASTEXITCODE -ne 0) {
-            throw "Python $PythonVersion 下载失败，镜像源和官方源均不可用。"
+        try {
+            $ErrorActionPreference = 'Continue'
+            $officialOutput = @(& $UvPath --color never python install --no-bin --no-registry $ManagedPythonVersion 2>&1)
+            $officialExitCode = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $previousPreference
+        }
+        if ($officialExitCode -ne 0) {
+            $details = (($mirrorOutput + $officialOutput) | Select-Object -Last 5 | ForEach-Object { $_.ToString() }) -join ' '
+            if ([string]::IsNullOrWhiteSpace($details)) { $details = '未返回详细错误信息' }
+            throw "Python $ManagedPythonVersion 下载失败，镜像源和官方源均不可用：${details}"
         }
     } finally {
         if ($hadNoProgress) {
@@ -280,7 +309,7 @@ function Backup-InvalidVenv {
 }
 
 function Ensure-VirtualEnvironment {
-    Write-Step '[1/6] 正在检查 Python 3.11 或更高版本...'
+    Write-Step "[1/6] 正在检查 Python $MinimumPythonVersion 或更高版本..."
     if (Test-Path -LiteralPath $VenvPython) {
         $existing = Test-PythonCandidate $VenvPython
         if ($existing) {
@@ -293,7 +322,7 @@ function Ensure-VirtualEnvironment {
     Backup-InvalidVenv
     $python = Find-PreferredPython
     if ($python) {
-        Write-Step "[1/6] 已找到 Python 3.13：$($python.Version)"
+        Write-Step "[1/6] 已找到兼容的 Python：$($python.Version)"
         Write-Step '[2/6] 正在创建项目虚拟环境：.venv...'
         & $python.FilePath @($python.Arguments) -m venv $VenvDir
         if ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $VenvPython)) {
@@ -311,7 +340,7 @@ function Ensure-VirtualEnvironment {
     Install-ManagedPython -UvPath $uvPath
     Write-Step '[2/6] 正在创建项目虚拟环境：.venv...'
     Invoke-Checked $uvPath @(
-        'venv', '--python', $PythonVersion, '--managed-python', '--no-python-downloads', $VenvDir
+        'venv', '--python', $ManagedPythonVersion, '--managed-python', '--no-python-downloads', $VenvDir
     )
     if (-not (Test-Path -LiteralPath $VenvPython)) {
         throw '虚拟环境创建结束，但未找到可用的 python.exe。'
@@ -425,6 +454,11 @@ function Test-WebPanelDependency {
 }
 
 function Ensure-WebPanelDependency {
+    if ($UseSystemBrowserPanel) {
+        Write-Step '[5/6] 当前 Windows 不支持内嵌桌面窗口，将使用外部浏览器打开管理面板。'
+        return
+    }
+
     Write-Step '[5/6] 正在检查 Windows 桌面窗口组件...'
     if (Test-WebPanelDependency) {
         Write-Step '[5/6] Windows 桌面窗口组件已经安装，无需重复安装。'
@@ -528,7 +562,58 @@ function Test-WebPanelAvailable {
 function Start-WebPanelWindow {
     param([Parameter(Mandatory = $true)][string]$Url)
 
-    $windowSource = @'
+    $windowSource = if ($UseSystemBrowserPanel) {
+        @'
+import os
+import shutil
+import subprocess
+import sys
+import time
+import urllib.request
+
+panel_url = sys.argv[1]
+opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+for _ in range(120):
+    try:
+        with opener.open(panel_url, timeout=2):
+            pass
+        break
+    except Exception:
+        time.sleep(1)
+else:
+    raise SystemExit(1)
+
+browser_candidates = (
+    'msedge.exe',
+    'chrome.exe',
+    'firefox.exe',
+    'iexplore.exe',
+)
+browser_paths = []
+for name in browser_candidates:
+    resolved = shutil.which(name)
+    if resolved:
+        browser_paths.append(resolved)
+
+for base_name in ('PROGRAMFILES', 'PROGRAMFILES(X86)', 'LOCALAPPDATA'):
+    base_path = os.environ.get(base_name)
+    if not base_path:
+        continue
+    browser_paths.extend((
+        os.path.join(base_path, 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+        os.path.join(base_path, 'Google', 'Chrome', 'Application', 'chrome.exe'),
+        os.path.join(base_path, 'Mozilla Firefox', 'firefox.exe'),
+    ))
+
+for browser_path in browser_paths:
+    if os.path.isfile(browser_path):
+        subprocess.Popen([browser_path, panel_url])
+        raise SystemExit(0)
+
+raise SystemExit(2)
+'@
+    } else {
+        @'
 import sys
 import time
 import urllib.request
@@ -556,6 +641,7 @@ webview.create_window(
 )
 webview.start()
 '@
+    }
 
     $encodedSource = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($windowSource))
     $launcherSource = "import base64;exec(base64.b64decode('$encodedSource'))"
@@ -587,18 +673,20 @@ try {
         if (-not (Test-WebPanelAvailable -Url $panelUrl)) {
             throw "配置端口 $panelPort 已被占用，但未检测到 ElainaBot 管理面板。请检查端口占用情况。"
         }
-        Write-Step "[6/6] 检测到框架已经运行，仅重新打开桌面面板窗口。"
+        Write-Step "[6/6] 检测到框架已经运行，仅重新打开管理面板。"
         $existingPanelWindow = Start-WebPanelWindow -Url $panelUrl
         if ($existingPanelWindow) {
             $existingPanelWindow.Dispose()
         }
-        Write-Step '桌面面板窗口已打开，无需重新启动框架。'
+        Write-Step '管理面板已打开，无需重新启动框架。'
         exit 0
     }
 
     Write-Step "[6/6] 配置端口 $panelPort 尚未开启，正在启动 ElainaBot 框架..."
-    Write-Step '面板就绪后将自动打开 ElainaBot 桌面窗口。'
-    $panelWindow = Start-WebPanelWindow -Url $panelUrl
+    Write-Step '面板就绪后将自动打开 ElainaBot 管理面板。'
+    # Keep the framework in the foreground on every supported Windows version
+    # so this console remains available for runtime logs and diagnostics.
+   $panelWindow = Start-WebPanelWindow -Url $panelUrl
     try {
         & $VenvPython (Join-Path $RootDir 'main.py')
         $frameworkExitCode = $LASTEXITCODE
