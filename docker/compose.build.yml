@@ -2,7 +2,7 @@ services:
   elainabot:
     build:
       context: ..
-      dockerfile: docker/Dockerfile
+      dockerfile: .ci/Dockerfile
     image: elainabot/elainabot:local
     container_name: elainabot_v2
     restart: unless-stopped

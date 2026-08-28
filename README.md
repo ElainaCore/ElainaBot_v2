@@ -11,3 +11,10 @@ application source branch.
 The workflows always check out the exact source revision that triggered the
 caller on `main`, then add the assets from this branch. Keep the branch name
 `ci-assets` stable and protect it from accidental deletion.
+
+For a local source build, clone `main`, copy the four files from `docker/` into
+a `.ci/` directory in that checkout, then run:
+
+```bash
+docker compose -f .ci/compose.build.yml up -d --build
+```
