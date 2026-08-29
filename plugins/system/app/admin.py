@@ -9,6 +9,7 @@ from pathlib import Path
 
 from core.base.config import cfg
 from core.base.logger import PLUGIN, get_logger
+from core.base.restart import RESTART_RECOVERY_ENV
 from core.plugin._blacklist import get_blacklist_map, set_blacklist_map
 from core.plugin.decorators import handler, on_load
 
@@ -104,7 +105,9 @@ def _do_restart():
         pass
     # 应用实例不可用时直接替换当前进程
     python = sys.executable
-    os.execv(python, [python] + sys.argv)
+    env = os.environ.copy()
+    env[RESTART_RECOVERY_ENV] = '1'
+    os.execve(python, [python] + sys.argv, env)
 
 
 @handler(r'^重启$', name='重启', desc='重启机器人进程', owner_only=True)

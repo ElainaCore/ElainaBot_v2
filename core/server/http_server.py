@@ -1,15 +1,40 @@
 """HTTP 服务器管理 — aiohttp 启动/关闭/Web面板挂载"""
 
 import asyncio
+import errno
 import logging
+import os
 from typing import cast
 
+import psutil
 from aiohttp import web
 from aiohttp.web import AppRunner, TCPSite
 
 from core.base.config import cfg
+from core.base.restart import RESTART_RECOVERY_ENV
 
 log = logging.getLogger('ElainaBot.http_server')
+
+
+def _is_address_in_use(error: OSError) -> bool:
+    return error.errno == errno.EADDRINUSE or getattr(error, 'winerror', None) == 10048
+
+
+def _kill_port_listeners(port: int):
+    """杀掉监听指定端口的其他进程。"""
+    pids = {
+        conn.pid
+        for conn in psutil.net_connections(kind='inet')
+        if conn.pid and conn.pid != os.getpid()
+        and conn.status == psutil.CONN_LISTEN
+        and conn.laddr and conn.laddr.port == port
+    }
+    for pid in pids:
+        try:
+            psutil.Process(pid).kill()
+            log.warning(f'重启恢复: 已杀掉端口 {port} 的占用进程 PID={pid}')
+        except psutil.Error:
+            pass
 
 
 class HttpServer:
@@ -57,8 +82,11 @@ class HttpServer:
         hosts = host if isinstance(host, list) else [host]
         deadline = asyncio.get_running_loop().time() + bind_timeout
         pending = list(hosts)
+        restart_recovery = os.environ.pop(RESTART_RECOVERY_ENV, '') == '1'
+        recovery_attempted = False
         while pending:
             failed: list = []
+            address_in_use = False
             for h in pending:
                 try:
                     site = TCPSite(self._runner, h, port, reuse_address=True)
@@ -68,7 +96,17 @@ class HttpServer:
                 except OSError as e:
                     log.warning(f'绑定 {h}:{port} 失败: {e}')
                     failed.append(h)
+                    address_in_use = address_in_use or _is_address_in_use(e)
             pending = failed
+
+            if restart_recovery and address_in_use and not recovery_attempted:
+                recovery_attempted = True
+                log.warning(f'重启后端口 {port} 仍被占用，开始清理监听进程')
+                try:
+                    await asyncio.to_thread(_kill_port_listeners, port)
+                except (psutil.Error, OSError) as e:
+                    log.error(f'重启恢复: 清理端口 {port} 失败: {e}')
+
             if not pending or asyncio.get_running_loop().time() >= deadline:
                 break
             log.info(f'等待端口释放, {retry_interval}s 后重试绑定: {pending}:{port}')

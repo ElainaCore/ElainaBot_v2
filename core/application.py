@@ -14,6 +14,7 @@ from collections.abc import Callable
 from core.base.config import cfg
 from core.base.logger import SYSTEM, get_logger
 from core.base.logger import setup as setup_logger
+from core.base.restart import RESTART_RECOVERY_ENV
 from core.bot.event import EventHandlerMixin
 from core.bot.registry import BotRegistry
 from core.message.silk import shutdown_pool
@@ -90,11 +91,17 @@ def close_console_window():
 
 def relaunch():
     """重新拉起自身进程，并在 Windows 下关闭旧控制台窗口。"""
+    env = os.environ.copy()
+    env[RESTART_RECOVERY_ENV] = '1'
     if sys.platform == 'win32':
-        subprocess.Popen([sys.executable] + sys.argv, creationflags=subprocess.CREATE_NEW_CONSOLE)
+        subprocess.Popen(
+            [sys.executable] + sys.argv,
+            creationflags=subprocess.CREATE_NEW_CONSOLE,
+            env=env,
+        )
         close_console_window()
         os._exit(0)
-    os.execv(sys.executable, [sys.executable] + sys.argv)
+    os.execve(sys.executable, [sys.executable] + sys.argv, env)
 
 
 class Application(EventHandlerMixin):
