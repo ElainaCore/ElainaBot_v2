@@ -73,7 +73,7 @@ def test_restart_recovery_terminates_listener_then_binds(monkeypatch):
 
         async def start(self):
             attempts.append((self.host, self.port))
-            if len(attempts) == 1:
+            if len(attempts) < 3:
                 raise OSError(errno.EADDRINUSE, 'address already in use')
 
     monkeypatch.setattr(http_server.cfg, 'get', lambda section, key, default: {'server.host': '0.0.0.0', 'server.port': 5200}[key])
@@ -90,6 +90,6 @@ def test_restart_recovery_terminates_listener_then_binds(monkeypatch):
     server._app = object()
     asyncio.run(server.start(bind_timeout=1, retry_interval=0))
 
-    assert attempts == [('0.0.0.0', 5200), ('0.0.0.0', 5200)]
-    assert terminated_ports == [5200]
+    assert attempts == [('0.0.0.0', 5200)] * 3
+    assert terminated_ports == [5200, 5200]
     assert http_server.RESTART_RECOVERY_ENV not in os.environ

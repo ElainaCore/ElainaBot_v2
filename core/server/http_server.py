@@ -83,7 +83,6 @@ class HttpServer:
         deadline = asyncio.get_running_loop().time() + bind_timeout
         pending = list(hosts)
         restart_recovery = os.environ.pop(RESTART_RECOVERY_ENV, '') == '1'
-        recovery_attempted = False
         while pending:
             failed: list = []
             address_in_use = False
@@ -99,8 +98,7 @@ class HttpServer:
                     address_in_use = address_in_use or _is_address_in_use(e)
             pending = failed
 
-            if restart_recovery and address_in_use and not recovery_attempted:
-                recovery_attempted = True
+            if restart_recovery and address_in_use:
                 log.warning(f'重启后端口 {port} 仍被占用，开始清理监听进程')
                 try:
                     await asyncio.to_thread(_kill_port_listeners, port)
