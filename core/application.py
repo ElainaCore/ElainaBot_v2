@@ -14,7 +14,7 @@ from collections.abc import Callable
 from core.base.config import cfg
 from core.base.logger import SYSTEM, get_logger
 from core.base.logger import setup as setup_logger
-from core.base.restart import RESTART_RECOVERY_ENV
+from core.base.restart import RESTART_RECOVERY_ENV, stop_child_processes
 from core.bot.event import EventHandlerMixin
 from core.bot.registry import BotRegistry
 from core.message.silk import shutdown_pool
@@ -90,7 +90,10 @@ def close_console_window():
 
 
 def relaunch():
-    """重新拉起自身进程，并在 Windows 下关闭旧控制台窗口。"""
+    """停止全部子进程后重新拉起框架。"""
+    children = stop_child_processes()
+    if children:
+        log.info(f'重启前已停止子进程: {children}')
     env = os.environ.copy()
     env[RESTART_RECOVERY_ENV] = '1'
     if sys.platform == 'win32':

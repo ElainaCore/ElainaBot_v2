@@ -8,7 +8,7 @@ import threading
 from aiohttp import web
 
 from core.application import close_console_window, get_app
-from core.base.restart import RESTART_RECOVERY_ENV
+from core.base.restart import RESTART_RECOVERY_ENV, stop_child_processes
 
 _IS_WINDOWS = sys.platform == 'win32'
 _base_dir = ''
@@ -72,6 +72,7 @@ async def handle_restart(request: web.Request):
     restarter = os.path.join(data_dir, 'bot_restarter.py')
 
     try:
+        stop_child_processes()
         script = (
             _WIN_TEMPLATE.format(main_py=main_py, restart_env=RESTART_RECOVERY_ENV)
             if _IS_WINDOWS

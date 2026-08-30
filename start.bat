@@ -84,6 +84,13 @@ $PythonInstallMirror = if (-not [string]::IsNullOrWhiteSpace($env:ELAINABOT_PYTH
 }
 $PipMirror = 'https://pypi.tuna.tsinghua.edu.cn/simple'
 $OfficialPipSource = 'https://pypi.org/simple'
+$FrameworkDownloadUrl = 'https://github.com/ElainaCore/ElainaBot_v2/archive/main.zip'
+$FrameworkMirrors = @(
+    'https://github.chenc.dev'
+    'https://ghproxy.cfd'
+    'https://github.tbedu.top'
+    'https://ghproxy.cc'
+)
 $WebPanelPackage = 'pywebview>=6.2,<7'
 $RootDir = [IO.Path]::GetFullPath($env:ELAINABOT_ROOT)
 $VenvDir = Join-Path $RootDir '.venv'
@@ -348,6 +355,169 @@ function Ensure-VirtualEnvironment {
     Write-Step '[2/6] 虚拟环境创建成功。'
 }
 
+function Test-FrameworkComplete {
+    $required = @(
+        'main.py',
+        'requirements.txt',
+        'pyproject.toml',
+        'config/settings.example.yaml',
+        'core/application.py',
+        'core/base/config.py',
+        'web/setup.py'
+    )
+    foreach ($relativePath in $required) {
+        if (-not (Test-Path -LiteralPath (Join-Path $RootDir $relativePath) -PathType Leaf)) {
+            return $false
+        }
+    }
+    return $true
+}
+
+function Get-FrameworkDownloadUrls {
+    $customMirror = [string]$env:ELAINABOT_FRAMEWORK_MIRROR
+    if (-not [string]::IsNullOrWhiteSpace($customMirror)) {
+        $customMirror = $customMirror.Trim().TrimEnd('/')
+        Write-Output ("$customMirror/$FrameworkDownloadUrl")
+    }
+    foreach ($mirror in $FrameworkMirrors) {
+        Write-Output ("$($mirror.TrimEnd('/'))/$FrameworkDownloadUrl")
+    }
+    Write-Output $FrameworkDownloadUrl
+}
+
+function Restore-FrameworkArchive {
+    param(
+        [Parameter(Mandatory = $true)][string]$ArchivePath,
+        [Parameter(Mandatory = $true)][string]$StagingPath
+    )
+
+    $restoreSource = @'
+import os
+import shutil
+import stat
+import sys
+import zipfile
+from pathlib import Path
+
+archive = Path(os.environ['ELAINABOT_RESTORE_ARCHIVE'])
+staging = Path(os.environ['ELAINABOT_RESTORE_STAGING'])
+root = Path(os.environ['ELAINABOT_RESTORE_ROOT'])
+staging = staging.resolve()
+root = root.resolve()
+with zipfile.ZipFile(archive) as zf:
+    for info in zf.infolist():
+        name = info.filename.replace('\\', '/')
+        relative = Path(name)
+        if relative.is_absolute() or '..' in relative.parts:
+            raise RuntimeError(f'压缩包包含不安全路径: {name}')
+        mode = (info.external_attr >> 16) & 0o170000
+        if mode == stat.S_IFLNK:
+            raise RuntimeError(f'压缩包包含不安全符号链接: {name}')
+        target = (staging / relative).resolve()
+        if target != staging and staging not in target.parents:
+            raise RuntimeError(f'压缩包包含不安全路径: {name}')
+        if info.is_dir() or name.endswith('/'):
+            target.mkdir(parents=True, exist_ok=True)
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with zf.open(info) as source, target.open('wb') as destination:
+            shutil.copyfileobj(source, destination)
+
+entries = list(staging.iterdir())
+source = entries[0] if len(entries) == 1 and entries[0].is_dir() else staging
+required = (
+    'main.py',
+    'requirements.txt',
+    'pyproject.toml',
+    'config/settings.example.yaml',
+    'core/application.py',
+    'core/base/config.py',
+    'web/setup.py',
+)
+missing = [relative for relative in required if not (source / relative).is_file()]
+if missing:
+    raise RuntimeError('压缩包缺少框架基本文件: ' + ', '.join(missing))
+
+for item in source.rglob('*'):
+    relative = item.relative_to(source)
+    destination = root / relative
+    resolved_destination = destination.resolve()
+    if resolved_destination != root and root not in resolved_destination.parents:
+        raise RuntimeError(f'目标路径超出项目目录: {relative}')
+    if item.is_dir():
+        destination.mkdir(parents=True, exist_ok=True)
+    elif item.is_file() and not os.path.lexists(destination):
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(item, destination)
+'@
+    $previousArchive = $env:ELAINABOT_RESTORE_ARCHIVE
+    $previousStaging = $env:ELAINABOT_RESTORE_STAGING
+    $previousRoot = $env:ELAINABOT_RESTORE_ROOT
+    try {
+        $env:ELAINABOT_RESTORE_ARCHIVE = $ArchivePath
+        $env:ELAINABOT_RESTORE_STAGING = $StagingPath
+        $env:ELAINABOT_RESTORE_ROOT = $RootDir
+        $restoreSource | & $VenvPython -
+        $restoreExitCode = $LASTEXITCODE
+    } finally {
+        if ($null -eq $previousArchive) { Remove-Item Env:ELAINABOT_RESTORE_ARCHIVE -ErrorAction SilentlyContinue } else { $env:ELAINABOT_RESTORE_ARCHIVE = $previousArchive }
+        if ($null -eq $previousStaging) { Remove-Item Env:ELAINABOT_RESTORE_STAGING -ErrorAction SilentlyContinue } else { $env:ELAINABOT_RESTORE_STAGING = $previousStaging }
+        if ($null -eq $previousRoot) { Remove-Item Env:ELAINABOT_RESTORE_ROOT -ErrorAction SilentlyContinue } else { $env:ELAINABOT_RESTORE_ROOT = $previousRoot }
+    }
+    if ($restoreExitCode -ne 0) {
+        return $false
+    }
+    return $true
+}
+
+function Ensure-Framework {
+    $required = @(
+        'main.py',
+        'requirements.txt',
+        'pyproject.toml',
+        'config/settings.example.yaml',
+        'core/application.py',
+        'core/base/config.py',
+        'web/setup.py'
+    )
+    $missing = @($required | Where-Object { -not (Test-Path -LiteralPath (Join-Path $RootDir $_) -PathType Leaf) })
+    if ($missing.Count -eq 0) {
+        Write-Step '[3/6] 框架基本文件完整，无需下载。'
+        return
+    }
+
+    Write-Step ("[3/6] 缺少框架基本文件: $($missing -join ', ')，正在通过镜像下载并解压...")
+    $staging = Join-Path ([IO.Path]::GetTempPath()) ("elainabot-framework-$([guid]::NewGuid().ToString('N'))")
+    $extractPath = Join-Path $staging 'extracted'
+    $archivePath = Join-Path $staging 'framework.zip'
+    New-Item -ItemType Directory -Path $extractPath -Force | Out-Null
+    try {
+        foreach ($url in @(Get-FrameworkDownloadUrls)) {
+            Write-Step "正在尝试框架镜像: $url"
+            Remove-Item -LiteralPath $archivePath -Force -ErrorAction SilentlyContinue
+            try {
+                Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $archivePath -TimeoutSec 180
+                & $VenvPython -c "import zipfile,sys; raise SystemExit(0 if zipfile.is_zipfile(sys.argv[1]) else 1)" $archivePath
+                if ($LASTEXITCODE -ne 0) {
+                    throw '下载内容不是有效 ZIP'
+                }
+                Remove-Item -LiteralPath $extractPath -Recurse -Force -ErrorAction SilentlyContinue
+                New-Item -ItemType Directory -Path $extractPath -Force | Out-Null
+                if ((Restore-FrameworkArchive -ArchivePath $archivePath -StagingPath $extractPath) -and (Test-FrameworkComplete)) {
+                    Write-Step '框架基本文件已从镜像恢复。'
+                    return
+                }
+                Write-Step '镜像压缩包解压后仍缺少框架文件，尝试下一个来源。'
+            } catch {
+                Write-Step "镜像下载或解压失败，尝试下一个来源：$($_.Exception.Message)"
+            }
+        }
+        throw '框架基本文件缺失，镜像源和官方源均无法下载或解压。'
+    } finally {
+        Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Get-RequirementFiles {
     $files = @()
     $files += Get-ChildItem -LiteralPath $RootDir -File -ErrorAction SilentlyContinue |
@@ -403,12 +573,12 @@ function Test-CoreDependencies {
 }
 
 function Ensure-Dependencies {
-    Write-Step '[3/6] 正在扫描框架、模块和插件的依赖文件...'
+    Write-Step '[4/6] 正在扫描框架、模块和插件的依赖文件...'
     $requirements = @(Get-RequirementFiles)
     if ($requirements.Count -eq 0) {
         throw '未找到任何依赖文件。'
     }
-    Write-Step "[3/6] 已找到 $($requirements.Count) 个依赖文件。"
+    Write-Step "[4/6] 已找到 $($requirements.Count) 个依赖文件。"
 
     $fingerprint = Get-RequirementsFingerprint $requirements
     $savedFingerprint = if (Test-Path -LiteralPath $StampFile) {
@@ -418,11 +588,11 @@ function Ensure-Dependencies {
     }
 
     if ($savedFingerprint -eq $fingerprint -and (Test-CoreDependencies)) {
-        Write-Step '[4/6] 框架依赖已经安装且为最新状态，无需重复安装。'
+        Write-Step '[5/6] 框架依赖已经安装且为最新状态，无需重复安装。'
         return
     }
 
-    Write-Step "[4/6] 正在根据 $($requirements.Count) 个依赖文件安装框架依赖..."
+    Write-Step "[5/6] 正在根据 $($requirements.Count) 个依赖文件安装框架依赖..."
     & $VenvPython -m ensurepip --upgrade 2>$null
     Invoke-PipInstall -Arguments @('--upgrade', 'pip', 'setuptools', 'wheel')
 
@@ -436,7 +606,7 @@ function Ensure-Dependencies {
         throw '依赖安装已经结束，但仍有一个或多个核心包无法导入。'
     }
     Set-Content -LiteralPath $StampFile -Value $fingerprint -Encoding ASCII
-    Write-Step '[4/6] 框架依赖安装完成并通过验证。'
+    Write-Step '[5/6] 框架依赖安装完成并通过验证。'
 }
 
 function Test-WebPanelDependency {
@@ -656,6 +826,7 @@ webview.start()
 try {
     Write-Step '正在准备运行环境...'
     Ensure-VirtualEnvironment
+    Ensure-Framework
     Ensure-Dependencies
     Ensure-WebPanelDependency
 

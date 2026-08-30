@@ -21,20 +21,30 @@ def _is_address_in_use(error: OSError) -> bool:
 
 
 def _kill_port_listeners(port: int):
-    """杀掉监听指定端口的其他进程。"""
-    pids = {
-        conn.pid
-        for conn in psutil.net_connections(kind='inet')
-        if conn.pid and conn.pid != os.getpid()
-        and conn.status == psutil.CONN_LISTEN
-        and conn.laddr and conn.laddr.port == port
-    }
-    for pid in pids:
+    """一次性杀掉监听指定端口的全部其他进程。"""
+    listeners = []
+    for process in psutil.process_iter():
+        if process.pid == os.getpid():
+            continue
         try:
-            psutil.Process(pid).kill()
-            log.warning(f'重启恢复: 已杀掉端口 {port} 的占用进程 PID={pid}')
+            if any(
+                conn.status == psutil.CONN_LISTEN and conn.laddr and conn.laddr.port == port
+                for conn in process.net_connections(kind='inet')
+            ):
+                listeners.append(process)
         except psutil.Error:
             pass
+
+    killed = []
+    for process in listeners:
+        try:
+            process.kill()
+            killed.append(process.pid)
+        except psutil.Error:
+            pass
+    if killed:
+        log.warning(f'重启恢复: 已一次性杀掉端口 {port} 的占用进程 PID={killed}')
+    return killed
 
 
 class HttpServer:
@@ -68,7 +78,7 @@ class HttpServer:
         except Exception as e:
             log.warning(f'Web 面板加载失败: {e}')
 
-    async def start(self, bind_timeout: float = 30, retry_interval: float = 2):
+    async def start(self, bind_timeout: float = 30, retry_interval: float = 0.1):
         """启动 HTTP 服务器 (支持 IPv4/IPv6, host 可为字符串或列表)
 
         端口被占用时在 bind_timeout 内重试, 覆盖重启时旧进程/子进程尚未释放端口的窗口。

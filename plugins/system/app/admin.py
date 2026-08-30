@@ -9,7 +9,7 @@ from pathlib import Path
 
 from core.base.config import cfg
 from core.base.logger import PLUGIN, get_logger
-from core.base.restart import RESTART_RECOVERY_ENV
+from core.base.restart import RESTART_RECOVERY_ENV, stop_child_processes
 from core.plugin._blacklist import get_blacklist_map, set_blacklist_map
 from core.plugin.decorators import handler, on_load
 
@@ -105,6 +105,7 @@ def _do_restart():
         pass
     # 应用实例不可用时直接替换当前进程
     python = sys.executable
+    stop_child_processes()
     env = os.environ.copy()
     env[RESTART_RECOVERY_ENV] = '1'
     os.execve(python, [python] + sys.argv, env)
