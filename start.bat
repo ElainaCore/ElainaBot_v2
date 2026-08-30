@@ -14,6 +14,10 @@
     @echo [ElainaBot] Startup failed with exit code %ELAINABOT_EXIT_CODE%.
     @echo [ElainaBot] Review the error above, then press any key to close this window...
     @pause >nul
+) else (
+    @echo(
+    @echo [ElainaBot] Startup completed. Press any key to close this window...
+    @pause >nul
 )
 @exit /b %ELAINABOT_EXIT_CODE%
 
@@ -76,7 +80,7 @@ $ErrorActionPreference = 'Stop'
 $BootstrapVersion = '5'
 $MinimumPythonVersion = '3.11'
 $ManagedPythonVersion = '3.13'
-$DefaultPythonInstallMirror = 'https://registry.npmmirror.com/-/binary/python-build-standalone'
+$DefaultPythonInstallMirror = 'https://registry.npmmirror.com/-/binary/python'
 $PythonInstallMirror = if (-not [string]::IsNullOrWhiteSpace($env:ELAINABOT_PYTHON_MIRROR)) {
     $env:ELAINABOT_PYTHON_MIRROR.Trim().TrimEnd('/')
 } else {
@@ -84,12 +88,19 @@ $PythonInstallMirror = if (-not [string]::IsNullOrWhiteSpace($env:ELAINABOT_PYTH
 }
 $PipMirror = 'https://pypi.tuna.tsinghua.edu.cn/simple'
 $OfficialPipSource = 'https://pypi.org/simple'
-$FrameworkDownloadUrl = 'https://github.com/ElainaCore/ElainaBot_v2/archive/main.zip'
+$FrameworkArchiveUrl = 'https://github.com/ElainaCore/ElainaBot_v2/archive/refs/heads/main.zip'
+$FrameworkManualDownloadUrl = 'https://codeload.github.com/ElainaCore/ElainaBot_v2/zip/refs/heads/main'
 $FrameworkMirrors = @(
-    'https://github.chenc.dev'
-    'https://ghproxy.cfd'
-    'https://github.tbedu.top'
-    'https://ghproxy.cc'
+    'https://github.chenc.dev/'
+    'https://fastgit.cc/'
+    'https://gh.dpik.top/'
+    'https://gh.jasonzeng.dev/'
+    'https://ghf.xn--eqrr82bzpe.top/'
+    'https://gh.xxooo.cf/'
+    'https://ghproxy.imciel.com/'
+    'https://ghproxy.cxkpro.top/'
+    'https://gh.927223.xyz/'
+    'https://gitproxy.mrhjx.cn/'
 )
 $WebPanelPackage = 'pywebview>=6.2,<7'
 $RootDir = [IO.Path]::GetFullPath($env:ELAINABOT_ROOT)
@@ -102,6 +113,12 @@ Set-Location $RootDir
 function Write-Step {
     param([string]$Message)
     Write-ConsoleLine "[ElainaBot] $Message" Cyan
+}
+
+function Refresh-ProcessPath {
+    $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+    $env:Path = (@($env:Path, $userPath, $machinePath) | Where-Object { $_ }) -join ';'
 }
 
 function Invoke-Checked {
@@ -189,121 +206,101 @@ function Find-PreferredPython {
             return $candidate
         }
     }
+
+    $pythonPaths = @()
+    foreach ($root in @(
+        (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Programs\Python'),
+        [Environment]::GetEnvironmentVariable('ProgramFiles'),
+        [Environment]::GetEnvironmentVariable('ProgramFiles(x86)')
+    )) {
+        if ([string]::IsNullOrWhiteSpace($root) -or -not (Test-Path -LiteralPath $root)) { continue }
+        $pythonPaths += Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -like 'Python*' } |
+            ForEach-Object { Join-Path $_.FullName 'python.exe' }
+    }
+    $pythonPaths += @(
+        (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Microsoft\WindowsApps\python.exe'),
+        (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Programs\Python\Launcher\py.exe')
+    )
+    foreach ($path in @($pythonPaths | Select-Object -Unique)) {
+        $candidate = Test-PythonCandidate -FilePath $path
+        if ($candidate) { return $candidate }
+    }
+
+    foreach ($registryPath in @(
+        'HKCU:\Software\Python\PythonCore',
+        'HKLM:\Software\Python\PythonCore',
+        'HKLM:\Software\WOW6432Node\Python\PythonCore'
+    )) {
+        foreach ($versionKey in @(Get-ChildItem -Path $registryPath -ErrorAction SilentlyContinue | Sort-Object PSChildName -Descending)) {
+            $installPath = (Get-ItemProperty -LiteralPath $versionKey.PSPath -Name InstallPath -ErrorAction SilentlyContinue).InstallPath
+            if ($installPath) {
+                $candidate = Test-PythonCandidate -FilePath (Join-Path $installPath 'python.exe')
+                if ($candidate) { return $candidate }
+            }
+        }
+    }
     return $null
 }
 
-function Test-UvSupportsPythonMirror {
-    param([Parameter(Mandatory = $true)][string]$UvPath)
+function Get-LatestPythonInstaller {
+    param([Parameter(Mandatory = $true)][string]$MirrorRoot)
 
-    $previousPreference = $ErrorActionPreference
-    $ErrorActionPreference = 'Continue'
-    try {
-        $helpOutput = (& $UvPath python install --help 2>&1 | Out-String)
-        $helpExitCode = $LASTEXITCODE
-    } catch {
-        return $false
-    } finally {
-        $ErrorActionPreference = $previousPreference
+    $listing = Invoke-WebRequest -UseBasicParsing -Uri "$MirrorRoot/" -TimeoutSec 60
+    $entries = @($listing.Content | ConvertFrom-Json)
+    $latestEntry = @($entries |
+        Where-Object { $_.name -like '3.13.*' -and $_.name.EndsWith('/') } |
+        Sort-Object { [version]$_.name.TrimEnd('/') } -Descending |
+        Select-Object -First 1)
+    if ($latestEntry.Count -eq 0) {
+        throw '镜像目录中没有找到可用的 Python 3.13.x 版本。'
     }
-    return $helpExitCode -eq 0 -and $helpOutput -match '(?m)^\s*--mirror\s'
+
+    $version = $latestEntry[0].name.TrimEnd('/')
+    $architecture = [Environment]::GetEnvironmentVariable('PROCESSOR_ARCHITEW6432')
+    if ([string]::IsNullOrWhiteSpace($architecture)) {
+        $architecture = [Environment]::GetEnvironmentVariable('PROCESSOR_ARCHITECTURE')
+    }
+    $installerName = switch ($architecture) {
+        'ARM64' { "python-$version-arm64.exe" }
+        'x86' { "python-$version.exe" }
+        default { "python-$version-amd64.exe" }
+    }
+    return [PSCustomObject]@{
+        Version = $version
+        Name = $installerName
+        Url = "$MirrorRoot/$version/$installerName"
+    }
 }
 
-function Ensure-Uv {
-    $uvPath = Get-CommandPath 'uv'
-    if ($uvPath -and (Test-UvSupportsPythonMirror -UvPath $uvPath)) {
-        return $uvPath
-    }
+function Install-PythonFromMirror {
+    $installer = Get-LatestPythonInstaller -MirrorRoot $PythonInstallMirror
+    $installerPath = Join-Path ([IO.Path]::GetTempPath()) "elainabot-$($installer.Name)"
 
-    $localUv = Join-Path $ToolsDir 'uv.exe'
-    if ((Test-Path -LiteralPath $localUv) -and (Test-UvSupportsPythonMirror -UvPath $localUv)) {
-        return $localUv
-    }
-
-    if ($uvPath -or (Test-Path -LiteralPath $localUv)) {
-        Write-Step '现有 Python 环境引导工具版本过旧，正在更新项目专用版本...'
-    } else {
-        Write-Step '正在安装项目专用的 Python 环境引导工具...'
-    }
-    New-Item -ItemType Directory -Path $ToolsDir -Force | Out-Null
-    $installerPath = Join-Path ([IO.Path]::GetTempPath()) 'elainabot-uv-install.ps1'
+    Write-Step "winget 安装不可用，正在通过镜像下载 Python $($installer.Version)..."
     try {
-        Invoke-WebRequest -UseBasicParsing -Uri 'https://astral.sh/uv/install.ps1' -OutFile $installerPath
-        $env:UV_INSTALL_DIR = $ToolsDir
-        $env:UV_NO_MODIFY_PATH = '1'
-        # The uv installer redraws progress in place. Capturing its output avoids
-        # duplicated Chinese status text in both Windows 11 and legacy cmd.exe.
-        $previousPreference = $ErrorActionPreference
-        try {
-            $ErrorActionPreference = 'Continue'
-            $installerOutput = @(& powershell.exe @(
-                '-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $installerPath
-            ) 2>&1)
-            $installerExitCode = $LASTEXITCODE
-        } finally {
-            $ErrorActionPreference = $previousPreference
-        }
-        if ($installerExitCode -ne 0) {
-            $details = ($installerOutput | Select-Object -Last 5 | ForEach-Object { $_.ToString() }) -join ' '
-            if ([string]::IsNullOrWhiteSpace($details)) { $details = '未返回详细错误信息' }
-            throw "项目专用的 Python 环境引导工具安装失败，退出代码 ${installerExitCode}：${details}"
+        Invoke-WebRequest -UseBasicParsing -Uri $installer.Url -OutFile $installerPath -TimeoutSec 300
+        Write-Step 'Python 安装包下载完成，正在以当前用户权限静默安装...'
+        $installerArguments = @(
+            '/quiet', 'InstallAllUsers=0', 'PrependPath=0', 'Include_launcher=1',
+            'InstallLauncherAllUsers=0', 'Include_pip=1', 'Include_test=0',
+            'Include_doc=0', 'Include_debug=0', 'Include_symbols=0'
+        )
+        $installerProcess = Start-Process -FilePath $installerPath -ArgumentList $installerArguments -Wait -PassThru
+        $installerExitCode = $installerProcess.ExitCode
+        if ($installerExitCode -notin @(0, 3010)) {
+            throw "Python 安装程序退出代码：$installerExitCode"
         }
     } finally {
         Remove-Item -LiteralPath $installerPath -Force -ErrorAction SilentlyContinue
     }
 
-    if (-not (Test-Path -LiteralPath $localUv)) {
-        throw '无法安装项目专用的 Python 环境引导工具。'
+    Refresh-ProcessPath
+    $python = Find-PreferredPython
+    if (-not $python) {
+        throw 'Python 安装程序已结束，但没有找到可用的 Python 3.11+。'
     }
-    if (-not (Test-UvSupportsPythonMirror -UvPath $localUv)) {
-        throw '项目专用的 Python 环境引导工具不支持镜像下载，请稍后重试。'
-    }
-    return $localUv
-}
-
-function Install-ManagedPython {
-    param([Parameter(Mandatory = $true)][string]$UvPath)
-
-    $hadNoProgress = Test-Path Env:UV_NO_PROGRESS
-    $previousNoProgress = if ($hadNoProgress) {
-        [Environment]::GetEnvironmentVariable('UV_NO_PROGRESS', 'Process')
-    } else {
-        $null
-    }
-    try {
-        $env:UV_NO_PROGRESS = '1'
-        Write-Step "[1/6] 正在通过镜像下载项目专用的 Python $ManagedPythonVersion..."
-        $previousPreference = $ErrorActionPreference
-        try {
-            $ErrorActionPreference = 'Continue'
-            $mirrorOutput = @(& $UvPath --color never python install --no-bin --no-registry --mirror $PythonInstallMirror $ManagedPythonVersion 2>&1)
-            $mirrorExitCode = $LASTEXITCODE
-        } finally {
-            $ErrorActionPreference = $previousPreference
-        }
-        if ($mirrorExitCode -eq 0) {
-            return
-        }
-
-        Write-Step 'Python 镜像下载失败，正在切换到官方源...'
-        try {
-            $ErrorActionPreference = 'Continue'
-            $officialOutput = @(& $UvPath --color never python install --no-bin --no-registry $ManagedPythonVersion 2>&1)
-            $officialExitCode = $LASTEXITCODE
-        } finally {
-            $ErrorActionPreference = $previousPreference
-        }
-        if ($officialExitCode -ne 0) {
-            $details = (($mirrorOutput + $officialOutput) | Select-Object -Last 5 | ForEach-Object { $_.ToString() }) -join ' '
-            if ([string]::IsNullOrWhiteSpace($details)) { $details = '未返回详细错误信息' }
-            throw "Python $ManagedPythonVersion 下载失败，镜像源和官方源均不可用：${details}"
-        }
-    } finally {
-        if ($hadNoProgress) {
-            $env:UV_NO_PROGRESS = $previousNoProgress
-        } else {
-            Remove-Item Env:UV_NO_PROGRESS -ErrorAction SilentlyContinue
-        }
-    }
+    return $python
 }
 
 function Backup-InvalidVenv {
@@ -328,31 +325,37 @@ function Ensure-VirtualEnvironment {
 
     Backup-InvalidVenv
     $python = Find-PreferredPython
-    if ($python) {
-        Write-Step "[1/6] 已找到兼容的 Python：$($python.Version)"
-        Write-Step '[2/6] 正在创建项目虚拟环境：.venv...'
-        & $python.FilePath @($python.Arguments) -m venv $VenvDir
-        if ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $VenvPython)) {
-            Write-Step '[2/6] 虚拟环境创建成功。'
-            return
+    if (-not $python) {
+        $wingetPath = Get-CommandPath 'winget'
+        if ($wingetPath) {
+            Write-Step '未找到 Python 3.11+，正在以当前用户权限安装 Python 3.13...'
+            $previousPreference = $ErrorActionPreference
+            try {
+                $ErrorActionPreference = 'Continue'
+                & $wingetPath install --id Python.Python.3.13 --exact --source winget --scope user --accept-package-agreements --accept-source-agreements --silent | Out-Host
+            } finally {
+                $ErrorActionPreference = $previousPreference
+            }
+            Refresh-ProcessPath
+            $python = Find-PreferredPython
         }
-        if (Test-Path -LiteralPath $VenvDir) {
-            $failedName = ".venv.failed-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
-            Move-Item -LiteralPath $VenvDir -Destination (Join-Path $RootDir $failedName)
-        }
-        Write-Step '系统 Python 无法创建虚拟环境，将改用项目专用的 Python。'
+    }
+    if (-not $python) {
+        $python = Install-PythonFromMirror
     }
 
-    $uvPath = Ensure-Uv
-    Install-ManagedPython -UvPath $uvPath
+    Write-Step "[1/6] 已找到兼容的 Python：$($python.Version)"
     Write-Step '[2/6] 正在创建项目虚拟环境：.venv...'
-    Invoke-Checked $uvPath @(
-        'venv', '--python', $ManagedPythonVersion, '--managed-python', '--no-python-downloads', $VenvDir
-    )
-    if (-not (Test-Path -LiteralPath $VenvPython)) {
-        throw '虚拟环境创建结束，但未找到可用的 python.exe。'
+    & $python.FilePath @($python.Arguments) -m venv $VenvDir
+    if ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $VenvPython)) {
+        Write-Step '[2/6] 虚拟环境创建成功。'
+        return
     }
-    Write-Step '[2/6] 虚拟环境创建成功。'
+    if (Test-Path -LiteralPath $VenvDir) {
+        $failedName = ".venv.failed-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+        Move-Item -LiteralPath $VenvDir -Destination (Join-Path $RootDir $failedName)
+    }
+    throw '系统 Python 无法创建虚拟环境，请确认 Python 安装包含 venv 模块。'
 }
 
 function Test-FrameworkComplete {
@@ -377,12 +380,153 @@ function Get-FrameworkDownloadUrls {
     $customMirror = [string]$env:ELAINABOT_FRAMEWORK_MIRROR
     if (-not [string]::IsNullOrWhiteSpace($customMirror)) {
         $customMirror = $customMirror.Trim().TrimEnd('/')
-        Write-Output ("$customMirror/$FrameworkDownloadUrl")
+        if ($customMirror -match '\.(zip)(\?.*)?$') {
+            Write-Output $customMirror
+        } else {
+            Write-Output ("$customMirror/$FrameworkArchiveUrl")
+        }
     }
     foreach ($mirror in $FrameworkMirrors) {
-        Write-Output ("$($mirror.TrimEnd('/'))/$FrameworkDownloadUrl")
+        Write-Output ("$($mirror.TrimEnd('/'))/$FrameworkArchiveUrl")
     }
-    Write-Output $FrameworkDownloadUrl
+    Write-Output $FrameworkArchiveUrl
+}
+
+function Get-AvailableFrameworkDownloadUrl {
+    $urls = @(Get-FrameworkDownloadUrls | Select-Object -Unique)
+    if ($urls.Count -eq 0) {
+        throw '没有可用的框架下载地址。'
+    }
+
+    Write-Step "正在依次检测框架下载源，找到可用源后立即下载..."
+    foreach ($url in $urls) {
+        Write-Step "正在检测框架镜像: $url"
+        $response = $null
+        $stream = $null
+        try {
+            $request = [Net.HttpWebRequest]::Create($url)
+            $request.Method = 'GET'
+            $request.AllowAutoRedirect = $true
+            $request.Timeout = 6000
+            $request.ReadWriteTimeout = 6000
+            $request.UserAgent = 'ElainaBot-Startup-Mirror-Test'
+            $request.Accept = 'application/zip, application/octet-stream;q=0.9, */*;q=0.1'
+            $request.Headers['Accept-Encoding'] = 'identity'
+            $request.AddRange(0, 3)
+
+            $response = $request.GetResponse()
+            $stream = $response.GetResponseStream()
+            $signature = New-Object byte[] 4
+            $bytesRead = 0
+            while ($bytesRead -lt $signature.Length) {
+                $count = $stream.Read($signature, $bytesRead, $signature.Length - $bytesRead)
+                if ($count -le 0) {
+                    break
+                }
+                $bytesRead += $count
+            }
+
+            $isZip = $bytesRead -eq 4 -and
+                $signature[0] -eq 0x50 -and
+                $signature[1] -eq 0x4B -and
+                (($signature[2] -eq 0x03 -and $signature[3] -eq 0x04) -or
+                 ($signature[2] -eq 0x05 -and $signature[3] -eq 0x06) -or
+                 ($signature[2] -eq 0x07 -and $signature[3] -eq 0x08))
+            if ($isZip) {
+                Write-Step "已找到可用框架镜像: $url"
+                return $url
+            }
+            Write-Step '当前镜像响应不是有效 ZIP，继续检测下一个来源。'
+        } catch {
+            Write-Step "当前镜像不可用，继续检测下一个来源：$($_.Exception.Message)"
+        } finally {
+            if ($null -ne $stream) {
+                $stream.Dispose()
+            }
+            if ($null -ne $response) {
+                $response.Dispose()
+            }
+        }
+    }
+
+    throw "下载框架失败，请手动下载：[https://github.com/ElainaCore/ElainaBot_v2]($FrameworkManualDownloadUrl)"
+}
+function Invoke-FrameworkArchiveDownload {
+    param(
+        [Parameter(Mandatory = $true)][string]$Url,
+        [Parameter(Mandatory = $true)][string]$DestinationPath
+    )
+
+    $downloadSource = @'
+import os
+import shutil
+import socket
+import sys
+import urllib.request
+from pathlib import Path
+
+url = os.environ['ELAINABOT_DOWNLOAD_URL']
+destination = Path(os.environ['ELAINABOT_DOWNLOAD_DESTINATION'])
+partial = destination.with_name(destination.name + '.part')
+
+default_getaddrinfo = socket.getaddrinfo
+def ipv4_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+    results = default_getaddrinfo(host, port, family, type, proto, flags)
+    ipv4_results = [item for item in results if item[0] == socket.AF_INET]
+    return ipv4_results or results
+socket.getaddrinfo = ipv4_getaddrinfo
+
+proxy_config = urllib.request.getproxies()
+openers = [('direct-ipv4', urllib.request.build_opener(urllib.request.ProxyHandler({})))]
+if any(name in proxy_config for name in ('http', 'https', 'all')):
+    openers.append(('system-proxy-ipv4', urllib.request.build_opener(urllib.request.ProxyHandler(proxy_config))))
+
+errors = []
+for mode, opener in openers:
+    try:
+        request = urllib.request.Request(
+            url,
+            headers={
+                'User-Agent': 'ElainaBot-Startup-Downloader',
+                'Accept': 'application/zip, application/octet-stream;q=0.9, */*;q=0.1',
+                'Accept-Encoding': 'identity',
+            },
+        )
+        with opener.open(request, timeout=30) as response, partial.open('wb') as output:
+            shutil.copyfileobj(response, output, length=1024 * 1024)
+        os.replace(partial, destination)
+        print(mode)
+        raise SystemExit(0)
+    except Exception as exc:
+        partial.unlink(missing_ok=True)
+        errors.append(f'{mode}: {type(exc).__name__}: {exc}')
+
+print(' | '.join(errors), file=sys.stderr)
+raise SystemExit(1)
+'@
+    $previousUrl = $env:ELAINABOT_DOWNLOAD_URL
+    $previousDestination = $env:ELAINABOT_DOWNLOAD_DESTINATION
+    try {
+        $env:ELAINABOT_DOWNLOAD_URL = $Url
+        $env:ELAINABOT_DOWNLOAD_DESTINATION = $DestinationPath
+        $previousPreference = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'Continue'
+            $downloadOutput = @($downloadSource | & $VenvPython - 2>&1)
+            $downloadExitCode = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $previousPreference
+        }
+    } finally {
+        if ($null -eq $previousUrl) { Remove-Item Env:ELAINABOT_DOWNLOAD_URL -ErrorAction SilentlyContinue } else { $env:ELAINABOT_DOWNLOAD_URL = $previousUrl }
+        if ($null -eq $previousDestination) { Remove-Item Env:ELAINABOT_DOWNLOAD_DESTINATION -ErrorAction SilentlyContinue } else { $env:ELAINABOT_DOWNLOAD_DESTINATION = $previousDestination }
+    }
+    if ($downloadExitCode -ne 0) {
+        $details = ($downloadOutput | Select-Object -Last 5 | ForEach-Object { $_.ToString() }) -join ' '
+        throw "下载失败：$details"
+    }
+    $downloadMode = ($downloadOutput | Select-Object -Last 1).ToString()
+    Write-Step "框架压缩包下载完成（$downloadMode）。"
 }
 
 function Restore-FrameworkArchive {
@@ -486,17 +630,18 @@ function Ensure-Framework {
         return
     }
 
-    Write-Step ("[3/6] 缺少框架基本文件: $($missing -join ', ')，正在通过镜像下载并解压...")
+    Write-Step ("[3/6] 缺少框架基本文件: $($missing -join ', ')，正在检测镜像...")
+    $downloadUrl = Get-AvailableFrameworkDownloadUrl
     $staging = Join-Path ([IO.Path]::GetTempPath()) ("elainabot-framework-$([guid]::NewGuid().ToString('N'))")
     $extractPath = Join-Path $staging 'extracted'
     $archivePath = Join-Path $staging 'framework.zip'
     New-Item -ItemType Directory -Path $extractPath -Force | Out-Null
     try {
-        foreach ($url in @(Get-FrameworkDownloadUrls)) {
-            Write-Step "正在尝试框架镜像: $url"
+        foreach ($url in @($downloadUrl)) {
+            Write-Step "正在下载框架镜像: $url"
             Remove-Item -LiteralPath $archivePath -Force -ErrorAction SilentlyContinue
             try {
-                Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $archivePath -TimeoutSec 180
+                Invoke-FrameworkArchiveDownload -Url $url -DestinationPath $archivePath
                 & $VenvPython -c "import zipfile,sys; raise SystemExit(0 if zipfile.is_zipfile(sys.argv[1]) else 1)" $archivePath
                 if ($LASTEXITCODE -ne 0) {
                     throw '下载内容不是有效 ZIP'
@@ -512,7 +657,7 @@ function Ensure-Framework {
                 Write-Step "镜像下载或解压失败，尝试下一个来源：$($_.Exception.Message)"
             }
         }
-        throw '框架基本文件缺失，镜像源和官方源均无法下载或解压。'
+        throw "下载框架失败，请手动下载：[https://github.com/ElainaCore/ElainaBot_v2]($FrameworkManualDownloadUrl)"
     } finally {
         Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
     }
