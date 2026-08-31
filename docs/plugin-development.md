@@ -609,6 +609,16 @@ buttons = [
 await event.reply('请选择操作', buttons=buttons)
 ~~~
 
+互斥按钮只需设置相同的 `group_id`，框架会自动将其写入最终按钮根级：
+
+~~~python
+buttons = [[
+    {'text': '赞👍', 'type': 1, 'data': 'vote_up', 'group_id': 'vote'},
+    {'text': '踩👎', 'type': 1, 'data': 'vote_down', 'group_id': 'vote'},
+]]
+await event.reply('请选择', buttons=buttons)
+~~~
+
 按钮字段：
 
 | 字段 | 默认值 | 说明 |
@@ -626,8 +636,9 @@ await event.reply('请选择操作', buttons=buttons)
 | `tips` | 无 | 客户端不支持时的提示 |
 | `modal` | 无 | 二次确认内容，可传字符串或字典 |
 | `subscribe` | 无 | 订阅模板 ID、ID 列表或原生订阅字典 |
+| `group_id` | 无 | 相同值的按钮由客户端互斥，框架自动写入最终按钮根级 |
 
-权限字段按以下优先级取第一个：`permission` > `role` > `list` > `admin` > 所有人。平台原生 `action`、`render_data`、`subscribe_data`、`click_limit`、`unsupport_tips` 和 `anchor` 也可直接传入。
+权限字段按以下优先级取第一个：`permission` > `role` > `list` > `admin` > 所有人。平台原生 `action`、`render_data`、`subscribe_data`、`click_limit`、`unsupport_tips` 和 `anchor` 也可直接传入。客户端互斥不代替服务端业务校验。
 
 整组按钮字号：
 

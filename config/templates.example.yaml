@@ -36,6 +36,7 @@
 #   style    - 样式 (0=灰色, 1=蓝色)
 #   admin    - 仅管理员可点 (true)
 #   list     - 限定可点击的用户ID列表
+#   group_id - 与 text/data/style 同级; 框架自动写入最终按钮根级, 相同值由客户端互斥
 
 # ===== 群欢迎(机器人被邀请入群) =====
 welcome:

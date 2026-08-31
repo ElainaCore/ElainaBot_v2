@@ -35,6 +35,9 @@ def build_keyboard(button_rows, appid=None, *, font_size=None, style=None):
                 'render_data': r_data,
                 'action': action,
             }
+            # 客户端互斥组标识: 同一消息中 group_id 相同的按钮由客户端互斥
+            if 'group_id' in btn:
+                b['group_id'] = btn['group_id']
             # 自定义字段覆盖
             if show := btn.get('show'):
                 r_data.setdefault('visited_label', show)

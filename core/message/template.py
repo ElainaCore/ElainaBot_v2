@@ -130,6 +130,9 @@ def _build_single_button(btn, variables):
         result['reply'] = True
     if 'style' in btn:
         result['style'] = btn['style']
+    # 客户端互斥组标识: 同一消息中 group_id 相同的按钮由客户端互斥
+    if 'group_id' in btn:
+        result['group_id'] = btn['group_id']
     if btn.get('admin'):
         result['permission'] = {'type': 1}
     elif 'list' in btn:

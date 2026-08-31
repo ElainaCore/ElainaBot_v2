@@ -158,6 +158,11 @@ BUTTONS = [
         {'text': '黑框红字', 'data': 's3', 'type': 1, 'style': 3},
         {'text': '蓝底白字', 'data': 's4', 'type': 1, 'style': 4},
     ],
+    # group_id 相同的按钮由客户端互斥，框架会将其写入最终按钮根级
+    [
+        {'text': '赞👍', 'data': 'vote_up', 'type': 1, 'style': 1, 'group_id': 'vote'},
+        {'text': '踩👎', 'data': 'vote_down', 'type': 1, 'style': 0, 'group_id': 'vote'},
+    ],
     # 订阅按钮需要随富文本消息发送
     [
         {
@@ -171,7 +176,7 @@ BUTTONS = [
 ]
 
 
-@handler(r'^按钮$', name='按钮示例', desc='发送带按钮的消息 (含订阅按钮)', owner_only=True)
+@handler(r'^按钮$', name='按钮示例', desc='发送带按钮的消息 (含互斥、订阅按钮)', owner_only=True)
 async def send_buttons(event, match):
     await event.reply('📌 按钮功能演示', buttons=BUTTONS, msg_type=2)
 
