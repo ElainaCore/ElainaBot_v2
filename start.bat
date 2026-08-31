@@ -26,9 +26,27 @@ $Utf8Encoding = New-Object Text.UTF8Encoding($false)
 $WindowsVersion = [Environment]::OSVersion.Version
 $UseLegacyWindowsPath = $WindowsVersion.Major -lt 10
 $UseSystemBrowserPanel = $UseLegacyWindowsPath
-$ProgressPreference = 'SilentlyContinue'
+$supportsVirtualTerminal = $false
+$supportsVirtualTerminalProperty = $Host.UI.PSObject.Properties['SupportsVirtualTerminal']
+if ($supportsVirtualTerminalProperty) {
+    $supportsVirtualTerminal = [bool]$supportsVirtualTerminalProperty.Value
+}
+$UseRichConsoleOutput = ([string]$env:ELAINABOT_RICH_OUTPUT -eq '1') -and
+    (-not $UseLegacyWindowsPath) -and
+    (-not [Console]::IsOutputRedirected) -and
+    $supportsVirtualTerminal
+$ProgressPreference = if ($UseRichConsoleOutput) { 'Continue' } else { 'SilentlyContinue' }
+if (-not $UseLegacyWindowsPath) {
+    [Console]::InputEncoding = $Utf8Encoding
+    [Console]::OutputEncoding = $Utf8Encoding
+    $OutputEncoding = $Utf8Encoding
+}
 $env:PYTHONUTF8 = '1'
-$env:PYTHONIOENCODING = [Console]::OutputEncoding.WebName
+$env:PYTHONIOENCODING = if ($UseLegacyWindowsPath) {
+    [Console]::OutputEncoding.WebName
+} else {
+    'utf-8'
+}
 [Net.ServicePointManager]::SecurityProtocol =
     [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
@@ -136,8 +154,13 @@ function Invoke-Checked {
 function Invoke-PipInstall {
     param([Parameter(Mandatory = $true)][string[]]$Arguments)
 
+    $displayArguments = if ($UseRichConsoleOutput) {
+        @()
+    } else {
+        @('--quiet', '--progress-bar', 'off', '--no-color')
+    }
     Write-Step '正在优先使用清华 PyPI 镜像安装依赖...'
-    & $VenvPython -m pip install --disable-pip-version-check --index-url $PipMirror @Arguments
+    & $VenvPython -m pip install --disable-pip-version-check @displayArguments --index-url $PipMirror @Arguments
     if ($LASTEXITCODE -eq 0) {
         return
     }
@@ -146,7 +169,7 @@ function Invoke-PipInstall {
     Invoke-Checked $VenvPython (@(
         '-m', 'pip', 'install', '--disable-pip-version-check',
         '--index-url', $OfficialPipSource
-    ) + $Arguments)
+    ) + $displayArguments + $Arguments)
 }
 
 function Get-CommandPath {
@@ -155,7 +178,16 @@ function Get-CommandPath {
     if ($null -eq $command) {
         return $null
     }
-    return $command.Source
+    foreach ($propertyName in @('Path', 'Source', 'Definition')) {
+        $property = $command.PSObject.Properties[$propertyName]
+        if ($property) {
+            $value = [string]$property.Value
+            if (-not [string]::IsNullOrWhiteSpace($value)) {
+                return $value
+            }
+        }
+    }
+    return $null
 }
 
 function Test-PythonCandidate {
@@ -233,7 +265,11 @@ function Find-PreferredPython {
         'HKLM:\Software\WOW6432Node\Python\PythonCore'
     )) {
         foreach ($versionKey in @(Get-ChildItem -Path $registryPath -ErrorAction SilentlyContinue | Sort-Object PSChildName -Descending)) {
-            $installPath = (Get-ItemProperty -LiteralPath $versionKey.PSPath -Name InstallPath -ErrorAction SilentlyContinue).InstallPath
+            $installPath = $null
+            $installPathKey = Get-Item -LiteralPath (Join-Path $versionKey.PSPath 'InstallPath') -ErrorAction SilentlyContinue
+            if ($installPathKey) {
+                $installPath = [string]$installPathKey.GetValue('')
+            }
             if ($installPath) {
                 $candidate = Test-PythonCandidate -FilePath (Join-Path $installPath 'python.exe')
                 if ($candidate) { return $candidate }
@@ -243,20 +279,51 @@ function Find-PreferredPython {
     return $null
 }
 
+function Find-PreferredPythonWithRetry {
+    param(
+        [int]$Attempts = 12,
+        [int]$DelayMilliseconds = 500
+    )
+
+    for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
+        Refresh-ProcessPath
+        $python = Find-PreferredPython
+        if ($python) {
+            return $python
+        }
+        if ($attempt -lt $Attempts) {
+            Start-Sleep -Milliseconds $DelayMilliseconds
+        }
+    }
+    return $null
+}
+
 function Get-LatestPythonInstaller {
     param([Parameter(Mandatory = $true)][string]$MirrorRoot)
 
     $listing = Invoke-WebRequest -UseBasicParsing -Uri "$MirrorRoot/" -TimeoutSec 60
-    $entries = @($listing.Content | ConvertFrom-Json)
-    $latestEntry = @($entries |
-        Where-Object { $_.name -like '3.13.*' -and $_.name.EndsWith('/') } |
-        Sort-Object { [version]$_.name.TrimEnd('/') } -Descending |
-        Select-Object -First 1)
+    $entryGroups = @($listing.Content | ConvertFrom-Json)
+    $candidates = @()
+    foreach ($entryGroup in $entryGroups) {
+        foreach ($entry in @($entryGroup)) {
+            if ($null -eq $entry) { continue }
+            $nameProperty = $entry.PSObject.Properties['name']
+            if (-not $nameProperty) { continue }
+            $name = [string]$nameProperty.Value
+            if ($name -match '^3\.13\.(\d+)/$') {
+                $candidates += [PSCustomObject]@{
+                    Name = $name
+                    Patch = [int]$Matches[1]
+                }
+            }
+        }
+    }
+    $latestEntry = @($candidates | Sort-Object Patch -Descending | Select-Object -First 1)
     if ($latestEntry.Count -eq 0) {
         throw '镜像目录中没有找到可用的 Python 3.13.x 版本。'
     }
 
-    $version = $latestEntry[0].name.TrimEnd('/')
+    $version = $latestEntry[0].Name.TrimEnd('/')
     $architecture = [Environment]::GetEnvironmentVariable('PROCESSOR_ARCHITEW6432')
     if ([string]::IsNullOrWhiteSpace($architecture)) {
         $architecture = [Environment]::GetEnvironmentVariable('PROCESSOR_ARCHITECTURE')
@@ -295,8 +362,7 @@ function Install-PythonFromMirror {
         Remove-Item -LiteralPath $installerPath -Force -ErrorAction SilentlyContinue
     }
 
-    Refresh-ProcessPath
-    $python = Find-PreferredPython
+    $python = Find-PreferredPythonWithRetry
     if (-not $python) {
         throw 'Python 安装程序已结束，但没有找到可用的 Python 3.11+。'
     }
@@ -329,15 +395,24 @@ function Ensure-VirtualEnvironment {
         $wingetPath = Get-CommandPath 'winget'
         if ($wingetPath) {
             Write-Step '未找到 Python 3.11+，正在以当前用户权限安装 Python 3.13...'
+            $wingetExitCode = 1
             $previousPreference = $ErrorActionPreference
             try {
                 $ErrorActionPreference = 'Continue'
-                & $wingetPath install --id Python.Python.3.13 --exact --source winget --scope user --accept-package-agreements --accept-source-agreements --silent | Out-Host
+                $wingetArguments = @(
+                    'install', '--id', 'Python.Python.3.13', '--exact', '--source', 'winget',
+                    '--scope', 'user', '--accept-package-agreements', '--accept-source-agreements',
+                    '--disable-interactivity', '--silent'
+                )
+                & $wingetPath @wingetArguments *> $null
+                $wingetExitCode = $LASTEXITCODE
             } finally {
                 $ErrorActionPreference = $previousPreference
             }
-            Refresh-ProcessPath
-            $python = Find-PreferredPython
+            if ($wingetExitCode -ne 0) {
+                Write-Step "winget 安装失败（退出代码 $wingetExitCode），正在切换到 Python 镜像。"
+            }
+            $python = Find-PreferredPythonWithRetry
         }
     }
     if (-not $python) {
@@ -398,58 +473,85 @@ function Get-AvailableFrameworkDownloadUrl {
         throw '没有可用的框架下载地址。'
     }
 
-    Write-Step "正在依次检测框架下载源，找到可用源后立即下载..."
-    foreach ($url in $urls) {
-        Write-Step "正在检测框架镜像: $url"
-        $response = $null
-        $stream = $null
+    Write-Step "正在并发检测 $($urls.Count) 个框架下载源..."
+    $probeSource = @'
+import concurrent.futures
+import os
+import socket
+import sys
+import urllib.request
+
+urls = [line for line in os.environ['ELAINABOT_FRAMEWORK_PROBE_URLS'].splitlines() if line]
+zip_signatures = (b'PK\x03\x04', b'PK\x05\x06', b'PK\x07\x08')
+
+default_getaddrinfo = socket.getaddrinfo
+def ipv4_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+    results = default_getaddrinfo(host, port, family, type, proto, flags)
+    ipv4_results = [item for item in results if item[0] == socket.AF_INET]
+    return ipv4_results or results
+socket.getaddrinfo = ipv4_getaddrinfo
+
+proxy_config = urllib.request.getproxies()
+
+def probe(item):
+    index, url = item
+    openers = [urllib.request.build_opener(urllib.request.ProxyHandler({}))]
+    if any(name in proxy_config for name in ('http', 'https', 'all')):
+        openers.append(urllib.request.build_opener(urllib.request.ProxyHandler(proxy_config)))
+    for opener in openers:
+        try:
+            request = urllib.request.Request(
+                url,
+                headers={
+                    'User-Agent': 'ElainaBot-Startup-Mirror-Test',
+                    'Accept': 'application/zip, application/octet-stream;q=0.9, */*;q=0.1',
+                    'Accept-Encoding': 'identity',
+                    'Range': 'bytes=0-3',
+                },
+            )
+            with opener.open(request, timeout=3) as response:
+                if response.read(4) in zip_signatures:
+                    return index
+        except Exception:
+            pass
+    return None
+
+with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(urls))) as executor:
+    available = [index for index in executor.map(probe, enumerate(urls)) if index is not None]
+
+if not available:
+    raise SystemExit(1)
+print(urls[min(available)])
+'@
+
+    $previousProbeUrls = $env:ELAINABOT_FRAMEWORK_PROBE_URLS
+    try {
+        $env:ELAINABOT_FRAMEWORK_PROBE_URLS = $urls -join "`n"
+        $previousPreference = $ErrorActionPreference
         try {
-            $request = [Net.HttpWebRequest]::Create($url)
-            $request.Method = 'GET'
-            $request.AllowAutoRedirect = $true
-            $request.Timeout = 6000
-            $request.ReadWriteTimeout = 6000
-            $request.UserAgent = 'ElainaBot-Startup-Mirror-Test'
-            $request.Accept = 'application/zip, application/octet-stream;q=0.9, */*;q=0.1'
-            $request.Headers['Accept-Encoding'] = 'identity'
-            $request.AddRange(0, 3)
-
-            $response = $request.GetResponse()
-            $stream = $response.GetResponseStream()
-            $signature = New-Object byte[] 4
-            $bytesRead = 0
-            while ($bytesRead -lt $signature.Length) {
-                $count = $stream.Read($signature, $bytesRead, $signature.Length - $bytesRead)
-                if ($count -le 0) {
-                    break
-                }
-                $bytesRead += $count
-            }
-
-            $isZip = $bytesRead -eq 4 -and
-                $signature[0] -eq 0x50 -and
-                $signature[1] -eq 0x4B -and
-                (($signature[2] -eq 0x03 -and $signature[3] -eq 0x04) -or
-                 ($signature[2] -eq 0x05 -and $signature[3] -eq 0x06) -or
-                 ($signature[2] -eq 0x07 -and $signature[3] -eq 0x08))
-            if ($isZip) {
-                Write-Step "已找到可用框架镜像: $url"
-                return $url
-            }
-            Write-Step '当前镜像响应不是有效 ZIP，继续检测下一个来源。'
-        } catch {
-            Write-Step "当前镜像不可用，继续检测下一个来源：$($_.Exception.Message)"
+            $ErrorActionPreference = 'Continue'
+            $probeOutput = @($probeSource | & $VenvPython - 2>&1)
+            $probeExitCode = $LASTEXITCODE
         } finally {
-            if ($null -ne $stream) {
-                $stream.Dispose()
-            }
-            if ($null -ne $response) {
-                $response.Dispose()
-            }
+            $ErrorActionPreference = $previousPreference
+        }
+    } finally {
+        if ($null -eq $previousProbeUrls) {
+            Remove-Item Env:ELAINABOT_FRAMEWORK_PROBE_URLS -ErrorAction SilentlyContinue
+        } else {
+            $env:ELAINABOT_FRAMEWORK_PROBE_URLS = $previousProbeUrls
         }
     }
 
-    throw "下载框架失败，请手动下载：[https://github.com/ElainaCore/ElainaBot_v2]($FrameworkManualDownloadUrl)"
+    if ($probeExitCode -ne 0 -or $probeOutput.Count -eq 0) {
+        throw "下载框架失败，请手动下载：[https://github.com/ElainaCore/ElainaBot_v2]($FrameworkManualDownloadUrl)"
+    }
+    $availableUrl = $probeOutput[-1].ToString().Trim()
+    if ([string]::IsNullOrWhiteSpace($availableUrl)) {
+        throw "下载框架失败，请手动下载：[https://github.com/ElainaCore/ElainaBot_v2]($FrameworkManualDownloadUrl)"
+    }
+    Write-Step "已找到可用框架下载源: $availableUrl"
+    return $availableUrl
 }
 function Invoke-FrameworkArchiveDownload {
     param(
@@ -468,6 +570,7 @@ from pathlib import Path
 url = os.environ['ELAINABOT_DOWNLOAD_URL']
 destination = Path(os.environ['ELAINABOT_DOWNLOAD_DESTINATION'])
 partial = destination.with_name(destination.name + '.part')
+show_progress = os.environ.get('ELAINABOT_SHOW_PROGRESS') == '1'
 
 default_getaddrinfo = socket.getaddrinfo
 def ipv4_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
@@ -493,7 +596,43 @@ for mode, opener in openers:
             },
         )
         with opener.open(request, timeout=30) as response, partial.open('wb') as output:
-            shutil.copyfileobj(response, output, length=1024 * 1024)
+            if not show_progress:
+                shutil.copyfileobj(response, output, length=1024 * 1024)
+            else:
+                total = int(response.headers.get('Content-Length') or 0)
+                downloaded = 0
+                last_percent = -1
+                try:
+                    progress_output = open('CONOUT$', 'w', encoding='ascii', errors='replace', buffering=1)
+                    close_progress_output = True
+                except OSError:
+                    progress_output = sys.stderr
+                    close_progress_output = False
+                try:
+                    while True:
+                        chunk = response.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        output.write(chunk)
+                        downloaded += len(chunk)
+                        if total > 0:
+                            percent = min(100, downloaded * 100 // total)
+                            if percent != last_percent:
+                                filled = percent * 30 // 100
+                                bar = '#' * filled + '-' * (30 - filled)
+                                progress_output.write(
+                                    f'\r[ElainaBot] Download [{bar}] {percent:3d}% '
+                                    f'{downloaded / 1048576:.1f}/{total / 1048576:.1f} MiB'
+                                )
+                                last_percent = percent
+                        else:
+                            progress_output.write(
+                                f'\r[ElainaBot] Downloaded {downloaded / 1048576:.1f} MiB'
+                            )
+                    progress_output.write('\n')
+                finally:
+                    if close_progress_output:
+                        progress_output.close()
         os.replace(partial, destination)
         print(mode)
         raise SystemExit(0)
@@ -506,9 +645,11 @@ raise SystemExit(1)
 '@
     $previousUrl = $env:ELAINABOT_DOWNLOAD_URL
     $previousDestination = $env:ELAINABOT_DOWNLOAD_DESTINATION
+    $previousShowProgress = $env:ELAINABOT_SHOW_PROGRESS
     try {
         $env:ELAINABOT_DOWNLOAD_URL = $Url
         $env:ELAINABOT_DOWNLOAD_DESTINATION = $DestinationPath
+        $env:ELAINABOT_SHOW_PROGRESS = if ($UseRichConsoleOutput) { '1' } else { '0' }
         $previousPreference = $ErrorActionPreference
         try {
             $ErrorActionPreference = 'Continue'
@@ -520,6 +661,7 @@ raise SystemExit(1)
     } finally {
         if ($null -eq $previousUrl) { Remove-Item Env:ELAINABOT_DOWNLOAD_URL -ErrorAction SilentlyContinue } else { $env:ELAINABOT_DOWNLOAD_URL = $previousUrl }
         if ($null -eq $previousDestination) { Remove-Item Env:ELAINABOT_DOWNLOAD_DESTINATION -ErrorAction SilentlyContinue } else { $env:ELAINABOT_DOWNLOAD_DESTINATION = $previousDestination }
+        if ($null -eq $previousShowProgress) { Remove-Item Env:ELAINABOT_SHOW_PROGRESS -ErrorAction SilentlyContinue } else { $env:ELAINABOT_SHOW_PROGRESS = $previousShowProgress }
     }
     if ($downloadExitCode -ne 0) {
         $details = ($downloadOutput | Select-Object -Last 5 | ForEach-Object { $_.ToString() }) -join ' '
