@@ -26,15 +26,61 @@ $Utf8Encoding = New-Object Text.UTF8Encoding($false)
 $WindowsVersion = [Environment]::OSVersion.Version
 $UseLegacyWindowsPath = $WindowsVersion.Major -lt 10
 $UseSystemBrowserPanel = $UseLegacyWindowsPath
-$supportsVirtualTerminal = $false
-$supportsVirtualTerminalProperty = $Host.UI.PSObject.Properties['SupportsVirtualTerminal']
-if ($supportsVirtualTerminalProperty) {
-    $supportsVirtualTerminal = [bool]$supportsVirtualTerminalProperty.Value
+
+function Test-RichConsoleOutputAvailable {
+    if ($UseLegacyWindowsPath -or
+        [string]$env:ELAINABOT_RICH_OUTPUT -eq '0' -or
+        [Console]::IsOutputRedirected) {
+        return $false
+    }
+
+    try {
+        if (-not ('ElainaBot.NativeConsole' -as [type])) {
+            Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+
+namespace ElainaBot {
+    public static class NativeConsole {
+        [DllImport("kernel32.dll", SetLastError = true)]
+        public static extern IntPtr GetStdHandle(int standardHandle);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        public static extern bool GetConsoleMode(IntPtr consoleHandle, out uint mode);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        public static extern bool SetConsoleMode(IntPtr consoleHandle, uint mode);
+    }
 }
-$UseRichConsoleOutput = ([string]$env:ELAINABOT_RICH_OUTPUT -eq '1') -and
-    (-not $UseLegacyWindowsPath) -and
-    (-not [Console]::IsOutputRedirected) -and
-    $supportsVirtualTerminal
+'@ -ErrorAction Stop
+        }
+
+        $stdoutHandle = [ElainaBot.NativeConsole]::GetStdHandle(-11)
+        if ($stdoutHandle -eq [IntPtr]::Zero -or $stdoutHandle -eq [IntPtr]::MinusOne) {
+            return $false
+        }
+
+        [uint32]$consoleMode = 0
+        if (-not [ElainaBot.NativeConsole]::GetConsoleMode($stdoutHandle, [ref]$consoleMode)) {
+            return $false
+        }
+
+        $enableVirtualTerminalProcessing = [uint32]0x0004
+        if (($consoleMode -band $enableVirtualTerminalProcessing) -eq 0) {
+            if (-not [ElainaBot.NativeConsole]::SetConsoleMode(
+                $stdoutHandle,
+                ($consoleMode -bor $enableVirtualTerminalProcessing)
+            )) {
+                return $false
+            }
+        }
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+$UseRichConsoleOutput = Test-RichConsoleOutputAvailable
 $ProgressPreference = if ($UseRichConsoleOutput) { 'Continue' } else { 'SilentlyContinue' }
 if (-not $UseLegacyWindowsPath) {
     [Console]::InputEncoding = $Utf8Encoding
@@ -133,6 +179,18 @@ function Write-Step {
     Write-ConsoleLine "[ElainaBot] $Message" Cyan
 }
 
+function Write-DependencyProgress {
+    param(
+        [Parameter(Mandatory = $true)][ValidateRange(0, 100)][int]$Percent,
+        [Parameter(Mandatory = $true)][string]$Activity
+    )
+
+    $width = 30
+    $filled = [Math]::Min($width, [Math]::Floor($Percent * $width / 100))
+    $bar = ('#' * $filled) + ('-' * ($width - $filled))
+    Write-ConsoleLine ("[ElainaBot] [5/6] [$bar] {0,3}%  $Activity" -f $Percent)
+}
+
 function Refresh-ProcessPath {
     $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
     $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
@@ -151,25 +209,107 @@ function Invoke-Checked {
     }
 }
 
+function Invoke-VisibleProcess {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [Parameter(Mandatory = $true)][string]$HeartbeatMessage,
+        [bool]$ForwardOutput = $true
+    )
+
+    # Redirect child output to temporary files so it can be forwarded line by
+    # line while the process runs, including on Windows PowerShell 5.1.
+    $token = [Guid]::NewGuid().ToString('N')
+    $stdoutPath = Join-Path ([IO.Path]::GetTempPath()) ("elainabot-$token.out")
+    $stderrPath = Join-Path ([IO.Path]::GetTempPath()) ("elainabot-$token.err")
+    $quotedArguments = foreach ($argument in $Arguments) {
+        $text = [string]$argument
+        if ($text -match '[\s"]') {
+            '"' + $text.Replace('"', '\"') + '"'
+        } else {
+            $text
+        }
+    }
+    $process = $null
+    $stdoutIndex = 0
+    $stderrIndex = 0
+    $lastHeartbeat = Get-Date
+    try {
+        $process = Start-Process -FilePath $FilePath -ArgumentList ($quotedArguments -join ' ') -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath -PassThru -WindowStyle Hidden
+        while (-not $process.HasExited) {
+            if ($ForwardOutput) {
+                foreach ($stream in @(@{ Path = $stdoutPath; Index = [ref]$stdoutIndex; Error = $false }, @{ Path = $stderrPath; Index = [ref]$stderrIndex; Error = $true })) {
+                    try {
+                        $lines = @(Get-Content -LiteralPath $stream.Path -Encoding UTF8 -ErrorAction SilentlyContinue)
+                        while ($stream.Index.Value -lt $lines.Count) {
+                            $line = [string]$lines[$stream.Index.Value]
+                            $stream.Index.Value++
+                            if ($stream.Error) {
+                                Write-ConsoleLine ("[pip] $line")
+                            } else {
+                                Write-ConsoleLine $line
+                            }
+                        }
+                    } catch { }
+                }
+            }
+            if (((Get-Date) - $lastHeartbeat).TotalSeconds -ge 3) {
+                Write-Step $HeartbeatMessage
+                $lastHeartbeat = Get-Date
+            }
+            Start-Sleep -Milliseconds 250
+        }
+        $process.WaitForExit()
+        if ($ForwardOutput) {
+            foreach ($stream in @(@{ Path = $stdoutPath; Index = [ref]$stdoutIndex; Error = $false }, @{ Path = $stderrPath; Index = [ref]$stderrIndex; Error = $true })) {
+                try {
+                    $lines = @(Get-Content -LiteralPath $stream.Path -Encoding UTF8 -ErrorAction SilentlyContinue)
+                    while ($stream.Index.Value -lt $lines.Count) {
+                        $line = [string]$lines[$stream.Index.Value]
+                        $stream.Index.Value++
+                        if ($stream.Error) { Write-ConsoleLine ("[pip] $line") } else { Write-ConsoleLine $line }
+                    }
+                } catch { }
+            }
+        }
+        return [int]$process.ExitCode
+    } finally {
+        if ($process) { $process.Dispose() }
+        Remove-Item -LiteralPath $stdoutPath,$stderrPath -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Invoke-PipInstall {
     param([Parameter(Mandatory = $true)][string[]]$Arguments)
 
-    $displayArguments = if ($UseRichConsoleOutput) {
-        @()
-    } else {
-        @('--quiet', '--progress-bar', 'off', '--no-color')
-    }
+    $richDisplayArguments = @('--progress-bar', 'on')
+    $compatibleDisplayArguments = @('--progress-bar', 'off', '--no-color')
     Write-Step '正在优先使用清华 PyPI 镜像安装依赖...'
-    & $VenvPython -m pip install --disable-pip-version-check @displayArguments --index-url $PipMirror @Arguments
-    if ($LASTEXITCODE -eq 0) {
+    Write-Step 'pip 正在解析、下载并安装依赖，请稍候；过程中会持续显示包名。'
+
+    if ($UseRichConsoleOutput) {
+        $pipArguments = @('-u', '-m', 'pip', 'install', '--disable-pip-version-check') + $richDisplayArguments + @('--index-url', $PipMirror) + $Arguments
+        & $VenvPython @pipArguments
+        $pipExitCode = $LASTEXITCODE
+        if ($pipExitCode -ne 0) {
+            Write-Step '动态进度模式执行失败，正在使用纯文本兼容模式重试当前镜像...'
+            $pipArguments = @('-u', '-m', 'pip', 'install', '--disable-pip-version-check') + $compatibleDisplayArguments + @('--index-url', $PipMirror) + $Arguments
+            $pipExitCode = Invoke-VisibleProcess -FilePath $VenvPython -Arguments $pipArguments -HeartbeatMessage 'pip 仍在以兼容模式处理依赖，请耐心等待...'
+        }
+    } else {
+        $pipArguments = @('-u', '-m', 'pip', 'install', '--disable-pip-version-check') + $compatibleDisplayArguments + @('--index-url', $PipMirror) + $Arguments
+        $pipExitCode = Invoke-VisibleProcess -FilePath $VenvPython -Arguments $pipArguments -HeartbeatMessage 'pip 仍在处理依赖，请耐心等待...'
+    }
+    if ($pipExitCode -eq 0) {
         return
     }
 
     Write-Step '镜像源安装失败，正在切换到官方 PyPI...'
-    Invoke-Checked $VenvPython (@(
-        '-m', 'pip', 'install', '--disable-pip-version-check',
-        '--index-url', $OfficialPipSource
-    ) + $displayArguments + $Arguments)
+    $fallbackArguments = @('-u', '-m', 'pip', 'install', '--disable-pip-version-check') + $compatibleDisplayArguments + @('--index-url', $OfficialPipSource) + $Arguments
+    $fallbackExitCode = Invoke-VisibleProcess -FilePath $VenvPython -Arguments $fallbackArguments -HeartbeatMessage '官方 PyPI 仍在以兼容模式处理依赖，请耐心等待...'
+    if ($fallbackExitCode -ne 0) {
+        throw "命令执行失败，退出代码 ${fallbackExitCode}：$VenvPython $($fallbackArguments -join ' ')"
+    }
 }
 
 function Get-CommandPath {
@@ -346,7 +486,22 @@ function Install-PythonFromMirror {
 
     Write-Step "winget 安装不可用，正在通过镜像下载 Python $($installer.Version)..."
     try {
-        Invoke-WebRequest -UseBasicParsing -Uri $installer.Url -OutFile $installerPath -TimeoutSec 300
+        try {
+            Invoke-WebRequest -UseBasicParsing -Uri $installer.Url -OutFile $installerPath -TimeoutSec 300
+        } catch {
+            if (-not $UseRichConsoleOutput) {
+                throw
+            }
+            Write-Step 'Python 下载未完成，正在关闭动态进度并以兼容模式重试...'
+            Remove-Item -LiteralPath $installerPath -Force -ErrorAction SilentlyContinue
+            $previousProgressPreference = $ProgressPreference
+            try {
+                $ProgressPreference = 'SilentlyContinue'
+                Invoke-WebRequest -UseBasicParsing -Uri $installer.Url -OutFile $installerPath -TimeoutSec 300
+            } finally {
+                $ProgressPreference = $previousProgressPreference
+            }
+        }
         Write-Step 'Python 安装包下载完成，正在以当前用户权限静默安装...'
         $installerArguments = @(
             '/quiet', 'InstallAllUsers=0', 'PrependPath=0', 'Include_launcher=1',
@@ -404,8 +559,16 @@ function Ensure-VirtualEnvironment {
                     '--scope', 'user', '--accept-package-agreements', '--accept-source-agreements',
                     '--disable-interactivity', '--silent'
                 )
-                & $wingetPath @wingetArguments *> $null
-                $wingetExitCode = $LASTEXITCODE
+                if ($UseRichConsoleOutput) {
+                    & $wingetPath @wingetArguments
+                    $wingetExitCode = $LASTEXITCODE
+                    if ($wingetExitCode -ne 0) {
+                        Write-Step "winget 动态输出未完成（退出代码 $wingetExitCode），正在以兼容模式重试..."
+                        $wingetExitCode = Invoke-VisibleProcess -FilePath $wingetPath -Arguments $wingetArguments -HeartbeatMessage 'winget 仍在以兼容模式下载或安装 Python，请耐心等待...' -ForwardOutput $false
+                    }
+                } else {
+                    $wingetExitCode = Invoke-VisibleProcess -FilePath $wingetPath -Arguments $wingetArguments -HeartbeatMessage 'winget 仍在下载或安装 Python，请耐心等待...' -ForwardOutput $false
+                }
             } finally {
                 $ErrorActionPreference = $previousPreference
             }
@@ -649,14 +812,28 @@ raise SystemExit(1)
     try {
         $env:ELAINABOT_DOWNLOAD_URL = $Url
         $env:ELAINABOT_DOWNLOAD_DESTINATION = $DestinationPath
-        $env:ELAINABOT_SHOW_PROGRESS = if ($UseRichConsoleOutput) { '1' } else { '0' }
-        $previousPreference = $ErrorActionPreference
-        try {
-            $ErrorActionPreference = 'Continue'
-            $downloadOutput = @($downloadSource | & $VenvPython - 2>&1)
-            $downloadExitCode = $LASTEXITCODE
-        } finally {
-            $ErrorActionPreference = $previousPreference
+        $progressModes = @('0')
+        if ($UseRichConsoleOutput) {
+            $progressModes = @('1', '0')
+        }
+        $downloadOutput = @()
+        $downloadExitCode = 1
+        foreach ($progressMode in $progressModes) {
+            $env:ELAINABOT_SHOW_PROGRESS = $progressMode
+            $previousPreference = $ErrorActionPreference
+            try {
+                $ErrorActionPreference = 'Continue'
+                $downloadOutput = @($downloadSource | & $VenvPython - 2>&1)
+                $downloadExitCode = $LASTEXITCODE
+            } finally {
+                $ErrorActionPreference = $previousPreference
+            }
+            if ($downloadExitCode -eq 0) {
+                break
+            }
+            if ($progressMode -eq '1') {
+                Write-Step '框架下载的动态进度未完成，正在关闭动态进度并以兼容模式重试...'
+            }
         }
     } finally {
         if ($null -eq $previousUrl) { Remove-Item Env:ELAINABOT_DOWNLOAD_URL -ErrorAction SilentlyContinue } else { $env:ELAINABOT_DOWNLOAD_URL = $previousUrl }
@@ -875,24 +1052,35 @@ function Ensure-Dependencies {
     }
 
     if ($savedFingerprint -eq $fingerprint -and (Test-CoreDependencies)) {
+        Write-DependencyProgress -Percent 100 -Activity '依赖已是最新状态'
         Write-Step '[5/6] 框架依赖已经安装且为最新状态，无需重复安装。'
         return
     }
 
     Write-Step "[5/6] 正在根据 $($requirements.Count) 个依赖文件安装框架依赖..."
+    Write-DependencyProgress -Percent 5 -Activity '正在准备 pip'
+    Write-Step '[5/6] 正在准备 pip 安装工具...'
     & $VenvPython -m ensurepip --upgrade 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        throw "pip 安装工具准备失败，退出代码 ${LASTEXITCODE}。"
+    }
+    Write-DependencyProgress -Percent 15 -Activity '正在更新基础安装工具'
     Invoke-PipInstall -Arguments @('--upgrade', 'pip', 'setuptools', 'wheel')
+    Write-DependencyProgress -Percent 30 -Activity '基础安装工具已就绪'
 
     $arguments = @()
     foreach ($requirement in $requirements) {
         $arguments += @('-r', $requirement.FullName)
     }
+    Write-DependencyProgress -Percent 35 -Activity "正在安装 $($requirements.Count) 个依赖清单"
     Invoke-PipInstall -Arguments $arguments
+    Write-DependencyProgress -Percent 90 -Activity '依赖安装完成，正在验证核心包'
 
     if (-not (Test-CoreDependencies)) {
         throw '依赖安装已经结束，但仍有一个或多个核心包无法导入。'
     }
     Set-Content -LiteralPath $StampFile -Value $fingerprint -Encoding ASCII
+    Write-DependencyProgress -Percent 100 -Activity '框架依赖安装完成'
     Write-Step '[5/6] 框架依赖安装完成并通过验证。'
 }
 
@@ -923,11 +1111,17 @@ function Ensure-WebPanelDependency {
     }
 
     Write-Step '[5/6] 正在安装启动脚本专用的 Windows 桌面窗口组件...'
+    Write-DependencyProgress -Percent 92 -Activity '正在安装桌面窗口组件'
+    Write-Step '[5/6] 正在准备 pip 安装工具...'
     & $VenvPython -m ensurepip --upgrade 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        throw "pip 安装工具准备失败，退出代码 ${LASTEXITCODE}。"
+    }
     Invoke-PipInstall -Arguments @($WebPanelPackage)
     if (-not (Test-WebPanelDependency)) {
         throw 'Windows 桌面窗口组件安装结束，但 pywebview 仍无法导入。'
     }
+    Write-DependencyProgress -Percent 100 -Activity '桌面窗口组件安装完成'
     Write-Step '[5/6] Windows 桌面窗口组件安装完成。'
 }
 
@@ -1089,13 +1283,85 @@ for _ in range(120):
 else:
     raise SystemExit(1)
 
-webview.create_window(
+window = webview.create_window(
     'ElainaBot 管理面板',
     panel_url,
     width=1280,
     height=820,
     min_size=(960, 640),
 )
+
+_native_toolbar_refs = []
+
+
+def add_native_refresh_toolbar():
+    import clr
+
+    clr.AddReference('System.Windows.Forms')
+    clr.AddReference('System.Drawing')
+
+    import System.Windows.Forms as WinForms
+    from System import Action
+    from System.Drawing import Color, Font
+
+    form = window.native
+
+    def install_toolbar():
+        toolbar = WinForms.ToolStrip()
+        toolbar.Name = 'ElainaBotWindowToolbar'
+        toolbar.Dock = WinForms.DockStyle.Top
+        toolbar.AutoSize = False
+        toolbar.Height = 38
+        toolbar.GripStyle = WinForms.ToolStripGripStyle.Hidden
+        toolbar.RenderMode = WinForms.ToolStripRenderMode.System
+        toolbar.Padding = WinForms.Padding(8, 4, 8, 4)
+        toolbar.BackColor = Color.FromArgb(248, 249, 250)
+
+        refresh_button = WinForms.ToolStripButton()
+        refresh_button.Name = 'ElainaBotRefreshButton'
+        refresh_button.Text = '刷新'
+        refresh_button.ToolTipText = '刷新管理面板'
+        refresh_button.AccessibleName = '刷新管理面板'
+        refresh_button.DisplayStyle = WinForms.ToolStripItemDisplayStyle.Text
+        refresh_button.Font = Font('Microsoft YaHei UI', 9.0)
+        refresh_button.AutoSize = True
+        refresh_button.Padding = WinForms.Padding(6, 0, 6, 0)
+
+        def refresh_panel(*_):
+            try:
+                browser = getattr(form, 'browser', None)
+                native_webview = getattr(browser, 'webview', None) if browser is not None else None
+                try:
+                    core_webview = getattr(native_webview, 'CoreWebView2', None)
+                except Exception:
+                    core_webview = None
+                if core_webview is not None:
+                    core_webview.Reload()
+                elif native_webview is not None and hasattr(native_webview, 'Refresh'):
+                    native_webview.Refresh()
+                else:
+                    window.load_url(panel_url)
+            except Exception:
+                # The browser may still be initializing; retry through the
+                # public pywebview API instead of breaking the native window.
+                try:
+                    window.load_url(panel_url)
+                except Exception:
+                    pass
+
+        refresh_button.Click += refresh_panel
+        toolbar.Items.Add(refresh_button)
+        form.Controls.Add(toolbar)
+        toolbar.BringToFront()
+        form.PerformLayout()
+
+        # Keep the managed controls and Python delegate alive for the window lifetime.
+        _native_toolbar_refs.append((toolbar, refresh_button, refresh_panel))
+
+    form.BeginInvoke(Action(install_toolbar))
+
+
+window.events.shown += add_native_refresh_toolbar
 webview.start()
 '@
     }
@@ -1112,6 +1378,9 @@ webview.start()
 
 try {
     Write-Step '正在准备运行环境...'
+    if (-not $UseLegacyWindowsPath -and -not $UseRichConsoleOutput) {
+        Write-Step '当前控制台无法可靠显示动态进度，已自动切换到纯文本兼容模式。'
+    }
     Ensure-VirtualEnvironment
     Ensure-Framework
     Ensure-Dependencies
