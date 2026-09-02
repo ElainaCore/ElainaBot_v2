@@ -1268,6 +1268,7 @@ raise SystemExit(2)
 import sys
 import time
 import urllib.request
+import webbrowser
 
 import webview
 
@@ -1307,11 +1308,28 @@ def add_native_refresh_toolbar():
     form = window.native
 
     def install_toolbar():
+        browser = getattr(form, 'browser', None)
+        browser_control = getattr(browser, 'webview', None) if browser is not None else None
+        if browser_control is None:
+            return
+
+        layout = WinForms.TableLayoutPanel()
+        layout.Name = 'ElainaBotWindowLayout'
+        layout.Dock = WinForms.DockStyle.Fill
+        layout.Margin = WinForms.Padding(0)
+        layout.Padding = WinForms.Padding(0)
+        layout.ColumnCount = 1
+        layout.RowCount = 2
+        layout.ColumnStyles.Add(WinForms.ColumnStyle(WinForms.SizeType.Percent, 100.0))
+        layout.RowStyles.Add(WinForms.RowStyle(WinForms.SizeType.Absolute, 38.0))
+        layout.RowStyles.Add(WinForms.RowStyle(WinForms.SizeType.Percent, 100.0))
+
         toolbar = WinForms.ToolStrip()
         toolbar.Name = 'ElainaBotWindowToolbar'
-        toolbar.Dock = WinForms.DockStyle.Top
+        toolbar.Dock = WinForms.DockStyle.Fill
         toolbar.AutoSize = False
         toolbar.Height = 38
+        toolbar.Margin = WinForms.Padding(0)
         toolbar.GripStyle = WinForms.ToolStripGripStyle.Hidden
         toolbar.RenderMode = WinForms.ToolStripRenderMode.System
         toolbar.Padding = WinForms.Padding(8, 4, 8, 4)
@@ -1326,6 +1344,26 @@ def add_native_refresh_toolbar():
         refresh_button.Font = Font('Microsoft YaHei UI', 9.0)
         refresh_button.AutoSize = True
         refresh_button.Padding = WinForms.Padding(6, 0, 6, 0)
+
+        copy_link_button = WinForms.ToolStripButton()
+        copy_link_button.Name = 'ElainaBotCopyLinkButton'
+        copy_link_button.Text = '复制链接'
+        copy_link_button.ToolTipText = '复制管理面板链接到剪贴板'
+        copy_link_button.AccessibleName = '复制管理面板链接'
+        copy_link_button.DisplayStyle = WinForms.ToolStripItemDisplayStyle.Text
+        copy_link_button.Font = Font('Microsoft YaHei UI', 9.0)
+        copy_link_button.AutoSize = True
+        copy_link_button.Padding = WinForms.Padding(6, 0, 6, 0)
+
+        open_browser_button = WinForms.ToolStripButton()
+        open_browser_button.Name = 'ElainaBotOpenBrowserButton'
+        open_browser_button.Text = '前往浏览器打开'
+        open_browser_button.ToolTipText = '使用默认浏览器打开管理面板'
+        open_browser_button.AccessibleName = '使用默认浏览器打开管理面板'
+        open_browser_button.DisplayStyle = WinForms.ToolStripItemDisplayStyle.Text
+        open_browser_button.Font = Font('Microsoft YaHei UI', 9.0)
+        open_browser_button.AutoSize = True
+        open_browser_button.Padding = WinForms.Padding(6, 0, 6, 0)
 
         def refresh_panel(*_):
             try:
@@ -1349,14 +1387,60 @@ def add_native_refresh_toolbar():
                 except Exception:
                     pass
 
+        def copy_panel_link(*_):
+            try:
+                WinForms.Clipboard.SetText(panel_url)
+                copy_link_button.Text = '已复制'
+            except Exception:
+                copy_link_button.Text = '复制失败'
+
+            reset_timer = WinForms.Timer()
+            reset_timer.Interval = 1500
+
+            def reset_copy_button(*_):
+                reset_timer.Stop()
+                reset_timer.Dispose()
+                copy_link_button.Text = '复制链接'
+                try:
+                    _native_toolbar_refs.remove((reset_timer, reset_copy_button))
+                except ValueError:
+                    pass
+
+            reset_timer.Tick += reset_copy_button
+            _native_toolbar_refs.append((reset_timer, reset_copy_button))
+            reset_timer.Start()
+
+        def open_panel_in_browser(*_):
+            try:
+                webbrowser.open(panel_url, new=2)
+            except Exception:
+                pass
+
         refresh_button.Click += refresh_panel
+        copy_link_button.Click += copy_panel_link
+        open_browser_button.Click += open_panel_in_browser
         toolbar.Items.Add(refresh_button)
-        form.Controls.Add(toolbar)
-        toolbar.BringToFront()
-        form.PerformLayout()
+        toolbar.Items.Add(WinForms.ToolStripSeparator())
+        toolbar.Items.Add(copy_link_button)
+        toolbar.Items.Add(open_browser_button)
+
+        form.SuspendLayout()
+        try:
+            if browser_control.Parent is not None:
+                browser_control.Parent.Controls.Remove(browser_control)
+            browser_control.Dock = WinForms.DockStyle.Fill
+            browser_control.Margin = WinForms.Padding(0)
+            layout.Controls.Add(toolbar, 0, 0)
+            layout.Controls.Add(browser_control, 0, 1)
+            form.Controls.Add(layout)
+        finally:
+            form.ResumeLayout(True)
 
         # Keep the managed controls and Python delegate alive for the window lifetime.
-        _native_toolbar_refs.append((toolbar, refresh_button, refresh_panel))
+        _native_toolbar_refs.append((
+            layout, toolbar, refresh_button, copy_link_button, open_browser_button,
+            refresh_panel, copy_panel_link, open_panel_in_browser,
+        ))
 
     form.BeginInvoke(Action(install_toolbar))
 
