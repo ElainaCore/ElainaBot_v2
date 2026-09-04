@@ -69,6 +69,8 @@ class GroupJoinRequestParser(LifecycleParser):
             if isinstance(qa_list, list)
             else []
         )
+        auto_approved = d.get('auto_approved')
+        event.auto_approved = dict(auto_approved) if isinstance(auto_approved, dict) else {}
         event.timestamp = event.apply_at or event.timestamp
         event.content = f'用户 {event.username or event.user_id} 申请加入群聊 {event.group_id}'
 

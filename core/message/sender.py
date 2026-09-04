@@ -94,6 +94,7 @@ class MessageSender(_HttpMixin, _MediaSendMixin, _SenderLogMixin):
         '_bot_qq',
         '_media_dir',
         '_log_service',
+        '_group_member_sync_locks',
         '_reply_log_cb',
         '_reply_plugin_name',
     )
@@ -106,6 +107,7 @@ class MessageSender(_HttpMixin, _MediaSendMixin, _SenderLogMixin):
         self._bot_name = ''
         self._bot_qq = ''
         self._log_service = None
+        self._group_member_sync_locks = {}
         self._reply_log_cb = None
         self._reply_plugin_name = ''
         self._media_dir = ''
@@ -771,14 +773,180 @@ class MessageSender(_HttpMixin, _MediaSendMixin, _SenderLogMixin):
             json={'op': op, **targets},
         )
 
-    async def get_group_member(self, group_id, member_id):
+    async def get_group_member(self, group_id, member_id=None, *, member_openid=None):
         """查询单个群成员详情, 返回 dict, 失败返回 None"""
+        member_id = member_id or member_openid
         if not group_id or not member_id:
             return None
         success, data = await self.get_json(f'/v2/groups/{group_id}/members/{member_id}')
         if success and isinstance(data, dict):
             return data
         return None
+
+    get_group_member_info = get_group_member
+
+    async def get_group_members(self, group_id, *, cursor='', return_error=False):
+        """分页获取群成员列表；平台每页最多返回 30 条。"""
+        params = {'cursor': str(cursor)} if cursor else None
+        success, data = await self._request_group(
+            group_id,
+            'members',
+            params=params,
+            handle_error=not return_error,
+        )
+        if not success:
+            return (None, data) if return_error else None
+        data.setdefault('members', [])
+        data.setdefault('next_cursor', '')
+        await self._sync_group_members(group_id, data.get('members'))
+        return (data, None) if return_error else data
+
+    get_group_member_list = get_group_members
+
+    async def _sync_group_members(self, group_id, members):
+        """将群成员分页结果合并写入 groups_users.users，并按 userid/member_openid 去重。"""
+        group_id = str(group_id or '').strip()
+        if not group_id or not isinstance(members, list) or self._log_service is None:
+            return
+
+        lock = self._group_member_sync_locks.setdefault(group_id, asyncio.Lock())
+        async with lock:
+            try:
+                row = await self._log_service.db_fetch_one(
+                    'SELECT users FROM groups_users WHERE group_id=?',
+                    (group_id,),
+                )
+                raw_users = row.get('users', '[]') if isinstance(row, dict) else '[]'
+                try:
+                    stored_users = json.loads(raw_users or '[]')
+                except (json.JSONDecodeError, TypeError):
+                    stored_users = []
+                if not isinstance(stored_users, list):
+                    stored_users = []
+
+                user_map = {}
+                for item in stored_users:
+                    if isinstance(item, dict):
+                        entry = dict(item)
+                        uid = entry.get('userid') or entry.get('member_openid') or entry.get('openid')
+                    else:
+                        uid = item
+                        entry = {'value': 1, 'last_active': ''}
+                    uid = str(uid or '').strip()
+                    if not uid:
+                        continue
+                    entry['userid'] = uid
+                    user_map.setdefault(uid, {}).update(entry)
+
+                for member in members:
+                    if not isinstance(member, dict):
+                        continue
+                    member_openid = str(member.get('member_openid') or '').strip()
+                    if not member_openid:
+                        continue
+
+                    entry = user_map.setdefault(
+                        member_openid,
+                        {'userid': member_openid, 'value': 1, 'last_active': ''},
+                    )
+                    entry['userid'] = member_openid
+                    entry.update({
+                        key: value
+                        for key in ('username', 'member_role', 'joined_at', 'union_openid')
+                        if (value := member.get(key)) not in (None, '')
+                    })
+                    if member.get('bot') is not None:
+                        if member['bot']:
+                            entry['is_bot'] = True
+                        else:
+                            entry.pop('is_bot', None)
+
+                await self._log_service.db_execute(
+                    'INSERT INTO groups_users (group_id, users) VALUES (?, ?) '
+                    'ON CONFLICT(group_id) DO UPDATE SET users=excluded.users',
+                    (group_id, json.dumps(list(user_map.values()), ensure_ascii=False)),
+                )
+            except Exception as error:
+                log.warning(f'[{self._appid}] 群成员列表写入数据库失败 group={group_id}: {error}')
+
+    async def batch_remove_group_members(
+        self,
+        group_id,
+        member_openids,
+        *,
+        add_to_member_blacklist=False,
+    ):
+        """批量移除群成员，单次最多 20 人，可选同时加入群黑名单。"""
+        member_openids, error = self._normalize_group_member_openids(member_openids)
+        if error:
+            return False, error
+        payload = {'member_openids': member_openids}
+        if add_to_member_blacklist:
+            payload['add_to_member_blacklist'] = True
+        return await self._request_group(
+            group_id,
+            'batch_remove_members',
+            payload=payload,
+        )
+
+    remove_group_members = batch_remove_group_members
+
+    async def get_group_member_blacklist(
+        self,
+        group_id,
+        *,
+        cursor='',
+        limit=20,
+        return_error=False,
+    ):
+        """分页查询群黑名单，limit 范围为 1 到 100。"""
+        try:
+            limit = max(1, min(int(limit), 100))
+        except (TypeError, ValueError):
+            limit = 20
+        params = {'limit': limit}
+        if cursor:
+            params['cursor'] = str(cursor)
+        success, data = await self._request_group(
+            group_id,
+            'member_blacklist',
+            params=params,
+            handle_error=not return_error,
+        )
+        if not success:
+            return (None, data) if return_error else None
+        data.setdefault('users', [])
+        data.setdefault('next_cursor', '')
+        return (data, None) if return_error else data
+
+    async def operate_group_member_blacklist(self, group_id, op, member_openids):
+        """添加或移出群黑名单；op 只能为 add 或 del，单次最多 20 人。"""
+        op = str(op or '').strip().lower()
+        if op not in ('add', 'del'):
+            return False, {'message': 'op 只能为 add 或 del', 'code': -1}
+        member_openids, error = self._normalize_group_member_openids(member_openids)
+        if error:
+            return False, error
+        return await self._request_group(
+            group_id,
+            'member_blacklist',
+            payload={'op': op, 'member_openids': member_openids},
+        )
+
+    update_group_member_blacklist = operate_group_member_blacklist
+
+    @staticmethod
+    def _normalize_group_member_openids(member_openids):
+        if not isinstance(member_openids, (list, tuple)):
+            return None, MessageSender._api_error('member_openids 必须为列表')
+        if not member_openids:
+            return None, MessageSender._api_error('member_openids 不能为空')
+        if len(member_openids) > 20:
+            return None, MessageSender._api_error('单次最多处理 20 个成员')
+        normalized = [str(openid).strip() for openid in member_openids]
+        if any(not openid for openid in normalized):
+            return None, MessageSender._api_error('member_openids 不能包含空值')
+        return normalized, None
 
     async def get_group_record(self, group_id):
         """从 data.db 读取完整群记录，不调用平台接口。"""
@@ -934,7 +1102,7 @@ class MessageSender(_HttpMixin, _MediaSendMixin, _SenderLogMixin):
     async def get_group_join_requests(self, group_id, *, cursor='', limit=20, return_error=False):
         """分页获取入群申请；成功返回接口数据，失败返回 None。"""
         try:
-            limit = max(1, min(int(limit), 100))
+            limit = max(1, min(int(limit), 50))
         except (TypeError, ValueError):
             limit = 20
         params = {'limit': limit}
@@ -944,6 +1112,7 @@ class MessageSender(_HttpMixin, _MediaSendMixin, _SenderLogMixin):
             group_id,
             'join_request_list',
             params=params,
+            handle_error=not return_error,
         )
         if not success:
             return (None, data) if return_error else None
@@ -983,17 +1152,21 @@ class MessageSender(_HttpMixin, _MediaSendMixin, _SenderLogMixin):
 
     async def get_group_restrict_chat_setting(self, group_id, *, return_error=False):
         """查询全员禁言规则与当前成员禁言列表。"""
-        success, data = await self._request_group(group_id, 'restrict_chat_setting')
+        success, data = await self._request_group(
+            group_id,
+            'restrict_chat_setting',
+            handle_error=not return_error,
+        )
         if not success:
             return (None, data) if return_error else None
         return (data, None) if return_error else data
 
     async def set_group_member_mute(self, group_id, members):
-        """批量增加、更新或解除成员禁言，单次最多处理 10 人。"""
+        """批量增加、更新或解除成员禁言，单次最多处理 20 人。"""
         if not isinstance(members, (list, tuple)):
             return False, {'message': 'members 必须为列表', 'code': -1}
-        if len(members) > 10:
-            return False, {'message': '单次最多设置 10 个成员', 'code': -1}
+        if len(members) > 20:
+            return False, {'message': '单次最多设置 20 个成员', 'code': -1}
         if any(not isinstance(item, dict) for item in members):
             return False, {'message': 'members 中的每一项都必须为字典', 'code': -1}
         return await self._request_group(

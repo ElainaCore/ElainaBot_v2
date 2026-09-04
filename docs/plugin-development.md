@@ -37,8 +37,9 @@
   - [6.2 群资料与本地记录](#62-群资料与本地记录)
   - [6.3 入群申请事件](#63-入群申请事件)
   - [6.4 查询与审批入群申请](#64-查询与审批入群申请)
-  - [6.5 群禁言](#65-群禁言)
-  - [6.6 返回值与错误处理](#66-返回值与错误处理)
+  - [6.5 群成员管理](#65-群成员管理)
+  - [6.6 群禁言](#66-群禁言)
+  - [6.7 返回值与错误处理](#67-返回值与错误处理)
 - [7. Web 面板扩展](#7-web-面板扩展)
 - [8. Image Hosting 模块](#8-image-hosting-模块)
 - [9. 调试与运行限制](#9-调试与运行限制)
@@ -82,7 +83,8 @@ async def say_hello(event, match):
 
 | 目录情况 | 加载方式 |
 | --- | --- |
-| 存在 `index.py`、`app.py` 或 `main.py` | 作为包式插件加载；按该顺序选择第一个存在的入口文件 |
+| 存在 `main.py` | 作为包式插件加载；新建大型插件必须使用该文件作为入口 |
+| 仅存在 `index.py` 或 `app.py` | 兼容加载已有旧插件；新建插件不要采用这两个入口名称 |
 | 不存在入口文件 | 加载目录根部所有非下划线开头的 `*.py` 文件 |
 | 存在 `requirements.txt` | 加载前自动检查并安装依赖 |
 | 目录或文件名以 `_`、`.` 开头 | 扫描时忽略 |
@@ -108,7 +110,7 @@ plugins/
 ~~~text
 plugins/
 └── my_plugin/
-    ├── main.py             # 入口，也可使用 index.py 或 app.py
+    ├── main.py             # 唯一入口
     ├── handlers/
     │   ├── __init__.py
     │   └── commands.py
@@ -387,6 +389,7 @@ async def on_join_request(event, match):
 | `event.verify_info` | 平台验证信息原始对象 |
 | `event.verify_method` | 验证方式，例如 `admin_review_qa` |
 | `event.review_qa_list` | 管理员审核问答列表，每项包含 `question` 和 `answer` |
+| `event.auto_approved` | 自动审批通过信息；通过策略自动入群时包含 `strategy_id` |
 
 场景与 @ 标识：
 
@@ -936,7 +939,7 @@ ok, response = await event.sender.update_panel_targets(
 
 ### 6.1 权限与接口概览
 
-以下接口用于读取群资料、处理入群申请和设置群禁言。平台会校验机器人权限。
+以下接口用于读取群资料、管理群成员、处理入群申请和设置群禁言。平台会校验机器人权限。
 
 | 方法 | 用途 | 返回值 |
 | --- | --- | --- |
@@ -944,6 +947,11 @@ ok, response = await event.sender.update_panel_targets(
 | `get_group_info(group_id, return_error=False)` | 获取群名称和人数并保存 | 数据、`None` 或错误元组 |
 | `get_group_bot_state(group_id, return_error=False)` | 获取机器人群身份与消息权限并保存 | 数据、`None` 或错误元组 |
 | `refresh_group_info(group_id)` | 并发刷新群资料和机器人状态 | 汇总字典 |
+| `get_group_members(group_id, cursor='', return_error=False)` | 分页获取群成员列表（每页最多 30 条） | 分页数据、`None` 或错误元组 |
+| `get_group_member(group_id, member_id)` | 获取指定群成员信息（也可用关键字 `member_openid`） | 字典或 `None` |
+| `batch_remove_group_members(group_id, member_openids, add_to_member_blacklist=False)` | 批量移除群成员（最多 20 人） | `(ok, response)` |
+| `get_group_member_blacklist(group_id, cursor='', limit=20, return_error=False)` | 分页查询群黑名单 | 分页数据、`None` 或错误元组 |
+| `operate_group_member_blacklist(group_id, op, member_openids)` | 添加或移出群黑名单（最多 20 人） | `(ok, response)` |
 | `get_group_join_requests(group_id, cursor='', limit=20, return_error=False)` | 分页查询入群申请 | 分页数据、`None` 或错误元组 |
 | `review_group_join_request(...)` | 通过或拒绝入群申请 | `(ok, response)` |
 | `get_group_restrict_chat_setting(group_id, return_error=False)` | 查询全员和成员禁言状态 | 数据、`None` 或错误元组 |
@@ -1011,7 +1019,7 @@ if page:
     print(page['list'], page['next_cursor'])
 ~~~
 
-`limit` 会被限制在 1 到 100 之间。`next_cursor` 为空表示已到最后一页。
+入群申请的 `limit` 会被限制在 1 到 50 之间；`next_cursor` 为空表示已到最后一页。
 
 通过申请：
 
@@ -1039,7 +1047,63 @@ ok, response = await event.sender.review_group_join_request(
 
 `op` 仅支持 `approve` 和 `decline`。`reject_reason` 与 `add_to_member_blacklist` 只在拒绝时写入请求。
 
-### 6.5 群禁言
+### 6.5 群成员管理
+
+分页获取群成员列表，每页由平台固定最多返回 30 条：
+
+~~~python
+page, error = await event.sender.get_group_members(
+    event.group_id,
+    cursor='',
+    return_error=True,
+)
+if page:
+    for member in page['members']:
+        print(member['member_openid'], member['username'], member['member_role'])
+    next_cursor = page['next_cursor']
+~~~
+
+每次成功调用都会把本页成员增量合并到 `groups_users.users`。数据库中的 `userid` 与平台返回的 `member_openid` 相同，框架以此为唯一键去重，保留数据库中已有但不在当前页的成员，并更新昵称、群身份、入群时间、统一标识和机器人标记。
+
+获取单个成员详情：
+
+~~~python
+member = await event.sender.get_group_member(event.group_id, member_openid)
+~~~
+
+批量移除成员，可选同时加入群黑名单：
+
+~~~python
+ok, response = await event.sender.batch_remove_group_members(
+    event.group_id,
+    [member_openid],
+    add_to_member_blacklist=True,
+)
+~~~
+
+查询群黑名单：
+
+~~~python
+blacklist, error = await event.sender.get_group_member_blacklist(
+    event.group_id,
+    limit=20,
+    return_error=True,
+)
+if blacklist:
+    print(blacklist['users'], blacklist['next_cursor'])
+~~~
+
+添加或移出黑名单时，`op` 传 `add` 或 `del`，单次最多 20 个成员：
+
+~~~python
+ok, response = await event.sender.operate_group_member_blacklist(
+    event.group_id,
+    'add',
+    [member_openid],
+)
+~~~
+
+### 6.6 群禁言
 
 查询全员禁言规则和成员禁言列表：
 
@@ -1052,7 +1116,7 @@ if setting:
     print(setting.get('global_rule'), setting.get('members'))
 ~~~
 
-成员禁言通过 `members` 列表批量提交，单次最多 10 人：
+成员禁言通过 `members` 列表批量提交，单次最多 20 人：
 
 | 字段 | 说明 |
 | --- | --- |
@@ -1085,7 +1149,7 @@ members = [{'op': 'del', 'member_openid': member_openid}]
 ok, response = await event.sender.set_group_member_mute(event.group_id, members)
 ~~~
 
-### 6.6 返回值与错误处理
+### 6.7 返回值与错误处理
 
 查询方法默认失败返回 `None`。需要展示或记录具体原因时，传入 `return_error=True`：
 

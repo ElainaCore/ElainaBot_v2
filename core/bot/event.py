@@ -542,6 +542,7 @@ class EventHandlerMixin:
             'apply_source': event.apply_source or '',
             'verify_method': event.verify_method or '',
             'review_qa_list': event.review_qa_list or [],
+            'auto_approved': event.auto_approved or {},
         }, raw_event=event.raw)
 
     async def _handle_friend_add(self, bot, event):

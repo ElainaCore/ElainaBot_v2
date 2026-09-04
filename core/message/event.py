@@ -227,6 +227,7 @@ class Event:
         'verify_info',
         'verify_method',
         'review_qa_list',
+        'auto_approved',
         'is_at_self',
         'is_at_other_bot',
         'is_at_other_user',
@@ -284,6 +285,7 @@ class Event:
         self.verify_info = {}
         self.verify_method = ''
         self.review_qa_list = []
+        self.auto_approved = {}
         self.is_at_self = False
         self.is_at_other_bot = False
         self.is_at_other_user = False
