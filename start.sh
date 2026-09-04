@@ -1,4 +1,21 @@
 #!/usr/bin/env bash
+# 被 sh/dash/busybox 以 `sh start.sh` 调用时切换到 bash 重新执行。
+if [ -z "${BASH_VERSION:-}" ]; then
+    if ! command -v bash >/dev/null 2>&1; then
+        # Alpine 等缺 bash 的环境尝试自动安装后重新执行。
+        if command -v apk >/dev/null 2>&1; then
+            echo '[ElainaBot] 当前系统缺少 bash，正在自动安装...'
+            if [ "$(id -u)" = 0 ]; then
+                apk add --no-cache bash && exec bash "$0" "$@"
+            elif command -v sudo >/dev/null 2>&1; then
+                sudo apk add --no-cache bash && exec bash "$0" "$@"
+            fi
+        fi
+        printf '[ElainaBot] 错误：本脚本需要 bash，请先安装 bash（例如 apt install bash 或 apk add bash）后用 bash start.sh 运行。\n' >&2
+        exit 1
+    fi
+    exec bash "$0" "$@"
+fi
 set -Eeuo pipefail
 
 BOOTSTRAP_VERSION='5'
@@ -19,6 +36,11 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_DIR="$ROOT_DIR/.venv"
 VENV_PYTHON="$VENV_DIR/bin/python"
 TOOLS_DIR="$ROOT_DIR/.bootstrap/uv"
+# uv 缓存固定在项目内，避免 ~/.cache 不可写（容器/受限主机）导致崩溃。
+UV_CACHE_DIR="${ELAINABOT_UV_CACHE_DIR:-$ROOT_DIR/.bootstrap/uv-cache}"
+UV_INSTALLER_URL="https://astral.sh/uv/install.sh"
+UV_INSTALLER_FALLBACK_URL="https://github.com/astral-sh/uv/releases/latest/download/uv-installer.sh"
+export UV_CACHE_DIR
 STAMP_FILE="$VENV_DIR/.elainabot-requirements.sha256"
 SETUP_ONLY=0
 
@@ -62,6 +84,8 @@ install_download_prerequisites() {
     if command -v apt-get >/dev/null 2>&1; then
         run_as_root apt-get update
         run_as_root apt-get install -y curl ca-certificates
+    elif command -v microdnf >/dev/null 2>&1; then
+        run_as_root microdnf install -y curl ca-certificates
     elif command -v dnf >/dev/null 2>&1; then
         run_as_root dnf install -y curl ca-certificates
     elif command -v yum >/dev/null 2>&1; then
@@ -81,16 +105,48 @@ python_is_compatible() {
     "$1" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' >/dev/null 2>&1
 }
 
-python_is_preferred() {
-    "$1" -c 'import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 13) else 1)' >/dev/null 2>&1
+# armv7/riscv64 等架构没有官方预编译 Python，需要提前给出明确指引。
+ensure_downloadable_arch() {
+    local arch
+    arch="$(uname -m)"
+    case "$arch" in
+        x86_64|aarch64|riscv64|ppc64le|s390x) return 0 ;;
+        armv7l|armv8l)
+            # 预编译 Python 的 armv7 只有 glibc 构建，musl（Alpine）没有。
+            if command -v apk >/dev/null 2>&1; then
+                fail "未找到 Python 3.11+，且 musl 系统（Alpine）的 armv7 架构没有可自动下载的预编译 Python。请先执行 apk add python3 安装 Python 3.11+，再重新运行本脚本。"
+            fi
+            return 0
+            ;;
+        *)
+            fail "未找到 Python 3.11+，且当前 CPU 架构（$arch）没有可自动下载的预编译 Python（支持 x86_64 / aarch64 / armv7 / riscv64 / ppc64le / s390x）。请先安装 Python 3.11 或更高版本（例如：apt install python3），再重新运行本脚本。"
+            ;;
+    esac
 }
 
 find_preferred_python() {
     local candidate
-    for candidate in python3.13 python3 python; do
-        if command -v "$candidate" >/dev/null 2>&1 && python_is_preferred "$(command -v "$candidate")"; then
+    for candidate in python3.13 python3.12 python3.11 python3 python; do
+        if command -v "$candidate" >/dev/null 2>&1 && python_is_compatible "$(command -v "$candidate")"; then
             command -v "$candidate"
             return 0
+        fi
+    done
+    return 1
+}
+
+install_uv_installer() {
+    local destination="$1" url mirror
+    local -a sources=("$UV_INSTALLER_URL")
+    for mirror in "${FRAMEWORK_MIRRORS[@]}"; do
+        sources+=("${mirror%/}/$UV_INSTALLER_FALLBACK_URL")
+    done
+    sources+=("$UV_INSTALLER_FALLBACK_URL")
+    for url in "${sources[@]}"; do
+        if command -v curl >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error --retry 1 --connect-timeout 10 --max-time 120 "$url" --output "$destination" && return 0
+        else
+            wget --quiet --timeout=15 --tries=1 --output-document="$destination" "$url" && return 0
         fi
     done
     return 1
@@ -129,15 +185,11 @@ ensure_uv() {
     else
         step '正在安装项目专用的 Python 环境引导工具...' >&2
     fi
-    mkdir -p "$TOOLS_DIR"
+    mkdir -p "$TOOLS_DIR" "$UV_CACHE_DIR"
     local installer
     installer="$(mktemp "${TMPDIR:-/tmp}/elainabot-uv-install.XXXXXX")"
     trap 'rm -f "$installer"' RETURN
-    if command -v curl >/dev/null 2>&1; then
-        curl --proto '=https' --tlsv1.2 -LsSf https://astral.sh/uv/install.sh -o "$installer"
-    else
-        wget -qO "$installer" https://astral.sh/uv/install.sh
-    fi
+    install_uv_installer "$installer" || fail '无法下载 Python 环境引导工具安装脚本，请检查网络后重试。'
     UV_INSTALL_DIR="$TOOLS_DIR" UV_NO_MODIFY_PATH=1 sh "$installer" >&2
     rm -f "$installer"
     trap - RETURN
@@ -149,7 +201,7 @@ ensure_uv() {
 install_managed_python() {
     local uv_bin="$1"
 
-    step "[1/5] 正在通过镜像下载项目专用的 Python $PYTHON_VERSION（将显示实时进度）..."
+    step "[1/6] 正在通过镜像下载项目专用的 Python $PYTHON_VERSION（将显示实时进度）..."
     if (
         unset UV_NO_PROGRESS
         "$uv_bin" --color always python install --no-bin \
@@ -166,27 +218,27 @@ install_managed_python() {
 }
 
 backup_invalid_venv() {
-    [[ -e "$VENV_DIR" ]] || return
+    [[ -e "$VENV_DIR" || -L "$VENV_DIR" ]] || return
     local backup="$ROOT_DIR/.venv.backup-$(date +%Y%m%d-%H%M%S)"
     step "现有虚拟环境无效，正在将其移动到 ${backup##*/}。"
     mv -- "$VENV_DIR" "$backup"
 }
 
 ensure_virtual_environment() {
-    step '[1/5] 正在检查 Python 3.11 或更高版本...'
+    step '[1/6] 正在检查 Python 3.11 或更高版本...'
     if [[ -x "$VENV_PYTHON" ]] && python_is_compatible "$VENV_PYTHON"; then
-        step "[1/5] Python 已就绪：$("$VENV_PYTHON" -c 'import platform; print(platform.python_version())')"
-        step '[2/5] 已有虚拟环境可用：.venv'
+        step "[1/6] Python 已就绪：$("$VENV_PYTHON" -c 'import platform; print(platform.python_version())')"
+        step '[2/6] 已有虚拟环境可用：.venv'
         return
     fi
 
     backup_invalid_venv
     local python_bin=''
     if python_bin="$(find_preferred_python)"; then
-        step "[1/5] 已找到 Python 3.13：$("$python_bin" -c 'import platform; print(platform.python_version())')"
-        step '[2/5] 正在创建项目虚拟环境：.venv...'
+        step "[1/6] 已找到兼容的 Python：$("$python_bin" -c 'import platform; print(platform.python_version())')"
+        step '[2/6] 正在创建项目虚拟环境：.venv...'
         if "$python_bin" -m venv "$VENV_DIR" && [[ -x "$VENV_PYTHON" ]]; then
-            step '[2/5] 虚拟环境创建成功。'
+            step '[2/6] 虚拟环境创建成功。'
             return
         fi
         if [[ -e "$VENV_DIR" ]]; then
@@ -195,14 +247,15 @@ ensure_virtual_environment() {
         step '系统 Python 无法创建虚拟环境，将改用项目专用的 Python。'
     fi
 
+    ensure_downloadable_arch
     local uv_bin
     uv_bin="$(ensure_uv)"
     install_managed_python "$uv_bin"
-    step '[2/5] 正在创建项目虚拟环境：.venv...'
+    step '[2/6] 正在创建项目虚拟环境：.venv...'
     "$uv_bin" --color always venv --python "$PYTHON_VERSION" \
         --managed-python --no-python-downloads "$VENV_DIR"
     [[ -x "$VENV_PYTHON" ]] || fail '虚拟环境创建结束，但未找到可用的 Python。'
-    step '[2/5] 虚拟环境创建成功。'
+    step '[2/6] 虚拟环境创建成功。'
 }
 
 framework_is_complete() {
