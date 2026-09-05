@@ -34,17 +34,20 @@ async def upload_media_bytes(sender, file_bytes, file_type, endpoint, *, file_na
     # 大文件走分片 (带重试)
     if isinstance(file_bytes, bytes) and len(file_bytes) > CHUNK_THRESHOLD:
         for retry in range(max_retry):
+            retry_msg = '' if retry == 0 else f'(retry{retry}/{max_retry})'
             try:
                 result = await _chunked_upload_from_bytes(sender, file_bytes, file_type, endpoint, file_name=file_name)
                 if result:
                     return result
-                sender.error = PromptTpl.UploadMediaFail.d({'retry_msg': '分片上传返回空结果 (无 file_info)'})
+                sender.error = PromptTpl.UploadMediaFail.d({
+                    'retry_msg': retry_msg,
+                    'e': '分片上传返回空结果 (无 file_info)',
+                })
             except Exception as e:
-                retry_msg = '' if retry == 0 else f'(retry{retry}/{max_retry})'
                 sender.error = PromptTpl.UploadMediaFail.d({'retry_msg': retry_msg, 'e': e})
                 _log_upload_issue(file_type, f'[{sender._appid}] 分片上传第{retry + 1}次失败: {e}')
-                if retry < max_retry - 1:
-                    await asyncio.sleep(2 * (retry + 1))
+            if retry < max_retry - 1:
+                await asyncio.sleep(2 * (retry + 1))
         err = sender.error if hasattr(sender, 'error') else '未知错误'
         _log_upload_issue(file_type, f'[{sender._appid}] 分片上传{max_retry}次均失败, 最后错误: {err}')
         return None

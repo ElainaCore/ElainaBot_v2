@@ -1,16 +1,14 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import ClassVar
 
 
 class PromptException:
     db: ClassVar[dict[int, PromptException]] = {}
 
-    def __init__(self, msg: str, code: int = 500, data: dict = None, as_tpl: bool = False) -> None:
-        if hasattr(msg, 'value'):
-            self.msg = msg.value
-        else:
-            self.msg = str(msg)
+    def __init__(self, msg: object, code: int = 500, data: dict | None = None, as_tpl: bool = False) -> None:
+        self.msg = str(getattr(msg, 'value', msg))
         self.data = data or {}
         self.code = code
         if as_tpl is True:
@@ -20,21 +18,19 @@ class PromptException:
         return self.msg
 
     @property
-    def value(self):
+    def value(self) -> str:
         return self.msg
 
     def __repr__(self) -> str:
         return f'PExp[{self.code}]{self.msg}'
 
-    def format_msg(self, args: dict[str, str]):
-        val = str(self.msg)
+    def format_msg(self, args: Mapping[str, object] | None) -> str:
         if args is None:
-            return val
-        val = val.format_map(args)
-        return val
+            return self.msg
+        return self.msg.format_map(args)
 
-    def to_dict(self, args: dict[str, str] = None):
-        r = {
+    def to_dict(self, args: Mapping[str, object] | None = None) -> dict[str, object]:
+        r: dict[str, object] = {
             'code': self.code,
             'msg': self.format_msg(args),
         }
@@ -42,7 +38,7 @@ class PromptException:
             r['data'] = self.data
         return r
 
-    def d(self, args: dict[str, str] = None, data: dict = None):
+    def d(self, args: Mapping[str, object] | None = None, data: dict | None = None) -> PromptException:
         "创建实例"
         tpl = self.db.get(self.code) or self
         val = tpl.format_msg(args)

@@ -74,9 +74,9 @@ def build_keyboard(button_rows, appid=None, *, font_size=None, style=None):
             elif 'list' in btn:
                 action['permission'] = {'type': 0, 'specify_user_ids': btn['list']}
             elif 'admin' in btn:
-                action['permission'] = {'type': 2 if btn.get('admin') else 1}
+                action['permission'] = {'type': 1 if btn.get('admin') else 2}
             if 'permission' not in action:
-                action['permission'] = {'type': 1}
+                action['permission'] = {'type': 2}
 
             # 点击次数限制
             if 'limit' in btn:
