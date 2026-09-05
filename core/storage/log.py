@@ -98,6 +98,67 @@ class LogService(_BaseLogService, ShareMixin, WakeupMixin, SubscribeMixin):
         """同步查询 data.db (users/groups/members 表)"""
         return self.query('data', sql, params)
 
+    async def get_group_message_history(
+        self,
+        group_id: str,
+        limit: int,
+        before_message_seq: int = 0,
+    ) -> list[dict]:
+        """按新到旧查询群消息，游标包含锚点消息。"""
+        await self._flush_type('message')
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None,
+            self._get_group_message_history_sync,
+            str(group_id),
+            int(limit),
+            int(before_message_seq),
+        )
+
+    def _get_group_message_history_sync(
+        self,
+        group_id: str,
+        limit: int,
+        before_message_seq: int,
+    ) -> list[dict]:
+        if limit <= 0 or not os.path.isdir(self._base_dir):
+            return []
+
+        cursor_day = before_message_seq >> 32 if before_message_seq > 0 else 0
+        cursor_row = before_message_seq & 0xFFFFFFFF
+        dates = []
+        for name in os.listdir(self._base_dir):
+            try:
+                ordinal = datetime.strptime(name, '%Y-%m-%d').toordinal()
+            except ValueError:
+                continue
+            if os.path.isfile(self._resolve_db_path('message', name)):
+                dates.append((ordinal, name))
+
+        result: list[dict] = []
+        for ordinal, name in sorted(dates, reverse=True):
+            if cursor_day and ordinal > cursor_day:
+                continue
+
+            params: list = [group_id]
+            row_filter = ''
+            if cursor_day and ordinal == cursor_day:
+                row_filter = ' AND id <= ?'
+                params.append(cursor_row)
+            params.append(limit - len(result))
+            rows = self.query(
+                'message',
+                f'SELECT * FROM log WHERE group_id = ?{row_filter} ORDER BY id DESC LIMIT ?',
+                tuple(params),
+                date=name,
+            )
+            for row in rows:
+                row['message_seq'] = (ordinal << 32) | int(row['id'])
+            result.extend(rows)
+            if len(result) >= limit:
+                break
+        return result
+
     def _extract_row(self, log_type, data):
         """dict → INSERT 参数元组"""
         ts = data.get('timestamp', now_str())

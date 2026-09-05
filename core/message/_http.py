@@ -76,7 +76,7 @@ def _describe_exception(e, method, endpoint):
     if detail:
         msg += f': {detail}'
     msg += f') {method} {endpoint}'
-    return {'message': msg, 'code': -1}
+    return {'message': msg, 'code': 500}
 
 
 class _HttpMixin:

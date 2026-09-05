@@ -26,9 +26,9 @@ from core.message._media_send import (
 )
 from core.message._sender_log import _SenderLogMixin
 from core.message.keyboard import (
+    build_ark,
     build_keyboard,
     build_prompt_keyboard,
-    convert_simple_ark_data,
 )
 from core.message.media import get_image_size as _get_image_size
 from core.message.media import upload_media_bytes, upload_media_via_url
@@ -84,6 +84,8 @@ def _parse_stream_chunk(item):
 
 class MessageSender(_HttpMixin, _MediaSendMixin, _SenderLogMixin):
     """消息发送器 (每个机器人实例一个)"""
+
+    GROUP_MEMBER_MUTE_BATCH_SIZE = 20
 
     __slots__ = (
         '_token_mgr',
@@ -387,13 +389,11 @@ class MessageSender(_HttpMixin, _MediaSendMixin, _SenderLogMixin):
         return await self._send_media(event, file_data, 4, content, file_name=file_name, **kw)
 
     async def reply_ark(self, event, template_id, kv_data, content='', *, auto_delete_time=None):
-        if isinstance(kv_data, tuple | list) and template_id in (23, 24, 37):
-            kv_data = convert_simple_ark_data(template_id, kv_data)
         payload = {
             'msg_type': MSG_TYPE_ARK,
             'msg_seq': _msg_seq(),
             'content': content or '',
-            'ark': {'template_id': template_id, 'kv': kv_data},
+            'ark': build_ark(template_id, kv_data),
         }
         _set_msg_or_event_id(payload, event)
         endpoint = event.reply_endpoint
@@ -626,7 +626,7 @@ class MessageSender(_HttpMixin, _MediaSendMixin, _SenderLogMixin):
             if user_openids is not None
             else ('group_openids', group_openids)
         )
-        if not isinstance(values, (list, tuple)):
+        if not isinstance(values, list | tuple):
             return None, cls._api_error(f'{key} 必须为列表')
         if len(values) > 20:
             return None, cls._api_error(f'{key} 单次最多提供 20 个')
@@ -773,15 +773,20 @@ class MessageSender(_HttpMixin, _MediaSendMixin, _SenderLogMixin):
             json={'op': op, **targets},
         )
 
-    async def get_group_member(self, group_id, member_id=None, *, member_openid=None):
-        """查询单个群成员详情, 返回 dict, 失败返回 None"""
+    async def get_group_member(self, group_id, member_id=None, *, member_openid=None, return_error=False):
+        """查询单个群成员详情；return_error=True 时同时返回平台错误。"""
         member_id = member_id or member_openid
         if not group_id or not member_id:
-            return None
-        success, data = await self.get_json(f'/v2/groups/{group_id}/members/{member_id}')
-        if success and isinstance(data, dict):
-            return data
-        return None
+            error = {'message': '缺少 group_id 或 member_id', 'code': -1}
+            return (None, error) if return_error else None
+        success, data = await self._request_group(
+            group_id,
+            f'members/{member_id}',
+            handle_error=not return_error,
+        )
+        if success:
+            return (data, None) if return_error else data
+        return (None, data) if return_error else None
 
     get_group_member_info = get_group_member
 
@@ -1163,10 +1168,10 @@ class MessageSender(_HttpMixin, _MediaSendMixin, _SenderLogMixin):
 
     async def set_group_member_mute(self, group_id, members):
         """批量增加、更新或解除成员禁言，单次最多处理 20 人。"""
-        if not isinstance(members, (list, tuple)):
+        if not isinstance(members, list | tuple):
             return False, {'message': 'members 必须为列表', 'code': -1}
-        if len(members) > 20:
-            return False, {'message': '单次最多设置 20 个成员', 'code': -1}
+        if len(members) > self.GROUP_MEMBER_MUTE_BATCH_SIZE:
+            return False, {'message': f'单次最多设置 {self.GROUP_MEMBER_MUTE_BATCH_SIZE} 个成员', 'code': -1}
         if any(not isinstance(item, dict) for item in members):
             return False, {'message': 'members 中的每一项都必须为字典', 'code': -1}
         return await self._request_group(
@@ -1225,6 +1230,9 @@ class MessageSender(_HttpMixin, _MediaSendMixin, _SenderLogMixin):
             payload['media'] = media
             if content:
                 payload['content'] = content
+        elif msg_type == MSG_TYPE_ARK:
+            payload['msg_type'] = MSG_TYPE_ARK
+            payload['content'] = content or ''
         elif msg_type == MSG_TYPE_MARKDOWN or (use_md and msg_type != MSG_TYPE_TEXT):
             payload['msg_type'] = MSG_TYPE_MARKDOWN
             md_content = str(content) if content is not None else ''
