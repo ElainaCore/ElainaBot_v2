@@ -20,10 +20,16 @@ def build_keyboard(button_rows, appid=None, *, font_size=None, style=None):
         buttons = []
         if isinstance(row, dict):
             row = row.get('buttons') or row.get('btns') or []
+        if not isinstance(row, list | tuple):
+            continue
         for btn in row:
-            r_data = btn.get('render_data') or {}
+            if not isinstance(btn, dict):
+                continue
+            raw_render_data = btn.get('render_data')
+            r_data = raw_render_data if isinstance(raw_render_data, dict) else {}
             r_data.setdefault('style', btn.get('style', 1))
-            action = btn.get('action') or {}
+            raw_action = btn.get('action')
+            action = raw_action if isinstance(raw_action, dict) else {}
             action.setdefault('type', btn.get('type', 2))
             action.setdefault('data', btn.get('data', ''))
             button_id = btn.get('id')
@@ -39,62 +45,62 @@ def build_keyboard(button_rows, appid=None, *, font_size=None, style=None):
             if 'group_id' in btn:
                 b['group_id'] = btn['group_id']
             # 自定义字段覆盖
-            if show := btn.get('show'):
-                r_data.setdefault('visited_label', show)
-            if text := btn.get('text'):
+            if 'show' in btn:
+                r_data.setdefault('visited_label', btn.get('show'))
+            if 'text' in btn:
+                text = btn.get('text') or ''
                 r_data['label'] = text
                 r_data.setdefault('visited_label', text)
             # link 优先 (覆盖 type/data)
             if 'link' in btn:
-                b['action']['type'] = 0
-                b['action']['data'] = btn['link']
+                action['type'] = 0
+                action['data'] = btn['link']
 
             # enter 行为: button_enter_to_send 配置开启时, type=2+enter -> type=1
             if btn.get('enter'):
-                act = b['action']
-                if button_enter_to_send and act['type'] == 2:
-                    act['type'] = 1
+                if button_enter_to_send and action['type'] == 2:
+                    action['type'] = 1
                 else:
-                    act['enter'] = True
+                    action['enter'] = True
 
             if btn.get('reply'):
-                b['action']['reply'] = True
+                action['reply'] = True
 
             # 权限: 显式 permission > role > list > admin > 默认所有人
             if 'permission' in btn:
-                b['action']['permission'] = btn['permission']
+                action['permission'] = btn['permission']
             elif 'role' in btn:
-                b['action']['permission'] = {'type': 3, 'specify_role_ids': btn['role']}
+                action['permission'] = {'type': 3, 'specify_role_ids': btn['role']}
             elif 'list' in btn:
-                b['action']['permission'] = {'type': 0, 'specify_user_ids': btn['list']}
-            elif btn.get('admin'):
-                b['action']['permission'] = {'type': 1}
-            else:
-                b['action']['permission'] = {'type': 2}
+                action['permission'] = {'type': 0, 'specify_user_ids': btn['list']}
+            elif 'admin' in btn:
+                action['permission'] = {'type': 1 if btn.get('admin') else 2}
+            if 'permission' not in action:
+                action['permission'] = {'type': 2}
 
             # 点击次数限制
             if 'limit' in btn:
-                b['action']['click_limit'] = btn['limit']
+                action['click_limit'] = btn['limit']
 
             # 不支持时提示
             if 'tips' in btn:
-                b['action']['unsupport_tips'] = btn['tips']
+                action['unsupport_tips'] = btn['tips']
 
             # 二次确认弹窗
             if modal := btn.get('modal'):
-                b['action']['modal'] = {'content': modal} if isinstance(modal, str) else modal
+                action['modal'] = {'content': modal} if isinstance(modal, str) else modal
 
             # 订阅按钮: subscribe -> type=4 + subscribe_data
             if (sub := btn.get('subscribe')) is not None:
-                b['action']['type'] = 4
-                b['action']['subscribe_data'] = _build_subscribe_data(sub)
+                action['type'] = 4
+                action['subscribe_data'] = _build_subscribe_data(sub)
 
             # 平台原生 action 字段直接写在 btn 里时原样透传
             for key in ('subscribe_data', 'click_limit', 'unsupport_tips', 'anchor'):
                 if key in btn:
-                    b['action'][key] = btn[key]
+                    action[key] = btn[key]
             if 'subscribe_data' in btn and 'type' not in btn:
-                b['action']['type'] = 4
+                action['type'] = 4
 
             buttons.append(b)
         rows.append({'buttons': buttons})
@@ -183,6 +189,13 @@ def convert_simple_ark_data(template_id, simple_data):
     if template_id == 23:
         return _build_ark23(simple_data)
     return simple_data
+
+
+def build_ark(template_id, kv_data):
+    """构建 Ark 载荷，并对内置模板应用简写转换。"""
+    if isinstance(kv_data, tuple | list) and template_id in (23, 24, 37):
+        kv_data = convert_simple_ark_data(template_id, kv_data)
+    return {'template_id': template_id, 'kv': kv_data}
 
 
 def _build_ark23(simple_data):
