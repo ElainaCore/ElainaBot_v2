@@ -3,7 +3,6 @@
 import contextlib
 import os
 import re
-import shutil
 import tempfile
 import zipfile
 from typing import cast
@@ -11,6 +10,7 @@ from typing import cast
 from aiohttp import BodyPartReader, web
 
 from web.tools._plugin_mgr.shared import (
+    create_backup_archive,
     get_pm,
     log,
     plugins_dir,
@@ -20,7 +20,7 @@ from web.tools._zipsafe import is_within, replace_dir_from_zip
 
 # 插件编辑器允许读写的文件类型 (代码 + 常见配置/文本), 阻止读写二进制/其它敏感文件
 _EDITABLE_EXTS = frozenset(
-    {'.py', '.yaml', '.yml', '.json', '.toml', '.ini', '.cfg', '.conf', '.txt', '.md', '.log', '.backup'}
+    {'.py', '.yaml', '.yml', '.json', '.toml', '.ini', '.cfg', '.conf', '.txt', '.md', '.log'}
 )
 
 
@@ -139,11 +139,12 @@ async def handle_save_plugin(request: web.Request):
         return web.json_response({'success': False, 'message': '无效路径'}, status=403)
     if not _is_editable(abs_path):
         return web.json_response({'success': False, 'message': '不支持的文件类型'}, status=403)
-    if os.path.exists(abs_path):
-        shutil.copy2(abs_path, abs_path + '.backup')
+    backup = create_backup_archive(abs_path, category='plugin') if os.path.exists(abs_path) else None
     with open(abs_path, 'w', encoding='utf-8') as f:
         f.write(content)
-    return web.json_response({'success': True, 'message': '插件已保存'})
+    return web.json_response(
+        {'success': True, 'message': '插件已保存', 'backup': backup.replace('\\', '/') if backup else None}
+    )
 
 
 # ==================== 创建 ====================

@@ -2,6 +2,9 @@
 
 import logging
 import os
+import re
+import zipfile
+from datetime import datetime
 
 from aiohttp import web
 
@@ -82,6 +85,8 @@ def find_entry(plugin_dir):
 
 # ==================== 配置文件格式检测 ====================
 
+# 只把明确的配置格式暴露给配置编辑器。普通文本、日志和备份文件不属于配置，
+# 即使它们位于插件的 data/ 目录，也不能通过配置接口读写。
 CONFIG_EXTS = frozenset(
     {
         '.yaml',
@@ -91,9 +96,9 @@ CONFIG_EXTS = frozenset(
         '.ini',
         '.cfg',
         '.conf',
-        '.txt',
-        '.md',
-        '.backup',
+        '.xml',
+        '.properties',
+        '.env',
     }
 )
 
@@ -105,14 +110,62 @@ _FORMAT_MAP = {
     '.ini': 'ini',
     '.cfg': 'ini',
     '.conf': 'ini',
-    '.txt': 'text',
-    '.log': 'text',
-    '.md': 'text',
+    '.xml': 'raw',
+    '.properties': 'raw',
+    '.env': 'raw',
 }
 
 
 def detect_config_format(ext):
     return _FORMAT_MAP.get(ext, 'raw')
+
+
+def _config_ext(path):
+    """返回配置文件扩展名，兼容 .env 和 .env.local 这类点文件。"""
+    name = os.path.basename(str(path)).lower()
+    if name == '.env' or name.startswith('.env.'):
+        return '.env'
+    return os.path.splitext(name)[1]
+
+
+def is_config_file(path):
+    """判断路径是否为受支持的配置文件。"""
+    return _config_ext(path) in CONFIG_EXTS
+
+
+def create_backup_archive(source_path, category='file'):
+    """将保存前的旧文件压缩到项目级 data/backup，并返回压缩包路径。
+
+    压缩包以本地时间（精确到微秒）命名，并在极端并发或同一时间调用时
+    追加序号，避免覆盖已有备份。压缩包内保留相对于项目根目录的路径。
+    """
+    source = os.path.abspath(os.fspath(source_path))
+    if not os.path.isfile(source):
+        return None
+
+    root = os.path.abspath(base_dir() or os.getcwd())
+    backup_dir = os.path.join(root, 'data', 'backup')
+    os.makedirs(backup_dir, exist_ok=True)
+
+    try:
+        relative = os.path.relpath(source, root)
+    except ValueError:
+        relative = os.path.basename(source)
+    archive_name = relative.replace('\\', '_').replace('/', '_')
+    archive_name = re.sub(r'[^A-Za-z0-9_.-]+', '_', archive_name).strip('._') or 'file'
+    category = re.sub(r'[^A-Za-z0-9_.-]+', '_', str(category)).strip('._') or 'file'
+    stamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+    arcname = relative.replace(os.sep, '/')
+    suffix = 0
+    while True:
+        collision = f'_{suffix}' if suffix else ''
+        archive = os.path.join(backup_dir, f'{category}_{stamp}{collision}_{archive_name}.zip')
+        try:
+            with zipfile.ZipFile(archive, 'x', compression=zipfile.ZIP_DEFLATED) as zf:
+                zf.write(source, arcname=arcname)
+            return archive
+        except FileExistsError:
+            suffix += 1
 
 
 def list_config_files(data_dir):
@@ -124,7 +177,7 @@ def list_config_files(data_dir):
         fpath = os.path.join(data_dir, fname)
         if not os.path.isfile(fpath):
             continue
-        ext = os.path.splitext(fname)[1].lower()
+        ext = _config_ext(fname)
         if ext not in CONFIG_EXTS:
             continue
         files.append(

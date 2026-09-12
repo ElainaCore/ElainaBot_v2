@@ -4,15 +4,16 @@ import contextlib
 import json
 import os
 import re
-import shutil
 
 import yaml
 from aiohttp import web
 
 from web.tools._plugin_mgr.shared import (
+    create_backup_archive,
     detect_config_format,
     get_mm,
     get_pm,
+    is_config_file,
     list_config_files,
     log,
     modules_dir,
@@ -125,6 +126,8 @@ async def handle_read_config(request: web.Request):
         return err
     if not os.path.isfile(abs_path):
         return web.json_response({'success': False, 'message': '文件不存在'}, status=404)
+    if not is_config_file(abs_path):
+        return web.json_response({'success': False, 'message': '不支持的配置文件类型'}, status=400)
 
     ext = os.path.splitext(abs_path)[1].lower()
     fmt = detect_config_format(ext)
@@ -164,6 +167,8 @@ async def handle_save_config(request: web.Request):
     abs_path, err = validate_config_path(body['path'])
     if err:
         return err
+    if not is_config_file(abs_path):
+        return web.json_response({'success': False, 'message': '不支持的配置文件类型'}, status=400)
 
     if fmt == 'yaml':
         try:
@@ -185,8 +190,7 @@ async def handle_save_config(request: web.Request):
         except Exception as e:
             return web.json_response({'success': False, 'message': f'JSON 格式错误: {e}'}, status=400)
 
-    if os.path.isfile(abs_path):
-        shutil.copy2(abs_path, abs_path + '.backup')
+    backup = create_backup_archive(abs_path, category='config') if os.path.isfile(abs_path) else None
 
     try:
         with open(abs_path, 'w', encoding='utf-8') as f:
@@ -210,7 +214,9 @@ async def handle_save_config(request: web.Request):
                     log.warning(f'模块 {mod_name} 重载失败: {e}')
 
     msg = f'配置已保存, 模块 {reloaded} 已重载' if reloaded else '配置已保存'
-    return web.json_response({'success': True, 'message': msg})
+    return web.json_response(
+        {'success': True, 'message': msg, 'backup': backup.replace('\\', '/') if backup else None}
+    )
 
 
 # ==================== 插件 data/ 配置文件列表 ====================

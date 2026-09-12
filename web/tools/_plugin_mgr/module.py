@@ -118,6 +118,14 @@ async def handle_module_toggle(request: web.Request):
         return web.json_response({'success': False, 'message': str(e)}, status=500)
 
 
+async def _stop_module_runtime(name):
+    mm = get_mm()
+    if not mm:
+        return
+    with contextlib.suppress(Exception):
+        await mm.disable(name, _persist=False)
+
+
 # ==================== 上传 ====================
 
 
@@ -180,6 +188,9 @@ async def handle_module_upload(request: web.Request):
             target_dir = os.path.join(mdir, mod_name)
             if not is_within(mdir, target_dir):
                 return web.json_response({'success': False, 'message': '无效模块路径'}, status=400)
+            # 上传更新前先停止已运行模块，释放其可能占用的 .pyc/扩展文件。
+            # 停用不改变持久化启用意图，更新完成后由下次启动或面板重新启用。
+            await _stop_module_runtime(mod_name)
             top_dir = list(top_dirs)[0] if len(top_dirs) == 1 else ''
             replace_dir_from_zip(zf, target_dir, top_dir=top_dir)
 

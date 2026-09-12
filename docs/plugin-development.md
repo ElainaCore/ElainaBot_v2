@@ -1237,13 +1237,13 @@ from core.application import get_app
 app = get_app()
 hosting = app.module_manager.get('image_hosting') if app else None
 
-if hosting:
+if hosting is not None:
     url = await hosting.upload_any(image_bytes, 'report.png')
 else:
-    url = None
+    url = None  # 模块未启用或加载失败
 ~~~
 
-模块未启用或初始化失败时，`get()` 返回 `None`。单个图床可能因依赖、凭据或网络不可用，上传前可检查状态：
+模块未启用或初始化失败时，`get()` 返回 `None`。单个图床还可能因依赖、凭据、必要参数或网络不可用，上传前可检查状态：
 
 ~~~python
 status = hosting.status()
@@ -1257,7 +1257,7 @@ else:
     result = await hosting.upload_any(image_bytes, 'report.png')
 ~~~
 
-统一入口 `upload_any()` 会按优先级尝试可用图床，返回第一个 HTTP URL，全部失败时返回 `None`。指定图床的返回结构可能不同，需要按对应图床 API 判断。
+统一入口 `upload_any()` 会按优先级尝试可用图床：每个图床优先调用 `upload_url()`（若实现），否则调用 `upload()`，只接受第一个以 `http` 开头的字符串，全部失败时返回 `None`。指定图床的返回结构可能不同（URL、结果字典或 `(False, reason)`），需要按对应图床 API 判断。
 
 配置、图床列表、动态方法和扩展规范见 [Image Hosting 模块接入文档](image-hosting.md)。模块实例由框架管理生命周期。
 

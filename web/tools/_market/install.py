@@ -22,7 +22,7 @@ from web.tools._market.shared import (
     get_github_mirror,
     log,
 )
-from web.tools._zipsafe import is_within
+from web.tools._zipsafe import is_runtime_cache, is_within, remove_path
 
 # 共享单文件插件目录 (位于 plugins/ 下), 仅当 single 插件显式声明 alone=True 时使用
 _ALONE_DIR = 'alone'
@@ -318,14 +318,15 @@ def _extract_zip_subset(
             os.makedirs(dest_dir, exist_ok=True)
             extracted = []
             for fp in selected:
-                if '__pycache__' in fp or '/.git/' in fp:
-                    continue
                 rel = fp[len(strip_prefix) :] if fp.startswith(strip_prefix) else fp
                 if not rel:
                     continue
                 dest = os.path.join(dest_dir, rel)
                 if not is_within(dest_dir, dest):
                     log.warning(f'跳过越界成员 (疑似路径穿越): {fp!r}')
+                    continue
+                normalized = fp.replace('\\', '/').strip('/')
+                if is_runtime_cache(rel) or '/.git/' in f'/{normalized}/':
                     continue
                 top_dir = rel.split('/', 1)[0]
                 if preserve_data and top_dir in _PERSISTENT_DIRS and os.path.exists(dest):
@@ -363,10 +364,9 @@ def _clear_dir_except_persistent(dest_dir):
         if item in _PERSISTENT_DIRS:
             continue
         p = os.path.join(dest_dir, item)
-        if os.path.isdir(p):
-            shutil.rmtree(p)
-        else:
-            os.remove(p)
+        # Python 字节码缓存可能被当前解释器占用；缓存删除失败不应阻止更新。
+        # 源码和其它资源仍严格删除，避免旧版本文件静默残留。
+        remove_path(p, ignore_errors=is_runtime_cache(p))
 
 
 def _migrate_legacy_groupguard_templates(dest_dir):
@@ -530,6 +530,9 @@ async def handle_market_install(request: web.Request):
     try:
         # 模块
         if item_type == TYPE_MODULE:
+            # 先停止运行中的模块，释放其可能占用的 .pyc/扩展文件；更新成功后
+            # _auto_enable_module 会重新发现并启用模块。
+            await _disable_module_runtime(_safe_name(item_name))
             result = await _install_module(github_url, item_name, file_path, branch, mirror)
             if result.get('success'):
                 await _auto_enable_module(_safe_name(item_name))
@@ -569,7 +572,7 @@ async def _disable_module_runtime(module_name):
         app = get_app()
         mm = app.module_manager if app else None
         if mm:
-            await mm.disable(module_name)
+            await mm.disable(module_name, _persist=False)
     except Exception as e:
         log.warning(f'模块停止失败 [{module_name}]: {e}')
 
