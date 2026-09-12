@@ -6,14 +6,15 @@ FROM python:3.11-slim
 # 设置工作目录
 WORKDIR /app
 
-# 设置 pip 镜像源（加速国内下载）
-RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
+# GitHub Actions 默认使用官方 PyPI；需要国内镜像时可通过
+# --build-arg PIP_INDEX_URL=... 覆盖，避免构建依赖某个镜像站的同步状态。
+ARG PIP_INDEX_URL=https://pypi.org/simple
 
 # 先复制依赖文件，利用 Docker 缓存层
 COPY requirements.txt .
 RUN apt-get update \
     && apt-get install -y --no-install-recommends build-essential \
-    && pip install --no-cache-dir -r requirements.txt \
+    && pip install --no-cache-dir --index-url "$PIP_INDEX_URL" -r requirements.txt \
     && apt-get purge -y --auto-remove build-essential \
     && rm -rf /var/lib/apt/lists/*
 
