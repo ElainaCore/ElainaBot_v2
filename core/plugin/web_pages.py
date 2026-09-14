@@ -88,11 +88,19 @@ def unregister_route(method: str, path: str):
 
 
 def match_route(method: str, path: str):
-    """精确匹配已注册路由; HEAD 回退到 GET。未命中返回 None。"""
+    """精确匹配已注册路由; 前缀路由 (注册路径以 * 结尾) 兜底最长前缀匹配; HEAD 回退到 GET。未命中返回 None。"""
     m = str(method).upper()
     entry = _routes.get((m, path))
     if entry is None and m == 'HEAD':
         entry = _routes.get(('GET', path))
+    if entry is None:
+        best_len = -1
+        for (rm, rp), e in _routes.items():
+            if rm != '*' and rm != m and not (m == 'HEAD' and rm == 'GET'):
+                continue
+            if rp.endswith('*') and path.startswith(rp[:-1]) and len(rp) > best_len:
+                entry = e
+                best_len = len(rp)
     return entry
 
 
