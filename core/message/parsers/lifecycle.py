@@ -11,8 +11,12 @@ class LifecycleParser(MessageParser):
 
     def _parse_base(self, event, d, uid_key='openid'):
         """生命周期事件公共字段"""
-        event.user_id = event.raw_user_id = d.get(uid_key, '')
-        event.group_id = d.get('group_openid', '')
+        # 官方事件使用 *_openid；部分转发/Webhook 适配器会保留 *_id，统一兼容。
+        event.user_id = event.raw_user_id = (
+            d.get(uid_key) or d.get('user_openid') or d.get('user_id') or ''
+        )
+        event.group_id = d.get('group_openid') or d.get('group_id') or ''
+        event.is_group = bool(event.group_id)
         event.timestamp = d.get('timestamp', '')
         event.message_id = d.get('id', '')
 
@@ -54,7 +58,6 @@ class GroupJoinRequestParser(LifecycleParser):
 
     def parse(self, event, d):
         self._parse_base(event, d, 'member_openid')
-        event.is_group = True
         event.username = d.get('username', '')
         event.join_request_id = d.get('join_request_id', '')
         event.apply_at = d.get('apply_at', '')

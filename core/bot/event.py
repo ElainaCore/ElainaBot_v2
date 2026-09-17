@@ -516,21 +516,28 @@ class EventHandlerMixin:
 
     async def _handle_group_member_add(self, bot, event):
         gid, uid = event.group_id or '', event.user_id or ''
-        if gid and uid and await self._add_user_to_group(bot, gid, uid):
-            bot.log_service.db_queue(
-                'UPDATE groups_users SET group_member_num=group_member_num+1 WHERE group_id=?',
-                (gid,),
-            )
+        if gid and uid:
+            spawn(self._persist_group_member_change(bot, gid, uid, adding=True))
         self._log_lifecycle(bot, 'group_member_add', {'group_id': gid, 'user_id': uid}, raw_event=event.raw)
 
     async def _handle_group_member_remove(self, bot, event):
         gid, uid = event.group_id or '', event.user_id or ''
-        if gid and uid and await self._remove_user_from_group(bot, gid, uid):
-            bot.log_service.db_queue(
-                'UPDATE groups_users SET group_member_num=MAX(group_member_num-1, 0) WHERE group_id=?',
-                (gid,),
-            )
+        if gid and uid:
+            spawn(self._persist_group_member_change(bot, gid, uid, adding=False))
         self._log_lifecycle(bot, 'group_member_del', {'group_id': gid, 'user_id': uid}, raw_event=event.raw)
+
+    async def _persist_group_member_change(self, bot, group_id, user_id, *, adding):
+        changed = (
+            await self._add_user_to_group(bot, group_id, user_id)
+            if adding
+            else await self._remove_user_from_group(bot, group_id, user_id)
+        )
+        if changed:
+            member_num = 'group_member_num+1' if adding else 'MAX(group_member_num-1, 0)'
+            bot.log_service.db_queue(
+                f'UPDATE groups_users SET group_member_num={member_num} WHERE group_id=?',
+                (group_id,),
+            )
 
     async def _handle_group_join_request(self, bot, event):
         self._log_lifecycle(bot, 'group_join_request', {
