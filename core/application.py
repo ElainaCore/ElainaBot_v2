@@ -22,8 +22,8 @@ from core.module.hook import HookManager
 from core.module.manager import ModuleManager
 from core.plugin.manager import PluginManager
 from core.server.http_server import HttpServer
-from core.services.config_watcher import ConfigWatcherService
 from core.services.auto_update import AutoUpdateService
+from core.services.config_watcher import ConfigWatcherService
 from core.services.media_cleanup import MediaCleanupService
 from core.services.scheduler import RestartScheduler
 from core.storage.dau import DAUService
