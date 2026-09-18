@@ -7,7 +7,10 @@ from ._common import log
 
 
 def discover_beds():
-    """扫描本包下的所有图床实现 (文件需定义 Bed 类), 按 priority 排序返回类列表"""
+    """扫描本包下的所有图床实现 (文件需定义 Bed 类), 按类内置 priority 排序返回类列表
+
+    最终上传顺序以配置里的 priority 为准 (见 main.setup), 这里只保证同一批图床的稳定顺序。
+    """
     beds = []
     for info in pkgutil.iter_modules(__path__):
         if info.name.startswith('_'):

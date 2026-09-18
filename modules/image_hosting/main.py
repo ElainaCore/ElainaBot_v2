@@ -7,7 +7,8 @@
 用法 (插件中):
     hosting = bot.module_manager.get("image_hosting")
     if hosting:
-        url = await hosting.upload_any(image_bytes, "test.png")  # 自动选首个可用图床
+        url = await hosting.upload_any(image_bytes, "test.png")  # 按 priority 顺序选首个可用图床
+        print(hosting.bed_order())  # 当前优先级顺序: [{'name', 'display_name', 'priority', 'enabled'}, ...]
         url = await hosting.upload_cos(image_bytes, "test.png", user_id="abc")
         url = await hosting.upload_bilibili(image_bytes)
         url = await hosting.upload_qq(image_bytes)
@@ -20,13 +21,15 @@
         records = await hosting.list_cnb_assets(limit=10)
         await hosting.delete_cnb(records[0])
 
-配置 (modules/image_hosting/data/config.yaml): 各图床一个配置段, 由各自的 Bed.defaults 提供
+配置 (modules/image_hosting/data/config.yaml): 各图床一个配置段, 由各自的 Bed.defaults 提供。
+每段都有 priority (整数, 越小越先尝试): 默认写入 Bed 类内置的 priority, 改成任意整数即可调整
+优先级, upload_any() 与 status() 都按这个顺序走; 不想参与上传的图床用 enabled: false 关掉。
 """
 
 __module_meta__ = {
     'name': '图床服务',
     'description': '统一图床上传 (CNB / ChatGLM / 星野 / Nature / QQ分片 / COS / B站 / QQ频道 / 自身图床)',
-    'version': '2.2.1',
+    'version': '2.3.0',
     'author': 'ElainaBot',
 }
 
@@ -57,16 +60,29 @@ async def setup(ctx):
     global _instance
     init_executor()
     bed_classes = discover_beds()
-    defaults = {cls.name: dict(cls.defaults) for cls in bed_classes}
-    comments = {cls.name: dict(cls.comments) for cls in bed_classes}
+    defaults = {cls.name: {**cls.defaults, 'priority': cls.priority} for cls in bed_classes}
+    comments = {
+        cls.name: {**cls.comments,
+                   'priority': f'上传优先级, 越小越先尝试 (内置默认 {cls.priority})'}
+        for cls in bed_classes
+    }
     cfg = ctx.ensure_config(defaults, comments=comments)
     retired_changed = _remove_retired_cnb_config(cfg)
+    # 老配置里没有 priority 键: 补上内置值, 让优先级可以直接改
+    priority_filled = False
+    for cls in bed_classes:
+        section = cfg.setdefault(cls.name, {})
+        if isinstance(section, dict) and 'priority' not in section:
+            section['priority'] = cls.priority
+            priority_filled = True
     ordered_cfg = _order_bed_config(cfg, bed_classes)
-    if retired_changed or list(ordered_cfg) != list(cfg):
+    if retired_changed or priority_filled or list(ordered_cfg) != list(cfg):
         ctx.save_config(ordered_cfg, comments=comments)
         cfg = ordered_cfg
         log.info('图床配置已更新')
     beds = {cls.name: cls(cfg.get(cls.name, {})) for cls in bed_classes}
+    # 按配置优先级排序: dict 保持插入序, upload_any()/status() 都依赖这个顺序
+    beds = dict(sorted(beds.items(), key=lambda kv: (_bed_priority(kv[1]), kv[0])))
     _instance = ImageHosting(cfg, ctx, beds)
     _instance.initialize()
     public_server.attach(_instance)
@@ -119,8 +135,20 @@ class ImageHosting:
         return self._beds.get(name)
 
     def status(self):
-        """返回各图床状态 dict"""
+        """返回各图床状态 dict (按优先级顺序)"""
         return {name: bool(bed.is_available()) for name, bed in self._beds.items()}
+
+    def bed_order(self):
+        """按当前优先级返回图床顺序: [{'name', 'display_name', 'priority', 'enabled'}, ...]"""
+        return [
+            {
+                'name': name,
+                'display_name': bed.display_name or name,
+                'priority': _bed_priority(bed),
+                'enabled': bool(bed.is_available()),
+            }
+            for name, bed in self._beds.items()
+        ]
 
     # ==================== 动态分发 ====================
 
@@ -191,9 +219,26 @@ def _call_with_supported_kwargs(fn, image_bytes, **kwargs):
     return fn(image_bytes, **kwargs)
 
 
+def _section_priority(section, fallback: int) -> int:
+    """图床配置段里的 priority 优先, 缺失或非法时退回 Bed 内置值"""
+    try:
+        return int(section.get('priority'))
+    except (AttributeError, TypeError, ValueError):
+        return fallback
+
+
+def _bed_priority(bed) -> int:
+    """某个已实例化图床的当前优先级"""
+    return _section_priority(getattr(bed, '_cfg', None) or {}, type(bed).priority)
+
+
 def _order_bed_config(cfg, bed_classes):
-    """按图床优先级重排配置，同时保留第三方扩展配置段。"""
-    ordered = {cls.name: cfg.get(cls.name, {}) for cls in bed_classes}
+    """按当前优先级重排图床配置段，并保留第三方扩展配置段"""
+    ordered = {
+        cls.name: cfg.get(cls.name, {})
+        for cls in sorted(bed_classes,
+                          key=lambda c: (_section_priority(cfg.get(c.name) or {}, c.priority), c.name))
+    }
     retired = {'qiniu', 'xinyew'}
     ordered.update((name, value) for name, value in cfg.items() if name not in ordered and name not in retired)
     return ordered
