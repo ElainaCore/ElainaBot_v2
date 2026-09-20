@@ -16,6 +16,7 @@ from core.message._http import (
 from core.message.media import _resolve_upload_ep, upload_media_bytes, upload_media_via_url
 from core.message.response import extract_message_id
 from core.message.silk import convert_to_silk
+from core.message.voice import split_voice
 
 log = get_logger(FRAMEWORK, '消息发送')
 
@@ -88,10 +89,29 @@ class _MediaSendMixin:
         type_name = self._MEDIA_TYPE_NAMES.get(file_type, '媒体')
         file_info = None
 
-        if is_url and file_type == 3:
-            # QQ 语音统一转为 Tencent SILK，不能绕过转换器直接上传源 URL。
-            data = await self.download_media(data, silent=True)
-        elif is_url:
+        # 语音超过 5 分钟时拆成多条发送，单段继续复用原有上传逻辑。
+        downloaded_voice = None
+        if file_type == 3:
+            downloaded_voice = await self.download_media(data, silent=True) if is_url else data
+            if isinstance(downloaded_voice, bytes):
+                parts = split_voice(downloaded_voice)
+                if parts and len(parts) > 1:
+                    last_result = None
+                    for index, part in enumerate(parts):
+                        result = await self._send_media(
+                            event, part, file_type, content if index == 0 else '',
+                            file_name=file_name,
+                            auto_delete_time=auto_delete_time,
+                            target_user_id=target_user_id,
+                            target_group_id=target_group_id,
+                            msg_id=msg_id,
+                            max_try=max_try,
+                        )
+                        if result is not None:
+                            last_result = result
+                    return last_result
+
+        if is_url:
             for _ in range(max_try):
                 file_info = await upload_media_via_url(
                     self,
@@ -105,7 +125,7 @@ class _MediaSendMixin:
                 if file_info:
                     break
             if not file_info:
-                data = await self.download_media(data)
+                data = downloaded_voice if isinstance(downloaded_voice, bytes) else await self.download_media(data, silent=file_type == 3)
 
         # 语音默认先转 Tencent SILK 再上传（已是 SILK / 转换失败则原样发送）。
         if file_type == 3 and not file_info and isinstance(data, bytes):
@@ -121,7 +141,7 @@ class _MediaSendMixin:
             return None
 
         if original_url:
-            media_label = f'[{type_name}]{original_url}'
+            media_label = f'[{type_name}]{original_url.split("?", 1)[0]}'
         else:
             media_label = await self._save_media(data, file_type)
 
