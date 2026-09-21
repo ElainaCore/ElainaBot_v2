@@ -101,20 +101,22 @@ async def upload_media_via_url(
     file_name=None,
     target_user_id=None,
     target_group_id=None,
+    return_response=False,
 ):
-    """通过 URL 上传媒体, 返回 file_info"""
+    """通过 URL 上传媒体, 返回 file_info；可选同时返回 API 响应。"""
     endpoint = _resolve_upload_ep(target_group_id, target_user_id, event)
     if not endpoint:
-        return None
+        return (None, None) if return_response else None
     req_data = {'srv_send_msg': False, 'file_type': file_type, 'url': url}
     if file_name:
         req_data['file_name'] = file_name
     success, resp = await sender.post_json(endpoint, req_data)
     if success:
-        return resp.get('file_info')
+        result = resp.get('file_info')
+        return (result, resp) if return_response else result
     if event:
         event.error = resp
-    return None
+    return (None, resp) if return_response else None
 
 
 # ==================== 分片上传 ====================

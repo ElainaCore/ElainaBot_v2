@@ -13,6 +13,7 @@ _BITRATES = {
     2: (0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160),
 }
 _SAMPLE_RATES = (44100, 48000, 32000)
+_SILK_HEADERS = (b'\x02#!SILK_V3', b'#!SILK_V3')
 
 
 def split_voice(data: bytes, max_seconds: int = MAX_VOICE_SECONDS) -> list[bytes] | None:
@@ -21,9 +22,32 @@ def split_voice(data: bytes, max_seconds: int = MAX_VOICE_SECONDS) -> list[bytes
         return None
     if data.startswith(b'RIFF') and data[8:12] == b'WAVE':
         return _split_wav(data, max_seconds)
+    if data.startswith(_SILK_HEADERS):
+        return _split_silk(data, max_seconds)
     if _mp3_frames(data) is not None:
         return _split_mp3(data, max_seconds)
     return None
+
+
+def _split_silk(data: bytes, max_seconds: int) -> list[bytes] | None:
+    header = next(item for item in _SILK_HEADERS if data.startswith(item))
+    offset = len(header)
+    frames = []
+    while offset + 2 <= len(data):
+        length = int.from_bytes(data[offset:offset + 2], 'little')
+        offset += 2
+        if length == 0:
+            break
+        if offset + length > len(data):
+            return None
+        frames.append(data[offset - 2:offset + length])
+        offset += length
+    if not frames:
+        return [data]
+    frames_per_part = max(1, int(max_seconds * 50))
+    if len(frames) <= frames_per_part:
+        return [data]
+    return [header + b''.join(frames[index:index + frames_per_part]) for index in range(0, len(frames), frames_per_part)]
 
 
 def _split_wav(data: bytes, max_seconds: int) -> list[bytes] | None:

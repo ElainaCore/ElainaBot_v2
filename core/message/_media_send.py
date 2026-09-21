@@ -15,10 +15,11 @@ from core.message._http import (
 )
 from core.message.media import _resolve_upload_ep, upload_media_bytes, upload_media_via_url
 from core.message.response import extract_message_id
-from core.message.silk import convert_to_silk
+from core.message.silk import convert_to_silk, is_silk
 from core.message.voice import split_voice
 
 log = get_logger(FRAMEWORK, '消息发送')
+_VOICE_TOO_LONG = '40093013'
 
 
 class _MediaSendMixin:
@@ -63,6 +64,34 @@ class _MediaSendMixin:
         message = f'[{self._appid}] 语音发送失败: {reason}'
         self._report_send_error(message, response, {'url': url} if url else None)
 
+    @staticmethod
+    def _is_voice_too_long(response):
+        return isinstance(response, dict) and any(
+            str(response.get(key, '')) == _VOICE_TOO_LONG
+            for key in ('code', 'err_code')
+        )
+
+    async def _send_voice_parts(
+        self, event, parts, content, *, file_name, auto_delete_time,
+        target_user_id, target_group_id, msg_id, max_try,
+    ):
+        if not parts or len(parts) <= 1:
+            return None
+        result = None
+        for index, part in enumerate(parts):
+            sent = await self._send_media(
+                event, part, 3, content if index == 0 else '',
+                file_name=file_name,
+                auto_delete_time=auto_delete_time,
+                target_user_id=target_user_id,
+                target_group_id=target_group_id,
+                msg_id=msg_id,
+                max_try=max_try,
+            )
+            if sent is not None:
+                result = sent
+        return result
+
     async def _send_media(
         self,
         event,
@@ -89,29 +118,44 @@ class _MediaSendMixin:
         type_name = self._MEDIA_TYPE_NAMES.get(file_type, '媒体')
         file_info = None
 
-        # 语音超过 5 分钟时拆成多条发送，单段继续复用原有上传逻辑。
+        # URL 默认交给 QQ 处理；只有语音明确返回“时长超限”时才下载并分段。
         downloaded_voice = None
-        if file_type == 3:
-            downloaded_voice = await self.download_media(data, silent=True) if is_url else data
-            if isinstance(downloaded_voice, bytes):
-                parts = split_voice(downloaded_voice)
-                if parts and len(parts) > 1:
-                    last_result = None
-                    for index, part in enumerate(parts):
-                        result = await self._send_media(
-                            event, part, file_type, content if index == 0 else '',
-                            file_name=file_name,
-                            auto_delete_time=auto_delete_time,
-                            target_user_id=target_user_id,
-                            target_group_id=target_group_id,
-                            msg_id=msg_id,
-                            max_try=max_try,
-                        )
-                        if result is not None:
-                            last_result = result
-                    return last_result
-
-        if is_url:
+        if is_url and file_type == 3:
+            response = None
+            for _ in range(max_try):
+                file_info, response = await upload_media_via_url(
+                    self,
+                    event,
+                    data,
+                    file_type,
+                    file_name=file_name,
+                    target_user_id=target_user_id,
+                    target_group_id=target_group_id,
+                    return_response=True,
+                )
+                if file_info:
+                    break
+                if self._is_voice_too_long(response):
+                    break
+            if not file_info and self._is_voice_too_long(response):
+                downloaded_voice = await self.download_media(data, silent=True)
+                parts = split_voice(downloaded_voice) if isinstance(downloaded_voice, bytes) else None
+                result = await self._send_voice_parts(
+                    event, parts, content,
+                    file_name=file_name,
+                    auto_delete_time=auto_delete_time,
+                    target_user_id=target_user_id,
+                    target_group_id=target_group_id,
+                    msg_id=msg_id,
+                    max_try=max_try,
+                )
+                if result is not None:
+                    return result
+                data = downloaded_voice
+            elif not file_info:
+                # 其它 URL 上传失败保留原有下载兜底，但不触发长语音分段。
+                data = await self.download_media(data, silent=True)
+        elif is_url:
             for _ in range(max_try):
                 file_info = await upload_media_via_url(
                     self,
@@ -125,11 +169,16 @@ class _MediaSendMixin:
                 if file_info:
                     break
             if not file_info:
-                data = downloaded_voice if isinstance(downloaded_voice, bytes) else await self.download_media(data, silent=file_type == 3)
+                data = await self.download_media(data, silent=file_type == 3)
 
-        # 语音默认先转 Tencent SILK 再上传（已是 SILK / 转换失败则原样发送）。
+        # 仅在 URL 直传未成功、已经拿到音频字节时转换为 Tencent SILK；
+        # 转换失败不上传原始 MP3，避免生成无声语音条。
         if file_type == 3 and not file_info and isinstance(data, bytes):
-            data = await convert_to_silk(data)
+            converted = await convert_to_silk(data)
+            if not is_silk(converted):
+                self._report_voice_failure('语音转换失败', event=event, url=original_url)
+                return None
+            data = converted
 
         if not file_info and not isinstance(data, bytes):
             if original_url or file_type == 3:
