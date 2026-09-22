@@ -24,6 +24,7 @@ from core.plugin.manager import PluginManager
 from core.server.http_server import HttpServer
 from core.services.auto_update import AutoUpdateService
 from core.services.config_watcher import ConfigWatcherService
+from core.services.health_watch import HealthWatchService
 from core.services.media_cleanup import MediaCleanupService
 from core.services.scheduler import RestartScheduler
 from core.storage.dau import DAUService
@@ -130,6 +131,7 @@ class Application(EventHandlerMixin):
         self._media_cleanup: MediaCleanupService | None = None
         self._auto_update: AutoUpdateService | None = None
         self._restart_scheduler: RestartScheduler | None = None
+        self._health_watch: HealthWatchService | None = None
 
         # 状态
         self._web_log_cb: Callable[[str, dict], None] | None = None
@@ -296,8 +298,10 @@ class Application(EventHandlerMixin):
         self._media_cleanup = MediaCleanupService(media_dir=self._media_dir, max_age_days=3, interval=3600)
         self._auto_update = AutoUpdateService(self._base_dir, self)
         self._restart_scheduler = RestartScheduler(on_restart=self._trigger_restart)
+        self._health_watch = HealthWatchService(self)
 
-        for svc in (self._config_watcher, self._media_cleanup, self._auto_update, self._restart_scheduler):
+        for svc in (self._config_watcher, self._media_cleanup, self._auto_update,
+                    self._restart_scheduler, self._health_watch):
             svc.start()
 
         _tune_gc()
@@ -349,7 +353,8 @@ class Application(EventHandlerMixin):
             self._plugin_manager.stop_watcher()
 
         # 停止后台服务
-        for svc in (self._config_watcher, self._media_cleanup, self._auto_update, self._restart_scheduler):
+        for svc in (self._config_watcher, self._media_cleanup, self._auto_update,
+                    self._restart_scheduler, self._health_watch):
             if svc:
                 svc.stop()
 
@@ -357,8 +362,9 @@ class Application(EventHandlerMixin):
         if self._http_server:
             await self._http_server.stop(timeout=5)
 
-        # 按依赖顺序关闭
+        # 按依赖顺序关闭; 用户追踪队列 (含群成员写入) 必须在日志服务关闭前排空
         cleanup = [
+            self._drain_track_queue(),
             self._dau_service and self._dau_service.stop(),
             self._statistics_service and self._statistics_service.stop(),
             self._bot_registry.shutdown() if self._bot_registry is not None else None,
@@ -375,6 +381,39 @@ class Application(EventHandlerMixin):
         shutdown_pool()
 
         log.info('已关闭')
+
+    async def _drain_track_queue(self):
+        """退出前把用户追踪队列处理完 (最多 2 秒), 避免丢掉未落库的成员事件。"""
+        queue = self._track_queue
+        if queue is None:
+            return
+        workers = list(getattr(self, '_track_workers', ()))
+        drainer = getattr(self, '_track_drainer', None)
+        deadline = asyncio.get_running_loop().time() + 2
+        try:
+            while True:
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    raise TimeoutError
+                if drainer is not None and not drainer.done():
+                    await asyncio.wait_for(asyncio.shield(drainer), timeout=remaining)
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    raise TimeoutError
+                await asyncio.wait_for(queue.join(), timeout=remaining)
+                if not getattr(self, '_track_pending', None) and queue.empty():
+                    break
+        except TimeoutError:
+            log.warning(f'用户追踪队列未排空 (剩余 {queue.qsize()} 项), 退出时丢弃')
+        for worker in workers:
+            worker.cancel()
+        if drainer is not None:
+            drainer.cancel()
+        pending = [*workers]
+        if drainer is not None:
+            pending.append(drainer)
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
 
     # ===== Webhook / Health (桥接到 manager 兼容) =====
 

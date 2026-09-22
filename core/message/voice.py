@@ -119,7 +119,7 @@ def _split_mp3(data: bytes, max_seconds: int) -> list[bytes] | None:
     parts = []
     start = 0
     elapsed = 0.0
-    for index, (_, end, duration) in enumerate(frames):
+    for index, (_, _end, duration) in enumerate(frames):
         if elapsed and elapsed + duration > max_seconds:
             part_start = frames[start][0]
             part_end = frames[index - 1][1]

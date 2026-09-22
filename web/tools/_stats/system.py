@@ -12,6 +12,8 @@ from datetime import datetime
 import psutil
 from aiohttp import web
 
+from core.base.metrics import snapshot as metrics_snapshot
+
 log = logging.getLogger('ElainaBot.web.sysinfo')
 
 _IS_WINDOWS = platform.system() == 'Windows'
@@ -154,6 +156,8 @@ def get_system_info() -> dict:
         'active_groups': active_groups,
         'total_users': total_users,
         'total_groups': total_groups,
+        # 进程内指标 (群成员写入/迁移、群记录缓存命中、追踪队列水位等)
+        'metrics': metrics_snapshot(),
     }
 
 

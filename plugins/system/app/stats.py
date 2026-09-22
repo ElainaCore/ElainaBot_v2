@@ -1,7 +1,6 @@
 """用户、群组和日活统计，每个机器人独立计算。"""
 
 import asyncio
-import json as _json
 import struct
 from datetime import datetime, timedelta
 from time import perf_counter
@@ -79,37 +78,28 @@ def _png_size(data):
     return struct.unpack('>II', data[16:24])
 
 
-def _count_json_array(raw):
-    """统计 JSON 数组长度，不依赖 SQLite 的 JSON 扩展。"""
-    if not raw or raw == '[]':
-        return 0
-    try:
-        return len(_json.loads(raw))
-    except Exception:
-        return 0
-
-
-def _count_group_users(all_groups):
-    """逐群解析用户列表并按人数降序排列。"""
-    counts = [(g['group_id'], _count_json_array(g.get('users'))) for g in (all_groups or [])]
+def _count_group_users(rows):
+    """按成员行数聚合并按人数降序排列 (回退路径)。"""
+    counts = [(row['group_id'], int(row['cnt'] or 0)) for row in (rows or [])]
     counts.sort(key=lambda x: x[1], reverse=True)
     return counts
 
 
-# 单次扫描完成当前群人数、最大群和排名，避免搬运全部用户数据
+# 单次聚合完成当前群人数、最大群和排名 (成员在 group_members, 一用户一行)
 _GROUP_STATS_SQL = """
     WITH c AS MATERIALIZED (
-        SELECT group_id,
-               CASE WHEN users IS NULL OR users = '' OR users = '[]' THEN 0
-                    ELSE json_array_length(users) END AS cnt
-        FROM groups_users
+        SELECT group_id, COUNT(*) AS cnt FROM group_members GROUP BY group_id
     )
-    SELECT (SELECT cnt FROM c WHERE group_id = ?1) AS cur,
+    SELECT COALESCE((SELECT cnt FROM c WHERE group_id = ?1), 0) AS cur,
            (SELECT group_id FROM c ORDER BY cnt DESC LIMIT 1) AS top_gid,
            (SELECT MAX(cnt) FROM c) AS top_cnt,
            (SELECT COUNT(*) + 1 FROM c
-            WHERE cnt > (SELECT cnt FROM c WHERE group_id = ?1)) AS rank
+            WHERE cnt > COALESCE((SELECT cnt FROM c WHERE group_id = ?1), 0)) AS rank
 """
+
+_GROUP_STATS_FALLBACK_SQL = (
+    'SELECT group_id, COUNT(*) AS cnt FROM group_members GROUP BY group_id'
+)
 
 
 async def _query_group_stats(ls, cur_gid):
@@ -119,11 +109,13 @@ async def _query_group_stats(ls, cur_gid):
         r = rows[0] if rows else {}
         return r.get('cur'), r.get('top_gid'), r.get('top_cnt'), r.get('rank')
     except Exception:
-        all_groups = await ls.db_fetch_all('SELECT group_id, users FROM groups_users')
-        counts = await asyncio.to_thread(_count_group_users, all_groups)
-        cur = next((c for gid, c in counts if gid == cur_gid), None)
+        rows = await ls.db_fetch_all(_GROUP_STATS_FALLBACK_SQL)
+        counts = await asyncio.to_thread(_count_group_users, rows)
+        cur = next((c for gid, c in counts if gid == cur_gid), 0)
         rank = next((i for i, (gid, _) in enumerate(counts, 1) if gid == cur_gid), None)
         top_gid, top_cnt = counts[0] if counts else (None, None)
+        if rank is None:
+            rank = len(counts) + 1
         return cur, top_gid, top_cnt, rank
 
 

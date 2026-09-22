@@ -5,9 +5,11 @@ import asyncio
 import json
 import os
 import re
+import time
 
 from core.base.config import cfg
 from core.base.logger import FRAMEWORK, report_error_raw
+from core.base.metrics import counter
 from core.message import bot_openid
 from core.message._http import (
     MSG_TYPE_ARK,
@@ -33,6 +35,7 @@ from core.message.keyboard import (
 from core.message.media import get_image_size as _get_image_size
 from core.message.media import upload_media_bytes, upload_media_via_url
 from core.message.template import tpl
+from core.storage.members import build_member_entry, member_extra_json
 
 _ESCAPE_MAP = {'n': '\n', 't': '\t', 'r': '\r', '\\': '\\', '0': '\0', 'a': '\a', 'b': '\b', 'f': '\f', 'v': '\v'}
 _STREAM_CONTENT_TYPES = frozenset({'text', 'markdown'})
@@ -95,6 +98,7 @@ class MessageSender(_HttpMixin, _MediaSendMixin, _SenderLogMixin):
         '_media_dir',
         '_log_service',
         '_group_member_sync_locks',
+        '_group_record_cache',
         '_reply_log_cb',
         '_reply_plugin_name',
     )
@@ -108,6 +112,9 @@ class MessageSender(_HttpMixin, _MediaSendMixin, _SenderLogMixin):
         self._bot_qq = ''
         self._log_service = None
         self._group_member_sync_locks = {}
+        # 群记录读缓存: 插件可能在每条消息上调用 get_group_record, 用短 TTL
+        # 有界缓存吸收重复读, 不持有长期状态
+        self._group_record_cache = {}
         self._reply_log_cb = None
         self._reply_plugin_name = ''
         self._media_dir = ''
@@ -804,7 +811,7 @@ class MessageSender(_HttpMixin, _MediaSendMixin, _SenderLogMixin):
     get_group_member_list = get_group_members
 
     async def _sync_group_members(self, group_id, members):
-        """将群成员分页结果合并写入 groups_users.users，并按 userid/member_openid 去重。"""
+        """把群成员分页结果合并写入 group_members (按 userid 归并)。"""
         group_id = str(group_id or '').strip()
         if not group_id or not isinstance(members, list) or self._log_service is None:
             return
@@ -812,31 +819,13 @@ class MessageSender(_HttpMixin, _MediaSendMixin, _SenderLogMixin):
         lock = self._group_member_sync_locks.setdefault(group_id, asyncio.Lock())
         async with lock:
             try:
-                row = await self._log_service.db_fetch_one(
-                    'SELECT users FROM groups_users WHERE group_id=?',
-                    (group_id,),
-                )
-                raw_users = row.get('users', '[]') if isinstance(row, dict) else '[]'
-                try:
-                    stored_users = json.loads(raw_users or '[]')
-                except (json.JSONDecodeError, TypeError):
-                    stored_users = []
-                if not isinstance(stored_users, list):
-                    stored_users = []
-
+                rows = await self._log_service.group_member_rows(group_id)
                 user_map = {}
-                for item in stored_users:
-                    if isinstance(item, dict):
-                        entry = dict(item)
-                        uid = entry.get('userid') or entry.get('member_openid') or entry.get('openid')
-                    else:
-                        uid = item
-                        entry = {'value': 1, 'last_active': ''}
-                    uid = str(uid or '').strip()
-                    if not uid:
-                        continue
-                    entry['userid'] = uid
-                    user_map.setdefault(uid, {}).update(entry)
+                for row in rows:
+                    user_map[row['user_id']] = build_member_entry(
+                        row['user_id'], row['last_active'],
+                        row['member_role'], row['extra'],
+                    )
 
                 for member in members:
                     if not isinstance(member, dict):
@@ -844,10 +833,9 @@ class MessageSender(_HttpMixin, _MediaSendMixin, _SenderLogMixin):
                     member_openid = str(member.get('member_openid') or '').strip()
                     if not member_openid:
                         continue
-
                     entry = user_map.setdefault(
                         member_openid,
-                        {'userid': member_openid, 'value': 1, 'last_active': ''},
+                        {'userid': member_openid, 'last_active': ''},
                     )
                     entry['userid'] = member_openid
                     entry.update({
@@ -855,17 +843,29 @@ class MessageSender(_HttpMixin, _MediaSendMixin, _SenderLogMixin):
                         for key in ('username', 'member_role', 'joined_at', 'union_openid')
                         if (value := member.get(key)) not in (None, '')
                     })
-                    if member.get('bot') is not None:
-                        if member['bot']:
-                            entry['is_bot'] = True
-                        else:
-                            entry.pop('is_bot', None)
 
-                await self._log_service.db_execute(
-                    'INSERT INTO groups_users (group_id, users) VALUES (?, ?) '
-                    'ON CONFLICT(group_id) DO UPDATE SET users=excluded.users',
-                    (group_id, json.dumps(list(user_map.values()), ensure_ascii=False)),
-                )
+                payload = [
+                    (
+                        group_id,
+                        uid,
+                        str(entry.get('last_active') or ''),
+                        str(entry.get('member_role') or ''),
+                        member_extra_json(entry),
+                    )
+                    for uid, entry in user_map.items()
+                ]
+                await self._log_service.group_members_write(payload)
+                self._forget_group_record(group_id)
+
+                bots = [
+                    str(member.get('member_openid'))
+                    for member in members
+                    if isinstance(member, dict)
+                    and member.get('bot')
+                    and member.get('member_openid')
+                ]
+                for uid in bots:
+                    await self._log_service.group_bot_mark(uid)
             except Exception as error:
                 log.warning(f'[{self._appid}] 群成员列表写入数据库失败 group={group_id}: {error}')
 
@@ -948,32 +948,51 @@ class MessageSender(_HttpMixin, _MediaSendMixin, _SenderLogMixin):
             return None, MessageSender._api_error('member_openids 不能包含空值')
         return normalized, None
 
+    _GROUP_RECORD_TTL = 30
+    _GROUP_RECORD_MAX = 512
+
     async def get_group_record(self, group_id):
-        """从 data.db 读取完整群记录，不调用平台接口。"""
+        """从 data.db 读取完整群记录 (成员来自 group_members)，不调用平台接口。"""
         if not group_id or self._log_service is None:
             return None
+        group_id = str(group_id)
+        now = time.time()
+        cached = self._group_record_cache.get(group_id)
+        if cached is not None and now < cached[0]:
+            counter('group_record_cache_hit')
+            return cached[1]
+        counter('group_record_cache_miss')
         row = await self._log_service.db_fetch_one(
-            'SELECT group_id, group_name, users, group_member_num, is_admin, '
+            'SELECT group_id, group_name, group_member_num, is_admin, '
             'is_full_access, allow_proactive_msg, in_group '
             'FROM groups_users WHERE group_id=?',
-            (str(group_id),),
+            (group_id,),
         )
         if not row:
             return None
-        try:
-            users = json.loads(row.get('users') or '[]')
-        except (json.JSONDecodeError, TypeError):
-            users = []
-        return {
+        record = {
             'group_id': str(row.get('group_id') or ''),
             'group_name': str(row.get('group_name') or ''),
-            'users': users if isinstance(users, list) else [],
+            'users': await self._log_service.group_member_entries(group_id),
             'group_member_num': int(row.get('group_member_num') or 0),
             'is_admin': bool(row.get('is_admin')),
             'is_full_access': bool(row.get('is_full_access')),
             'allow_proactive_msg': bool(row.get('allow_proactive_msg')),
             'in_group': bool(row.get('in_group')),
         }
+        self._remember_group_record(group_id, now, record)
+        return record
+
+    def _remember_group_record(self, group_id, now, record):
+        cache = self._group_record_cache
+        cache[group_id] = (now + self._GROUP_RECORD_TTL, record)
+        excess = len(cache) - self._GROUP_RECORD_MAX
+        if excess > 0:
+            for key in list(cache)[:excess]:
+                cache.pop(key, None)
+
+    def _forget_group_record(self, group_id):
+        self._group_record_cache.pop(str(group_id), None)
 
     async def _handle_group_error(self, group_id, error):
         state = _group_error_state(error)
@@ -981,7 +1000,7 @@ class MessageSender(_HttpMixin, _MediaSendMixin, _SenderLogMixin):
             return
         group_id = str(group_id)
         if state == 'removed':
-            await self._log_service.db_execute('DELETE FROM groups_users WHERE group_id=?', (group_id,))
+            await self._log_service.group_row_delete(group_id)
         else:
             await self._log_service.db_execute(
                 'INSERT INTO groups_users '
@@ -991,6 +1010,7 @@ class MessageSender(_HttpMixin, _MediaSendMixin, _SenderLogMixin):
                 (group_id,),
             )
         action = '已清理群成员和全量群记录' if state == 'removed' else '已标记退群并移出全量群'
+        self._forget_group_record(group_id)
         log.info(f'[{self._appid}] 群 {group_id} {action}')
 
     async def _request_group(
@@ -1026,8 +1046,8 @@ class MessageSender(_HttpMixin, _MediaSendMixin, _SenderLogMixin):
         if self._log_service is not None:
             await self._log_service.db_execute(
                 """
-                INSERT INTO groups_users (group_name, group_id, users, group_member_num, in_group)
-                VALUES (?, ?, '[]', ?, 1)
+                INSERT INTO groups_users (group_name, group_id, group_member_num, in_group)
+                VALUES (?, ?, ?, 1)
                 ON CONFLICT(group_id) DO UPDATE SET
                     group_name=excluded.group_name,
                     group_member_num=excluded.group_member_num,
@@ -1035,6 +1055,7 @@ class MessageSender(_HttpMixin, _MediaSendMixin, _SenderLogMixin):
                 """,
                 (group_name, str(group_id), member_num),
             )
+        self._forget_group_record(group_id)
         return (data, None) if return_error else data
 
     async def get_group_bot_state(self, group_id, *, return_error=False):
@@ -1065,6 +1086,7 @@ class MessageSender(_HttpMixin, _MediaSendMixin, _SenderLogMixin):
                     1 if data.get('allow_proactive_msg') else 0,
                 ),
             )
+        self._forget_group_record(group_id)
         return (data, None) if return_error else data
 
     async def refresh_group_info(self, group_id):

@@ -6,7 +6,7 @@ import json
 import time
 from collections import deque
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from itertools import islice
 
 from core.base.config import cfg
@@ -35,9 +35,7 @@ log = get_logger(FRAMEWORK, '事件处理')
 
 _USER_CACHE_TTL = 3600
 _DEDUP_TTL = 300
-_GROUP_CACHE_MAX = 10000
 _FULL_ACCESS_CACHE_TTL = 1800
-_DIRTY_FLUSH_THRESHOLD = 500  # 脏群数超过此阈值提前刷写
 _TRACK_WORKERS = 8  # 用户追踪后台 worker 数
 _TRACK_QUEUE_MAX = 5000  # 用户追踪队列上限, 满则转入合并缓冲 (不丢弃)
 _TRACK_DEDUP_TTL = 60  # 同键群消息追踪去重窗口(秒): 追踪任务对同键幂等, 短时重复直接跳过
@@ -58,15 +56,6 @@ def _today_str():
         nxt = d.replace(hour=23, minute=59, second=59, microsecond=0).timestamp()
         _today_cache = (d.strftime('%Y-%m-%d'), nxt)
     return _today_cache[0]
-
-
-def _new_user_entry(uid, today, member_role='', is_bot=False):
-    entry = {'userid': uid, 'value': 1, 'last_active': today}
-    if member_role:
-        entry['member_role'] = member_role
-    if is_bot:
-        entry['is_bot'] = True
-    return entry
 
 
 def _prune_expired_entries(cache, now, limit, expires_at):
@@ -147,11 +136,8 @@ class EventHandlerMixin:
         self._dedup = {}
         self._known_users = {}
         self._cache_clean_ts = 0
-        self._group_users_cache = {}
         self._group_locks = {}
         self._full_access_cache = {}  # {(appid, group_id): expire_ts}
-        self._dirty_groups = {}  # {group_id: bot} — 待写入的群缓存
-        self._flush_task = None
         # 用户追踪后台队列 (有界, 背压): 替代每条消息 create_task 无界堆积
         self._track_queue = None
         self._track_workers = []
@@ -644,28 +630,14 @@ class EventHandlerMixin:
         _prune_expired_entries(
             self._full_access_cache, now, _CACHE_PRUNE_BATCH, lambda value: value
         )
-        self._prune_group_caches(now)
+        self._prune_group_locks()
 
-    def _prune_group_caches(self, now):
-        # LRU 的头部是最冷的缓存，每次只检查有限数量，避免整表重建。
-        for group_id in list(islice(self._group_users_cache, _CACHE_PRUNE_BATCH)):
-            cached = self._group_users_cache.get(group_id)
-            if cached and cached[0] <= now and group_id not in self._dirty_groups:
-                self._group_users_cache.pop(group_id, None)
-                lock = self._group_locks.get(group_id)
-                if (
-                    lock is not None
-                    and not lock.locked()
-                    and not getattr(lock, '_waiters', None)
-                ):
-                    self._group_locks.pop(group_id, None)
-
-        # 没有对应缓存的失败/空查询也可能留下群锁，分批清除。
+    def _prune_group_locks(self):
+        # 群锁只在占位/建群竞态时需要, 空闲后分批回收。
         for group_id in list(islice(self._group_locks, _CACHE_PRUNE_BATCH)):
             lock = self._group_locks.get(group_id)
             if (
-                group_id not in self._group_users_cache
-                and lock is not None
+                lock is not None
                 and not lock.locked()
                 and not getattr(lock, '_waiters', None)
             ):
@@ -732,180 +704,37 @@ class EventHandlerMixin:
             await side_task
 
     # ==================== 群组成员记录 ====================
+    #
+    # 成员自 2.1.0 起存放在 group_members (一用户一行): 消息路径只写一行,
+    # 不再有进程内成员缓存、脏集合、批量刷库与跨天过期。
 
-    @staticmethod
-    def _tomorrow_ts():
-        d = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-        return (d + timedelta(days=1)).timestamp()
-
-    @staticmethod
-    def _users_json(user_map):
+    async def _add_user_to_group(self, bot, group_id, user_id, member_role='', is_bot=False):
+        """记录群成员活跃; 返回该成员是否为本次新增"""
         try:
-            return json.dumps(list(user_map.values()), ensure_ascii=False)
-        except RuntimeError:
-            return json.dumps(list(dict(user_map).values()), ensure_ascii=False)
+            return await bot.log_service.group_member_touch(
+                group_id, user_id, _today_str(), member_role, is_bot=is_bot,
+            )
+        except Exception as e:
+            report_error(
+                FRAMEWORK, '群成员记录', e,
+                context={'group_id': group_id, 'user_id': str(user_id)},
+            )
+            return False
 
-    def _upsert_group_user(self, user_map, uid, today, member_role='', is_bot=False):
-        """更新或新增群成员条目, 返回是否有变更"""
-        entry = user_map.get(uid)
-        if entry is None:
-            user_map[uid] = _new_user_entry(uid, today, member_role, is_bot)
-            return True
-        changed = False
-        if entry.get('last_active') != today:
-            entry['last_active'] = today
-            changed = True
-        if member_role and entry.get('member_role') != member_role:
-            entry['member_role'] = member_role
-            changed = True
-        if is_bot and not entry.get('is_bot'):
-            entry['is_bot'] = True
-            changed = True
-        return changed
-
-    def _ensure_flush_task(self):
-        if self._flush_task is None or self._flush_task.done():
-            self._flush_task = asyncio.create_task(self._flush_dirty_groups())
-
-    def _mark_group_dirty(self, group_id, bot):
-        """标记群缓存待落库, 由 _flush_dirty_groups 批量写回"""
-        self._dirty_groups[group_id] = bot
-        self._ensure_flush_task()
-        if len(self._dirty_groups) >= _DIRTY_FLUSH_THRESHOLD:
-            self._force_flush_dirty()
-
-    def _force_flush_dirty(self):
-        """脏群数超过阈值时立即刷写, 降低内存峰值"""
-        if not self._dirty_groups:
-            return
-        batch, self._dirty_groups = self._dirty_groups, {}
-        for gid, bot in batch.items():
-            cached = self._group_users_cache.get(gid)
-            if cached:
-                bot.log_service.db_queue(
-                    'UPDATE groups_users SET users=? WHERE group_id=?',
-                    (self._users_json(cached[1]), gid),
-                )
-
-    async def _flush_dirty_groups(self):
-        while True:
-            await asyncio.sleep(30)
-            if not self._dirty_groups:
-                continue
-            self._force_flush_dirty()
-
-    @staticmethod
-    def _parse_user_map(raw_list):
-        """将 DB 中的 users JSON 列表解析为 {uid: entry} dict"""
-        result = {}
-        for item in raw_list:
-            if isinstance(item, dict):
-                uid = item.get('userid', '')
-                if uid:
-                    result[uid] = item
-            elif item:
-                result[item] = _new_user_entry(item, '')
-        return result
+    async def _remove_user_from_group(self, bot, group_id, user_id):
+        """移除群成员; 返回该成员此前是否存在"""
+        try:
+            return await bot.log_service.group_member_remove(group_id, user_id)
+        except Exception as e:
+            report_error(
+                FRAMEWORK, '群成员移除', e,
+                context={'group_id': group_id, 'user_id': str(user_id)},
+            )
+            return False
 
     def _group_lock(self, group_id):
-        """取或建群级写锁 (保证同群成员增删串行)"""
+        """取或建群级写锁 (建群占位等竞态场景使用)"""
         lock = self._group_locks.get(group_id)
         if lock is None:
             lock = self._group_locks[group_id] = asyncio.Lock()
         return lock
-
-    async def _load_group_user_map(self, bot, group_id):
-        """从 DB 读取群成员 {uid: entry}; 返回 (user_map, existed)"""
-        rows = await asyncio.get_running_loop().run_in_executor(
-            None,
-            bot.log_service.query_data,
-            'SELECT users FROM groups_users WHERE group_id=?',
-            (group_id,),
-        )
-        if not rows:
-            return {}, False
-        raw_str = rows[0].get('users', '[]')
-        try:
-            raw = json.loads(raw_str)
-        except (json.JSONDecodeError, TypeError) as e:
-            p = getattr(e, 'pos', 0) or 0
-            log.warning(f'[群用户列表] group={group_id} JSON损坏: {e}, 上下文: ...{raw_str[max(0,p-50):p+50]}...')
-            raw = []
-        return self._parse_user_map(raw), True
-
-    async def _mutate_group_user(self, bot, group_id, mutate, create_if_missing):
-        """群成员表变更统一入口"""
-        async with self._group_lock(group_id):
-            # 1. 内存缓存命中: 仅改内存 + 标脏, 由 _flush_dirty_groups 批量落库
-            cached = self._group_users_cache.get(group_id)
-            if cached and time.time() < cached[0]:
-                # LRU: 命中后移到末尾, 保证热点群在大规模(群数>>缓存上限)下不被冷群挤出
-                self._group_users_cache.pop(group_id, None)
-                self._group_users_cache[group_id] = cached
-                changed = mutate(cached[1])
-                if changed:
-                    self._mark_group_dirty(group_id, bot)
-                return changed
-            self._group_users_cache.pop(group_id, None)
-
-            # 2. DB 加载
-            try:
-                user_map, existed = await self._load_group_user_map(bot, group_id)
-                if not existed and not create_if_missing:
-                    return False
-                changed = mutate(user_map)
-                if changed:
-                    bot.log_service.db_queue(
-                        'INSERT INTO groups_users (group_id, users) VALUES (?, ?) '
-                        'ON CONFLICT(group_id) DO UPDATE SET users=excluded.users',
-                        (group_id, self._users_json(user_map)),
-                    )
-                self._set_group_cache(group_id, user_map)
-                return changed
-            except Exception as e:
-                report_error(
-                    FRAMEWORK,
-                    '群用户列表更新',
-                    e,
-                    context={'group_id': group_id},
-                )
-                return False
-
-    async def _add_user_to_group(self, bot, group_id, user_id, member_role='', is_bot=False):
-        uid = str(user_id)
-        today = _today_str()
-        added = False
-
-        def upsert(user_map):
-            nonlocal added
-            added = uid not in user_map
-            return self._upsert_group_user(user_map, uid, today, member_role, is_bot)
-
-        changed = await self._mutate_group_user(
-            bot,
-            group_id,
-            upsert,
-            create_if_missing=True,
-        )
-        return changed and added
-
-    async def _remove_user_from_group(self, bot, group_id, user_id):
-        uid = str(user_id)
-        return await self._mutate_group_user(
-            bot,
-            group_id,
-            lambda user_map: user_map.pop(uid, None) is not None,
-            create_if_missing=False,
-        )
-
-    def _set_group_cache(self, group_id, user_map):
-        if len(self._group_users_cache) >= _GROUP_CACHE_MAX and group_id not in self._group_users_cache:
-            # 脏群必须等批量写回后再淘汰；优先移除最老的干净缓存。
-            oldest = next(
-                (gid for gid in self._group_users_cache if gid not in self._dirty_groups),
-                None,
-            )
-            if oldest is not None:
-                del self._group_users_cache[oldest]
-        expire = self._tomorrow_ts()
-        self._group_users_cache[group_id] = (expire, user_map)

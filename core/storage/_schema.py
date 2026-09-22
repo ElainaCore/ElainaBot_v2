@@ -4,9 +4,12 @@ import contextlib
 import json
 import re
 import sqlite3
+import time
 
-from core.base.logger import SERVICE, get_logger
+from core.base.logger import SERVICE, get_logger, now_str
+from core.base.metrics import counter
 from core.message.response import raw_response_text
+from core.storage.members import member_extra_json, parse_member_entries
 
 log = get_logger(SERVICE, '日志')
 
@@ -51,20 +54,42 @@ DAU_TABLE_SQL = """
     )
 """
 
+# 群元数据表: 自 2.1.0 起不再持有成员列表, 成员见 group_members
 _GROUPS_USERS_COLUMNS = (
-    'group_id', 'group_name', 'users', 'group_member_num',
+    'group_id', 'group_name', 'group_member_num',
     'is_admin', 'is_full_access', 'allow_proactive_msg', 'in_group',
 )
 _GROUPS_USERS_DEFINITION = """(
             group_id TEXT PRIMARY KEY,
             group_name TEXT DEFAULT '',
-            users TEXT DEFAULT '[]',
             group_member_num INTEGER DEFAULT 0,
             is_admin INTEGER DEFAULT 0,
             is_full_access INTEGER DEFAULT 0,
             allow_proactive_msg INTEGER DEFAULT 0,
             in_group INTEGER DEFAULT 1
         )"""
+
+# 群成员: 一用户一行, 是成员数据的唯一权威存储。
+# WITHOUT ROWID 让整表按 (group_id, user_id) 聚集, 单群读取即顺序扫描,
+# 因此不需要任何二级索引。
+_GROUP_MEMBERS_SQL = """
+        CREATE TABLE IF NOT EXISTS group_members (
+            group_id    TEXT NOT NULL,
+            user_id     TEXT NOT NULL,
+            last_active TEXT NOT NULL DEFAULT '',
+            member_role TEXT NOT NULL DEFAULT '',
+            extra       TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY (group_id, user_id)
+        ) WITHOUT ROWID;
+    """
+
+# 机器人账号: 全局唯一, 换群仍然是机器人, 因此不按群重复记录
+_BOTS_SQL = """
+        CREATE TABLE IF NOT EXISTS bots (
+            user_id    TEXT PRIMARY KEY,
+            first_seen TEXT NOT NULL DEFAULT ''
+        ) WITHOUT ROWID;
+    """
 
 # 表结构 (类型 -> CREATE TABLE SQL)
 _SCHEMAS = {
@@ -157,6 +182,8 @@ _SCHEMAS = {
             user_id TEXT PRIMARY KEY
         );
         CREATE TABLE IF NOT EXISTS groups_users {_GROUPS_USERS_DEFINITION};
+        {_GROUP_MEMBERS_SQL}
+        {_BOTS_SQL}
     """,
 }
 
@@ -221,9 +248,11 @@ _DATA_MIGRATIONS = [
     ('users', 'state', 'INTEGER DEFAULT 0'),
 ]
 
-# SQLite PRAGMA user_version 只能保存整数，因此 2.0.1 编码为 20001。
-_DATA_SCHEMA_VERSION = '2.0.1'
-_DATA_SCHEMA_USER_VERSION = 20001
+# SQLite PRAGMA user_version 只能保存整数，因此 2.1.0 编码为 20002。
+_DATA_SCHEMA_VERSION = '2.1.0'
+_DATA_SCHEMA_USER_VERSION = 20002
+# 群成员迁移的读取批次 (按 group_id keyset 分页)
+_GROUP_MIGRATE_BATCH = 500
 _FULL_ACCESS_INDEX = (
     'CREATE INDEX IF NOT EXISTS idx_groups_full_access ON groups_users('
     'is_full_access, group_id, group_name, group_member_num, in_group, allow_proactive_msg)'
@@ -237,7 +266,11 @@ def _table_exists(conn, name):
 
 
 def _rebuild_groups_users(conn):
-    """将旧群数据表合并到 groups_users，并调整为指定列顺序。"""
+    """将旧群数据表合并到 groups_users，并调整为指定列顺序。
+
+    自 2.1.0 起目标结构不再包含 users 列，因此本函数会顺带丢弃该列；
+    调用前必须已完成成员迁移 (见 _migrate_group_members)。
+    """
     current = [row[1] for row in conn.execute('PRAGMA table_info(groups_users)').fetchall()]
     legacy_admin = _table_exists(conn, 'group_bot_admin')
     legacy_full = _table_exists(conn, 'full_access_groups')
@@ -246,7 +279,6 @@ def _rebuild_groups_users(conn):
     columns = set(current)
     defaults = {
         'group_name': "''",
-        'users': "'[]'",
         'group_member_num': '0',
         'is_admin': '0',
         'is_full_access': '0',
@@ -289,11 +321,11 @@ def _rebuild_groups_users(conn):
         DROP TABLE IF EXISTS groups_users_new;
         CREATE TABLE groups_users_new {_GROUPS_USERS_DEFINITION};
         INSERT INTO groups_users_new (
-            group_id, group_name, users, group_member_num,
+            group_id, group_name, group_member_num,
             is_admin, is_full_access, allow_proactive_msg, in_group
         )
         SELECT
-            group_id, {values['group_name']}, {values['users']}, {values['group_member_num']},
+            group_id, {values['group_name']}, {values['group_member_num']},
             {values['is_admin']}, {values['is_full_access']},
             {values['allow_proactive_msg']}, {values['in_group']}
         FROM groups_users;
@@ -306,21 +338,139 @@ def _rebuild_groups_users(conn):
     log.info(f'自动迁移 data.db {_DATA_SCHEMA_VERSION}: 群管理员及全量权限已合并至 groups_users')
 
 
-def _migrate_data_tables(conn):
-    """为 data 库的旧表补齐缺失列 (按 user_version 版本号跳过已迁移库)"""
+def _migrate_group_members(conn, thorough_verify=False):
+    """把 groups_users.users 的成员列表迁移到 group_members / bots (2.1.0)。
+
+    返回 (是否可以丢弃 users 列, 校验群数, 不一致群数)。
+    失败时保留原列, 下次重试, 不会留下半迁移状态。
+    """
+    columns = {row[1] for row in conn.execute('PRAGMA table_info(groups_users)').fetchall()}
+    if 'users' not in columns:
+        return True, 0, 0
+    conn.executescript(_GROUP_MEMBERS_SQL + _BOTS_SQL)
+    conn.commit()
+
+    started = time.monotonic()
+    groups = 0
+    expected = 0
+    bots: set[str] = set()
+    last_group = ''
+    log.info(f'开始迁移群成员到 group_members (data.db {_DATA_SCHEMA_VERSION})')
     try:
-        if conn.execute('PRAGMA user_version').fetchone()[0] >= _DATA_SCHEMA_USER_VERSION:
-            current = tuple(row[1] for row in conn.execute('PRAGMA table_info(groups_users)'))
-            if (
-                current == _GROUPS_USERS_COLUMNS
-                and not _table_exists(conn, 'group_bot_admin')
-                and not _table_exists(conn, 'full_access_groups')
-            ):
-                conn.execute(_FULL_ACCESS_INDEX)
-                conn.commit()
-                return
-    except sqlite3.Error:
-        pass
+        while True:
+            rows = conn.execute(
+                'SELECT group_id, users FROM groups_users '
+                'WHERE group_id > ? ORDER BY group_id LIMIT ?',
+                (last_group, _GROUP_MIGRATE_BATCH),
+            ).fetchall()
+            if not rows:
+                break
+            last_group = rows[-1][0]
+            batch = []
+            for group_id, raw in rows:
+                entries = parse_member_entries(raw)
+                expected += len(entries)
+                for uid, entry in entries.items():
+                    batch.append((
+                        str(group_id),
+                        uid,
+                        str(entry.get('last_active') or ''),
+                        str(entry.get('member_role') or ''),
+                        member_extra_json(entry),
+                    ))
+                    if entry.get('is_bot'):
+                        bots.add(uid)
+            if batch:
+                conn.executemany(
+                    'INSERT OR IGNORE INTO group_members '
+                    '(group_id, user_id, last_active, member_role, extra) '
+                    'VALUES (?,?,?,?,?)',
+                    batch,
+                )
+            if bots:
+                _store_bots(conn, bots)
+                bots.clear()
+            conn.commit()
+            groups += len(rows)
+            if groups % (_GROUP_MIGRATE_BATCH * 40) == 0:
+                log.info(f'群成员迁移进行中: {groups} 群 / {expected} 条目')
+        if bots:
+            _store_bots(conn, bots)
+            conn.commit()
+    except Exception as e:
+        conn.rollback()
+        counter('group_migration_failures')
+        log.error(f'群成员迁移失败, 保留 groups_users.users 待下次重试: {e}')
+        return False, 0, 0
+
+    actual = conn.execute('SELECT COUNT(*) FROM group_members').fetchone()[0]
+    if actual < expected:
+        counter('group_migration_failures')
+        log.error(f'群成员迁移校验失败: 期望至少 {expected} 行, 实际 {actual} 行, 保留原列')
+        return False, 0, 0
+    checked, mismatched = (0, 0)
+    if thorough_verify:
+        checked, mismatched = _verify_group_members(conn)
+        if mismatched:
+            counter('group_migration_failures')
+            log.error(f'群成员逐群校验失败: {mismatched}/{checked} 个群不一致, 保留原列')
+            return False, checked, mismatched
+    counter('group_migration_rows', actual)
+    log.info(
+        f'群成员迁移完成: {groups} 群 / {actual} 行 / '
+        f'耗时 {time.monotonic() - started:.1f}s'
+    )
+    return True, checked, mismatched
+
+
+def _store_bots(conn, bots):
+    """写入机器人账号 (全局去重)。"""
+    stamp = now_str()
+    conn.executemany(
+        'INSERT OR IGNORE INTO bots (user_id, first_seen) VALUES (?, ?)',
+        [(uid, stamp) for uid in bots],
+    )
+
+
+def _verify_group_members(conn):
+    """逐群比对"源 JSON 去重条目数"与"目标行数"。需要 users 列仍然存在。"""
+    checked = 0
+    mismatched = 0
+    last_group = ''
+    while True:
+        rows = conn.execute(
+            'SELECT group_id, users FROM groups_users '
+            'WHERE group_id > ? ORDER BY group_id LIMIT ?',
+            (last_group, _GROUP_MIGRATE_BATCH),
+        ).fetchall()
+        if not rows:
+            break
+        last_group = rows[-1][0]
+        for group_id, raw in rows:
+            expected = len(parse_member_entries(raw))
+            actual = conn.execute(
+                'SELECT COUNT(*) FROM group_members WHERE group_id=?', (group_id,)
+            ).fetchone()[0]
+            checked += 1
+            if expected != actual:
+                mismatched += 1
+                if mismatched <= 20:
+                    log.warning(
+                        f'成员迁移校验不一致: group={group_id} '
+                        f'源 {expected} 条 / 目标 {actual} 行'
+                    )
+    return checked, mismatched
+
+
+def migrate_data_db(conn, *, thorough_verify=False):
+    """data.db 2.1.0 迁移全流程 (启动路径与离线脚本共用)。
+
+    顺序: 补齐缺失列 → 成员迁出 users → 重建 groups_users (顺带丢弃该列)
+          → 建索引 → 写 user_version。
+    返回 {'ok', 'migrated', 'checked', 'mismatched', 'reason'}。
+    """
+    result = {'ok': False, 'migrated': False, 'checked': 0,
+              'mismatched': 0, 'reason': ''}
     for table, col, col_def in _DATA_MIGRATIONS:
         try:
             existing = {row[1] for row in conn.execute(f'PRAGMA table_info({table})').fetchall()}
@@ -331,6 +481,16 @@ def _migrate_data_tables(conn):
             log.info(f'自动迁移: {table} 表新增列 {col}')
         except Exception as e:
             log.warning(f'迁移列 {table}.{col} 失败: {e}')
+
+    # 即使旧库没有 users 列，也要幂等补齐新表，避免版本号与结构不一致。
+    conn.executescript(_GROUP_MEMBERS_SQL + _BOTS_SQL)
+    conn.commit()
+    migrated, checked, mismatched = _migrate_group_members(
+        conn, thorough_verify=thorough_verify)
+    result.update(migrated=migrated, checked=checked, mismatched=mismatched)
+    if not migrated:
+        result['reason'] = '成员迁移未完成, 保留 groups_users.users 待重试'
+        return result
     try:
         _rebuild_groups_users(conn)
         conn.execute(_FULL_ACCESS_INDEX)
@@ -338,10 +498,33 @@ def _migrate_data_tables(conn):
     except Exception as e:
         conn.rollback()
         log.warning(f'迁移群数据表失败: {e}')
-        return
+        result['reason'] = f'重建群数据表失败: {e}'
+        return result
     with contextlib.suppress(Exception):
         conn.execute(f'PRAGMA user_version = {_DATA_SCHEMA_USER_VERSION}')
         conn.commit()
+    result['ok'] = True
+    return result
+
+
+def _migrate_data_tables(conn):
+    """为 data 库的旧表补齐缺失列 (按 user_version 版本号跳过已迁移库)"""
+    try:
+        if conn.execute('PRAGMA user_version').fetchone()[0] >= _DATA_SCHEMA_USER_VERSION:
+            current = tuple(row[1] for row in conn.execute('PRAGMA table_info(groups_users)'))
+            if (
+                current == _GROUPS_USERS_COLUMNS
+                and _table_exists(conn, 'group_members')
+                and _table_exists(conn, 'bots')
+                and not _table_exists(conn, 'group_bot_admin')
+                and not _table_exists(conn, 'full_access_groups')
+            ):
+                conn.execute(_FULL_ACCESS_INDEX)
+                conn.commit()
+                return
+    except sqlite3.Error:
+        pass
+    migrate_data_db(conn)
 
 
 def _migrate_missing_columns(conn, log_type):

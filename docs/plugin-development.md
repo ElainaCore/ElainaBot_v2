@@ -980,6 +980,34 @@ if group:
 | `allow_proactive_msg` | 是否允许主动推送 |
 | `in_group` | 机器人是否仍在群内 |
 
+> **2.1.0 起成员存储变更**：`groups_users.users` 已废弃并在迁移后删除；成员改存
+> `group_members`（一用户一行），机器人账号统一存放在 `bots`。
+> `get_group_record()` 的返回结构保持兼容，但成员条目不再包含历史字段 `value`；
+> 直接读取 `groups_users.users` 的插件请改用下面的接口。
+
+#### 群成员读取接口（推荐，插件不必知道表结构）
+
+接口位于每个机器人自己的 `bot.log_service`：
+
+| 接口 | 返回 | 用途 |
+| --- | --- | --- |
+| `group_member_entries(_sync)(group_id, limit=None)` | 成员条目列表 | 需要完整成员资料时使用 |
+| `group_member_ids(_sync)(group_id, exclude_bots=True, roles=None, limit=None)` | 成员 ID 列表 | 抽人、统计和筛选 |
+| `group_admin_ids_sync(group_id)` | 管理员与群主 ID 列表 | 群管判断 |
+| `group_member_roles(_sync)(group_id)` | `{user_id: {role?, is_bot?}}` | 角色或机器人标记 |
+| `group_member_count(_sync)(group_id)` | 成员数量 | 人数统计 |
+| `group_last_active_map_sync(limit, offset=0)` | 群活跃日期列表 | 跨群筛选不活跃群 |
+
+~~~python
+ls = bot.log_service            # 各机器人一个 data.db
+ids = ls.group_member_ids_sync(event.group_id, limit=3)
+admins = ls.group_admin_ids_sync(event.group_id)
+roles = ls.group_member_roles_sync(event.group_id)
+~~~
+
+带 `_sync` 的方法用于工作线程；不带后缀的方法用于事件处理器中的 `await`。
+确需直接读库时查询 `group_members`，不要再读取 `groups_users.users`；`extra` 保存非标准成员字段。
+
 刷新平台数据：
 
 ~~~python
@@ -1063,7 +1091,7 @@ if page:
     next_cursor = page['next_cursor']
 ~~~
 
-每次成功调用都会把本页成员增量合并到 `groups_users.users`。数据库中的 `userid` 与平台返回的 `member_openid` 相同，框架以此为唯一键去重，保留数据库中已有但不在当前页的成员，并更新昵称、群身份、入群时间、统一标识和机器人标记。
+成功调用会按 `member_openid` 将本页成员合并到 `group_members`，保留已有成员并更新平台返回字段。
 
 获取单个成员详情：
 

@@ -761,7 +761,7 @@ def _prune_roles_cache(now):
 
 
 def _get_group_members_sync(group_id, appid=''):
-    """从 groups_users 表读取群成员信息 {user_id: {role, is_bot}}"""
+    """读取群成员角色信息 {user_id: {role, is_bot}} (存储细节由框架接口封装)"""
     now = time.time()
     cache_key = (str(appid or ''), str(group_id))
     cached = _roles_cache.get(cache_key)
@@ -775,21 +775,8 @@ def _get_group_members_sync(group_id, appid=''):
     instances = [bot] if bot else []
     for inst in instances:
         try:
-            rows = inst.log_service.query_data('SELECT users FROM groups_users WHERE group_id = ?', (group_id,))
-            if rows and rows[0].get('users'):
-                users = json.loads(rows[0]['users'])
-                for u in users:
-                    uid = u.get('userid', '')
-                    if not uid:
-                        continue
-                    info = {}
-                    role = u.get('member_role', '')
-                    if role:
-                        info['role'] = str(role)
-                    if u.get('is_bot'):
-                        info['is_bot'] = True
-                    if info:
-                        members[uid] = info
+            members = inst.log_service.group_member_roles_sync(group_id) or {}
+            if members:
                 break
         except Exception as e:
             log.debug(f'获取群成员角色失败: {e}')
