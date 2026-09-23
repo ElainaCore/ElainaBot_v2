@@ -162,8 +162,8 @@ class _DispatchMixin:
             return True
 
         # 维护模式
-        if not suppress_reply and _get(appid, 'maintenance.enabled', False) and not self._is_owner(event):
-            if _get(appid, 'maintenance.reply', True):
+        if _get(appid, 'maintenance.enabled', False) and not self._is_owner(event):
+            if not suppress_reply and _get(appid, 'maintenance.reply', True):
                 spawn(event.reply(template_name='maintenance'))
             return True
 
