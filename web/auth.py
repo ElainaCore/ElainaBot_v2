@@ -163,10 +163,10 @@ def get_real_ip(request: web.Request) -> str:
     """获取客户端真实 IP; 转发头可伪造, 默认只信任连接对端, 反代后需开启 web.trust_forwarded_headers"""
     if _trust_forwarded():
         forwarded = request.headers.get('X-Forwarded-For')
-        if forwarded and forwarded.split(',')[0].strip():
+        if isinstance(forwarded, str) and forwarded.split(',')[0].strip():
             return forwarded.split(',')[0].strip()
         real_ip = request.headers.get('X-Real-IP')
-        if real_ip:
+        if isinstance(real_ip, str) and real_ip:
             return real_ip.strip()
     return _peer_ip(request)
 
@@ -320,7 +320,8 @@ def create_session(request: web.Request) -> str:
 
 def get_request_token(request: web.Request) -> str:
     """读取会话凭据。"""
-    return request.cookies.get(SESSION_COOKIE, '')
+    token = request.cookies.get(SESSION_COOKIE, '')
+    return token if isinstance(token, str) else ''
 
 
 def set_session_cookie(response: web.StreamResponse, request: web.Request, token: str) -> None:

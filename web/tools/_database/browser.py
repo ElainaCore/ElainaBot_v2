@@ -186,18 +186,72 @@ def _list_tables_sync(db_path):
     return tables
 
 
+def _table_metadata(conn, table):
+    """返回表元数据, 并明确区分普通表与 WITHOUT ROWID 表。"""
+    schema = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+        (table,),
+    ).fetchone()
+    if not schema:
+        raise LookupError(f'表不存在: {table}')
+    columns = list(conn.execute(f'PRAGMA table_info("{table}")'))
+    without_rowid = bool(re.search(
+        r'\bWITHOUT\s+ROWID\b', schema['sql'] or '', re.IGNORECASE))
+    primary_key = [
+        col['name'] for col in sorted(columns, key=lambda col: col['pk'])
+        if col['pk']
+    ]
+    return columns, without_rowid, primary_key
+
+
+def _synthetic_row_key(row, primary_key):
+    """为 WITHOUT ROWID 表生成可往返传输的行键。"""
+    return json.dumps(
+        [row.get(name) for name in primary_key],
+        ensure_ascii=False,
+        separators=(',', ':'),
+    )
+
+
+def _default_order(primary_key, without_rowid):
+    if not without_rowid:
+        return 'ORDER BY rowid DESC'
+    if primary_key:
+        return 'ORDER BY ' + ', '.join(
+            f'"{name}" DESC' for name in primary_key)
+    return ''
+
+
 def _query_table_sync(db_path, table, page, page_size, order_by, order_dir):
     """执行分页查询。"""
     with contextlib.closing(_open_readonly(db_path)) as conn:
+        columns, without_rowid, primary_key = _table_metadata(conn, table)
         total = conn.execute(f'SELECT COUNT(*) as c FROM "{table}"').fetchone()['c']
-        order_clause = f'ORDER BY "{order_by}" {order_dir}' if order_by else 'ORDER BY rowid DESC'
+        # 旧版前端或外部调用可能仍传入 rowid；对无 rowid 表以及未知列
+        # 统一回退到安全默认排序，避免再次把查询打成 500。
+        column_names = {col['name'] for col in columns}
+        if order_by not in column_names:
+            order_by = ''
+        order_clause = (
+            f'ORDER BY "{order_by}" {order_dir}'
+            if order_by else _default_order(primary_key, without_rowid)
+        )
         offset = (page - 1) * page_size
+        select_clause = (
+            'rowid AS _rowid, *' if not without_rowid else '*')
         rows = conn.execute(
-            f'SELECT rowid AS _rowid, * FROM "{table}" {order_clause} LIMIT ? OFFSET ?',
+            f'SELECT {select_clause} FROM "{table}" {order_clause} LIMIT ? OFFSET ?',
             (page_size, offset),
         ).fetchall()
-        data = [dict(r) for r in rows]
-        columns = [{'name': col['name'], 'type': col['type']} for col in conn.execute(f'PRAGMA table_info("{table}")')]
+        data = []
+        for row in rows:
+            item = dict(row)
+            if without_rowid:
+                item['_rowid'] = _synthetic_row_key(item, primary_key)
+            elif '_rowid' not in item:
+                item['_rowid'] = row['rowid']
+            data.append(item)
+        columns = [{'name': col['name'], 'type': col['type']} for col in columns]
     return {'rows': data, 'columns': columns, 'total': total, 'page': page, 'page_size': page_size}
 
 
@@ -229,7 +283,8 @@ def _search_database_sync(db_path, keyword, limit):
         table_rows = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").fetchall()
         for trow in table_rows:
             tname = trow['name']
-            columns = [{'name': col['name'], 'type': col['type']} for col in conn.execute(f'PRAGMA table_info("{tname}")')]
+            raw_columns, without_rowid, primary_key = _table_metadata(conn, tname)
+            columns = [{'name': col['name'], 'type': col['type']} for col in raw_columns]
             if not columns:
                 continue
             conds = ' OR '.join('CAST("{}" AS TEXT) LIKE ? ESCAPE \'\\\''.format(c['name']) for c in columns)
@@ -238,21 +293,54 @@ def _search_database_sync(db_path, keyword, limit):
                 total = conn.execute(f'SELECT COUNT(*) as c FROM "{tname}" WHERE {conds}', params).fetchone()['c']
                 if not total:
                     continue
+                select_clause = (
+                    'rowid AS _rowid, *' if not without_rowid else '*')
                 rows = conn.execute(
-                    f'SELECT rowid AS _rowid, * FROM "{tname}" WHERE {conds} ORDER BY rowid DESC LIMIT ?',
+                    f'SELECT {select_clause} FROM "{tname}" WHERE {conds} '
+                    f'{_default_order(primary_key, without_rowid)} LIMIT ?',
                     params + [limit],
                 ).fetchall()
             except sqlite3.Error:
                 continue
-            results.append({'table': tname, 'columns': columns, 'data': [dict(r) for r in rows], 'total': total})
+            data = []
+            for row in rows:
+                item = dict(row)
+                if without_rowid:
+                    item['_rowid'] = _synthetic_row_key(item, primary_key)
+                elif '_rowid' not in item:
+                    item['_rowid'] = row['rowid']
+                data.append(item)
+            results.append({'table': tname, 'columns': columns, 'data': data, 'total': total})
     return results
 
 
 def _delete_rows_sync(db_path, table, rowids):
-    """删除指定 rowid。"""
+    """删除普通表的 rowid 或 WITHOUT ROWID 表的合成主键行键。"""
     with contextlib.closing(_open_readwrite(db_path)) as conn:
-        placeholders = ','.join('?' * len(rowids))
-        cursor = conn.execute(f'DELETE FROM "{table}" WHERE rowid IN ({placeholders})', rowids)
+        _columns, without_rowid, primary_key = _table_metadata(conn, table)
+        if without_rowid:
+            if not primary_key:
+                raise ValueError(f'表没有可用主键: {table}')
+            clauses = []
+            params = []
+            for rowid in rowids:
+                try:
+                    values = json.loads(rowid) if isinstance(rowid, str) else rowid
+                except (TypeError, ValueError):
+                    raise ValueError('无效的合成行键') from None
+                if not isinstance(values, list) or len(values) != len(primary_key):
+                    raise ValueError('无效的合成行键')
+                clauses.append('(' + ' AND '.join(
+                    f'"{name}"=?' for name in primary_key) + ')')
+                params.extend(values)
+            cursor = conn.execute(
+                f'DELETE FROM "{table}" WHERE ' + ' OR '.join(clauses), params)
+        else:
+            if not all(isinstance(rowid, int) for rowid in rowids):
+                raise ValueError('rowids 必须是整数数组')
+            placeholders = ','.join('?' * len(rowids))
+            cursor = conn.execute(
+                f'DELETE FROM "{table}" WHERE rowid IN ({placeholders})', rowids)
         deleted = cursor.rowcount
         conn.commit()
     return deleted
@@ -316,6 +404,8 @@ async def handle_query_table(request: web.Request):
     try:
         result = await asyncio.to_thread(_query_table_sync, abs_path, table, page, page_size, order_by, order_dir)
         return ok(result)
+    except LookupError as e:
+        return error(str(e), status=404)
     except Exception as e:
         log.warning(f'查询表失败: {e}')
         return error(str(e), status=500)
@@ -436,7 +526,11 @@ async def handle_unmount_database(request: web.Request):
 
 
 async def handle_delete_rows(request: web.Request):
-    """删除表中的单条或多条数据 (path=库路径, table=表名, rowids=rowid 列表)"""
+    """删除表中的单条或多条数据。
+
+    普通表使用整数 ``rowid``；WITHOUT ROWID 表使用查询结果返回的
+    JSON 主键数组作为行键。
+    """
     body = await request.json()
     db_path = body.get('path', '')
     table = body.get('table', '')
@@ -448,8 +542,11 @@ async def handle_delete_rows(request: web.Request):
     if not re.match(r'^[\w]+$', table):
         return error('无效表名', status=400)
 
-    if not isinstance(rowids, list) or not all(isinstance(r, int) for r in rowids):
-        return error('rowids 必须是整数数组', status=400)
+    if not isinstance(rowids, list) or not all(
+        isinstance(rowid, (int, str)) and not isinstance(rowid, bool)
+        for rowid in rowids
+    ):
+        return error('rowids 必须是整数或 JSON 主键数组', status=400)
 
     valid, abs_path = _validate_db_path(db_path)
     if not valid:
@@ -458,6 +555,10 @@ async def handle_delete_rows(request: web.Request):
     try:
         deleted = await asyncio.to_thread(_delete_rows_sync, abs_path, table, rowids)
         return ok({'deleted': deleted})
+    except LookupError as e:
+        return error(str(e), status=404)
+    except ValueError as e:
+        return error(str(e), status=400)
     except Exception as e:
         log.warning(f'删除数据失败: {e}')
         return error(str(e), status=500)

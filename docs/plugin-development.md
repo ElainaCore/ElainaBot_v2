@@ -980,7 +980,7 @@ if group:
 | `allow_proactive_msg` | 是否允许主动推送 |
 | `in_group` | 机器人是否仍在群内 |
 
-> **2.1.0 起成员存储变更**：`groups_users.users` 已废弃并在迁移后删除；成员改存
+> `groups_users.users` 已废弃并在迁移后删除；成员改存
 > `group_members`（一用户一行），机器人账号统一存放在 `bots`。
 > `get_group_record()` 的返回结构保持兼容，但成员条目不再包含历史字段 `value`；
 > 直接读取 `groups_users.users` 的插件请改用下面的接口。

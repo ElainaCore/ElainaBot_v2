@@ -133,7 +133,7 @@ def parse_login_developers(payload: dict) -> list[dict]:
 class _UnquotedCookieJar(aiohttp.CookieJar):
     @property
     def quote_cookie(self) -> bool:
-        return self._quote_cookie
+        return bool(self._quote_cookie)
 
     def filter_cookies(self, request_url: URL = _EMPTY_URL) -> BaseCookie[str]:
         cookies = super().filter_cookies(request_url)

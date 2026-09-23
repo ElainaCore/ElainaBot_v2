@@ -27,7 +27,7 @@ class HealthWatchService:
         self._interval = interval
         self._task = None
         self._ticks = 0
-        self._warned = set()
+        self._warned: set[str] = set()
 
     async def __call__(self):
         while True:
