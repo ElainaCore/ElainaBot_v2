@@ -93,7 +93,10 @@ class _HttpMixin:
         self._client = None
 
     async def _request(self, method, endpoint, **kwargs):
-        client = await self._ensure_client()
+        try:
+            client = await self._ensure_client()
+        except Exception as e:
+            return False, _describe_exception(e, method, endpoint)
         extra_headers = kwargs.pop('headers', None)
         token_retried = False
         net_retries = 0

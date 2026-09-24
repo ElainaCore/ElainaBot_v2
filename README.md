@@ -1,11 +1,11 @@
 <p>
-<img src="https://download.nature.qq.com/SnsShare/SocialProfile/1779098988_1264b08a.png" width="200" align="left" style="border-radius:50%; margin-right:16px" />
+<img src="assets/logo.png" width="200" align="left" style="margin-right:16px" />
 
 <h1>ElainaBot v2</h1>
 
 ElainaBot v2 是一个基于 Python 的 QQ 官方机器人框架，采用纯异步架构，支持 Webhook / WebSocket 多机器人连接、插件热重载、模块化扩展和 Web 面板管理。
 
-[![Python](https://img.shields.io/badge/Python-3.11+-blue?logo=python&logoColor=white)](https://python.org) [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE) [![QQ群](https://img.shields.io/badge/QQ交流群-1085402468-blue)](https://qm.qq.com/q/5O3xGoe4so)
+[![Python](https://img.shields.io/badge/Python-3.11+-blue?logo=python&logoColor=white)](https://python.org) [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE) [![QQ群](https://img.shields.io/badge/QQ交流群-164178653-blue)](https://qm.qq.com/q/BDE32XRCbQ)
 
 - **纯异步架构** — 基于 aiohttp / websockets，高并发低延迟
 - **插件市场** — 基于 GitHub 插件库，一键浏览、安装、更新插件
@@ -14,7 +14,7 @@ ElainaBot v2 是一个基于 Python 的 QQ 官方机器人框架，采用纯异�
 </p>
 <br clear="left" />
 
-> 项目仅供学习交流使用，严禁用于非法行为。交流群：[164178653](https://qm.qq.com/q/iNI4IyQdqw)。
+> 项目仅供学习交流使用，严禁用于非法行为。交流群：[164178653](https://qm.qq.com/q/BDE32XRCbQ)。
 
 ## 🚀 快速开始
 
@@ -81,7 +81,7 @@ docker run -d \
   elainabot/elainabot:latest
 ```
 
-启动后访问 [Web 面板](http://localhost:5200/web/?token=admin)，填写机器人的 `APPID` 和 `Secret`。
+启动后访问 [Web 面板](http://localhost:5200/web/)，使用管理员密码登录（默认 `admin`），填写机器人的 `APPID` 和 `Secret`。
 
 ### 数据持久化
 

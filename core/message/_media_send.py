@@ -15,7 +15,7 @@ from core.message._http import (
 )
 from core.message.media import _resolve_upload_ep, upload_media_bytes, upload_media_via_url
 from core.message.response import extract_message_id
-from core.message.silk import convert_to_silk, is_silk
+from core.message.silk import convert_to_silk
 from core.message.voice import split_voice
 
 log = get_logger(FRAMEWORK, '消息发送')
@@ -175,7 +175,7 @@ class _MediaSendMixin:
         # 转换失败不上传原始 MP3，避免生成无声语音条。
         if file_type == 3 and not file_info and isinstance(data, bytes):
             converted = await convert_to_silk(data)
-            if not is_silk(converted):
+            if not isinstance(converted, bytes):
                 self._report_voice_failure('语音转换失败', event=event, url=original_url)
                 return None
             data = converted

@@ -139,15 +139,15 @@ def shutdown_pool() -> None:
         pool.shutdown(wait=False, cancel_futures=True)
 
 
-async def convert_to_silk(data: bytes, rate: int = DEFAULT_RATE) -> bytes:
-    """最多并行执行两个转换；多余任务排队等待，不跳过正常转换。"""
+async def convert_to_silk(data: bytes, rate: int = DEFAULT_RATE) -> bytes | None:
+    """最多并行执行两个转换；失败返回 None, 不把原始音频伪装成转换结果。"""
     if is_silk(data):
         return data
     if not is_audio_candidate(data):
-        return data
+        return None
 
     try:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(_get_pool(), audio_to_silk, data, rate)
     except Exception:
-        return data
+        return None

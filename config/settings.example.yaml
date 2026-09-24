@@ -14,8 +14,7 @@ server:
 
 # Web 面板
 web:
-  access_token: "admin"                         # URL 参数验证令牌
-  admin_password: "admin"                       # 管理员密码
+  admin_password: "admin"                       # 管理员密码 (首次登录成功后自动加密存储)
   trust_forwarded_headers: false                # 是否信任 X-Forwarded-For/X-Real-IP (仅在可信反向代理后开启; 直连时开启会导致封禁被伪造头绕过)
   framework_name: "Elaina"                 # 框架名称
   favicon_url: ""                          # 网页图标 URL

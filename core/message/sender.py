@@ -819,6 +819,10 @@ class MessageSender(_HttpMixin, _MediaSendMixin, _SenderLogMixin):
         lock = self._group_member_sync_locks.setdefault(group_id, asyncio.Lock())
         async with lock:
             try:
+                if not hasattr(self._log_service, 'group_member_rows'):
+                    await self._sync_legacy_group_members(group_id, members)
+                    return
+
                 rows = await self._log_service.group_member_rows(group_id)
                 user_map = {}
                 for row in rows:
@@ -868,6 +872,71 @@ class MessageSender(_HttpMixin, _MediaSendMixin, _SenderLogMixin):
                     await self._log_service.group_bot_mark(uid)
             except Exception as error:
                 log.warning(f'[{self._appid}] 群成员列表写入数据库失败 group={group_id}: {error}')
+
+    async def _sync_legacy_group_members(self, group_id, members):
+        """兼容仍以 groups_users.users JSON 列存储成员的旧日志服务。"""
+        fetch_one = getattr(self._log_service, 'db_fetch_one', None)
+        if fetch_one:
+            row = await fetch_one(
+                'SELECT users FROM groups_users WHERE group_id=?',
+                (group_id,),
+            )
+            raw_users = row.get('users', '[]') if isinstance(row, dict) else '[]'
+        else:
+            raw_users = getattr(self._log_service, 'users', '[]')
+        try:
+            stored_users = json.loads(raw_users or '[]')
+        except (json.JSONDecodeError, TypeError):
+            stored_users = []
+        if not isinstance(stored_users, list):
+            stored_users = []
+
+        user_map = {}
+        for item in stored_users:
+            if isinstance(item, dict):
+                entry = dict(item)
+                uid = entry.get('userid') or entry.get('member_openid') or entry.get('openid')
+            else:
+                uid = item
+                entry = {'value': 1, 'last_active': ''}
+            uid = str(uid or '').strip()
+            if uid:
+                entry['userid'] = uid
+                user_map.setdefault(uid, {}).update(entry)
+
+        for member in members:
+            if not isinstance(member, dict):
+                continue
+            member_openid = str(member.get('member_openid') or '').strip()
+            if not member_openid:
+                continue
+            entry = user_map.setdefault(
+                member_openid,
+                {'userid': member_openid, 'value': 1, 'last_active': ''},
+            )
+            entry['userid'] = member_openid
+            entry.update({
+                key: value
+                for key in ('username', 'member_role', 'joined_at', 'union_openid')
+                if (value := member.get(key)) not in (None, '')
+            })
+            if member.get('bot') is not None:
+                if member['bot']:
+                    entry['is_bot'] = True
+                else:
+                    entry.pop('is_bot', None)
+
+        encoded_users = json.dumps(list(user_map.values()), ensure_ascii=False)
+        execute = getattr(self._log_service, 'db_execute', None)
+        if execute:
+            await execute(
+                'INSERT INTO groups_users (group_id, users) VALUES (?, ?) '
+                'ON CONFLICT(group_id) DO UPDATE SET users=excluded.users',
+                (group_id, encoded_users),
+            )
+        else:
+            self._log_service.users = encoded_users
+        self._forget_group_record(group_id)
 
     async def batch_remove_group_members(
         self,

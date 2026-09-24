@@ -43,11 +43,11 @@ if url:
 
 | 属性模式 | 实际调用 | 典型返回值 |
 | --- | --- | --- |
-| hosting.upload_<name>(data, ...) | 图床的 upload() | URL、结果 dict 或 (False, reason) |
-| hosting.upload_<name>_url(data, ...) | 图床的 upload_url()（若实现） | URL 或 (False, reason) |
-| hosting.is_<name>_available() | 图床的 is_available() | bool |
-| hosting.list_<name>_assets(...) | 图床的 list_assets()（当前为 CNB） | 列表 |
-| hosting.delete_<name>(resource) | 图床的 delete()（当前为 CNB、COS） | True/False 或 (False, reason) |
+| `hosting.upload_<name>(data, ...)` | 图床的 upload() | URL、结果 dict 或 (False, reason) |
+| `hosting.upload_<name>_url(data, ...)` | 图床的 upload_url()（若实现） | URL 或 (False, reason) |
+| `hosting.is_<name>_available()` | 图床的 is_available() | bool |
+| `hosting.list_<name>_assets(...)` | 图床的 list_assets()（当前为 CNB） | 列表 |
+| `hosting.delete_<name>(resource)` | 图床的 delete()（当前为 CNB、COS） | True/False 或 (False, reason) |
 
 当前内置图床按上传优先级排列如下：
 
@@ -63,7 +63,7 @@ if url:
 | 70 | qq_channel | 否 | enabled、channel_id | 需要子频道 ID 和 TokenManager |
 | 80 | self_hosted | 否 | enabled、public_base_url、storage_dir、max_file_size、permanent_cache | 本地保存并返回公开 URL；默认最大 100 MB |
 
-直接调用指定图床时必须检查返回值：成功可能是 URL，也可能是包含 URL 的字典；需要统一 URL 时优先使用 upload_any() 或对应的 upload_<name>_url()。
+直接调用指定图床时必须检查返回值：成功可能是 URL，也可能是包含 URL 的字典；需要统一 URL 时优先使用 `upload_any()` 或对应的 `upload_<name>_url()`。
 
 ## 各图床用法与配置
 
@@ -120,7 +120,7 @@ verify_public_url: true 会在上传后用匿名请求校验公开资源；结�
 
 ### 腾讯云 COS（cos）
 
-COS 图床依赖 qcloud-cos-v5（模块 requirements 已声明）。必须配置 region、secret_id、secret_key 和 bucket_name；domain 留空时使用 https://<bucket>.cos.<region>.myqcloud.com。
+COS 图床依赖 qcloud-cos-v5（模块 requirements 已声明）。必须配置 region、secret_id、secret_key 和 bucket_name；domain 留空时使用 `https://<bucket>.cos.<region>.myqcloud.com`。
 
 ~~~yaml
 cos:
