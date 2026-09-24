@@ -13,6 +13,15 @@ from core.message.event import Event
 log = logging.getLogger('ElainaBot.webhook')
 
 
+def _log_webhook_error(ctx):
+    """记录 webhook 解析异常及完整调用栈，避免只看到 NoneType 摘要。"""
+    error = ctx.get('error') if isinstance(ctx, dict) else None
+    if isinstance(error, BaseException):
+        log.error(f'Webhook error: {ctx}', exc_info=(type(error), error, error.__traceback__))
+    else:
+        log.error(f'Webhook error: {ctx}')
+
+
 def _finish_interaction(event, task):
     """交互事件分发结束回调: 取出异常 + 若插件未设置 code 则用默认 code 返回。"""
     try:
@@ -30,7 +39,7 @@ class WebhookHandler:
     def __init__(self, bot_registry, on_event, on_error=None):
         self._bot_registry = bot_registry
         self._on_event = on_event
-        self._on_error = on_error or (lambda ctx: log.error(f'Webhook error: {ctx}'))
+        self._on_error = on_error or _log_webhook_error
 
     async def handle(self, request: web.Request) -> web.Response:
         raw_body = await request.read()

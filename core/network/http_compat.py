@@ -5,6 +5,9 @@ import json as _json
 
 import aiohttp
 
+_MAX_CONNECTIONS = 128
+_MAX_KEEPALIVE_CONNECTIONS = 64
+
 try:
     import httpx
 
@@ -46,16 +49,16 @@ class AsyncHttpClient:
                 timeout=httpx.Timeout(timeout, connect=10.0),
                 follow_redirects=follow_redirects,
                 limits=httpx.Limits(
-                    max_connections=None,
-                    max_keepalive_connections=100,
+                    max_connections=_MAX_CONNECTIONS,
+                    max_keepalive_connections=_MAX_KEEPALIVE_CONNECTIONS,
                     keepalive_expiry=20.0,
                 ),
             )
         else:
             _timeout = aiohttp.ClientTimeout(total=timeout, connect=10.0)
             _conn = aiohttp.TCPConnector(
-                limit=0,
-                limit_per_host=0,
+                limit=_MAX_CONNECTIONS,
+                limit_per_host=_MAX_CONNECTIONS,
                 keepalive_timeout=20,
                 enable_cleanup_closed=True,
             )

@@ -19,20 +19,21 @@ class InteractionParser(MessageParser):
         chat_type = d.get('chat_type')
         scene = d.get('scene')
         event.scene = scene
+        author = d.get('author') if isinstance(d.get('author'), dict) else {}
 
         if chat_type == 1 or scene == 'group':
             event.group_id = d.get('group_openid') or d.get('group_id', '')
-            event.user_id = d.get('group_member_openid') or d.get('author', {}).get('id', '')
+            event.user_id = d.get('group_member_openid') or author.get('id', '')
             event.is_group = True
             event.is_direct = False
         elif chat_type == 2 or scene == 'c2c':
             event.group_id = ''
-            event.user_id = d.get('user_openid') or d.get('author', {}).get('id', '')
+            event.user_id = d.get('user_openid') or author.get('id', '')
             event.is_group = False
             event.is_direct = True
         else:
             event.group_id = d.get('group_openid') or d.get('group_id', '')
-            event.user_id = d.get('group_member_openid') or d.get('user_openid') or d.get('author', {}).get('id', '')
+            event.user_id = d.get('group_member_openid') or d.get('user_openid') or author.get('id', '')
             event.is_group = bool(event.group_id)
             event.is_direct = not event.group_id
 
@@ -42,5 +43,8 @@ class InteractionParser(MessageParser):
         event.channel_id = d.get('channel_id', '')
         self.apply_message_scene(event, d)
 
-        resolved = d.get('data', {}).get('resolved', {})
+        data = d.get('data')
+        data = data if isinstance(data, dict) else {}
+        resolved = data.get('resolved')
+        resolved = resolved if isinstance(resolved, dict) else {}
         event.content = MessageUtils.sanitize_content(resolved.get('button_data', ''))

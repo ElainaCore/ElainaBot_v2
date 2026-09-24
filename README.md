@@ -1,5 +1,5 @@
 <p>
-<img src="assets/logo.png" width="200" align="left" style="margin-right:16px" />
+<img src="https://i0.hdslb.com/bfs/openplatform/4fe813977dfcc5c17497e720bb51c8bbcf5230db.png" width="200" align="left" style="margin-right:16px" />
 
 <h1>ElainaBot v2</h1>
 

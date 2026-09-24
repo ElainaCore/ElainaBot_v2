@@ -21,6 +21,12 @@ def _log_upload_issue(file_type, message):
         log.warning(message)
 
 
+def _record_upload_error(event, resp):
+    """只记录首个上传失败原因 (如 URL 直传的时长超限), 回退上传失败不覆盖"""
+    if event and not event.error:
+        event.error = resp
+
+
 # ==================== 上传 ====================
 
 
@@ -66,7 +72,7 @@ async def upload_media_bytes(sender, file_bytes, file_type, endpoint, *, file_na
         last_resp = resp
         if not success:
             if event:
-                event.error = resp
+                _record_upload_error(event, resp)
             else:
                 _log_upload_issue(file_type, f'[{sender._appid}] 上传API失败: {resp} (endpoint={endpoint})')
             return None
@@ -77,7 +83,7 @@ async def upload_media_bytes(sender, file_bytes, file_type, endpoint, *, file_na
             log.debug(f'[{sender._appid}] 上传返回无 file_info, 重试 (resp={resp})')
             await asyncio.sleep(0.15)
     if event:
-        event.error = last_resp
+        _record_upload_error(event, last_resp)
     else:
         _log_upload_issue(file_type, f'[{sender._appid}] 上传失败: 无 file_info (endpoint={endpoint}, resp={last_resp})')
     return None
@@ -114,8 +120,8 @@ async def upload_media_via_url(
     if success:
         result = resp.get('file_info')
         return (result, resp) if return_response else result
-    if event:
-        event.error = resp
+    if not success:
+        _record_upload_error(event, resp)
     return (None, resp) if return_response else None
 
 

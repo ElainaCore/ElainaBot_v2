@@ -11,7 +11,8 @@ class ChannelMessageParser(MessageParser):
         super().parse(event, d)
         mentions = d.get('mentions')
         if isinstance(mentions, list) and mentions:
-            bot_id = mentions[0].get('id')
+            first_mention = mentions[0] if isinstance(mentions[0], dict) else {}
+            bot_id = first_mention.get('id')
             if bot_id and event.raw_content:
                 for prefix in [f'<@!{bot_id}>', f'<@{bot_id}>']:
                     if event.raw_content.startswith(prefix):

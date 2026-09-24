@@ -33,8 +33,10 @@ class MessageUtils:
         for att in attachments:
             if not isinstance(att, dict):
                 continue
-            if att.get('content_type', '').startswith('image/'):
-                return html.unescape(att.get('url', '') or None)
+            content_type = att.get('content_type') or ''
+            if str(content_type).startswith('image/'):
+                url = att.get('url') or ''
+                return html.unescape(str(url)) or None
         return None
 
     @staticmethod
@@ -89,12 +91,16 @@ def _parse_common_fields(event, d):
     event.raw_content = raw_content if isinstance(raw_content, str) else ''
     event.content = MessageUtils.sanitize_content(event.raw_content)
     event.timestamp = d.get('timestamp', '')
-    event.msg_elements = d.get('msg_elements', [])
-    event.parallel_message = d.get('parallel_message', {})
-    event.attachments = d.get('attachments', [])
+    msg_elements = d.get('msg_elements')
+    event.msg_elements = msg_elements if isinstance(msg_elements, list) else []
+    parallel_message = d.get('parallel_message')
+    event.parallel_message = parallel_message if isinstance(parallel_message, dict) else {}
+    attachments = d.get('attachments')
+    event.attachments = attachments if isinstance(attachments, list) else []
     event.image_url = MessageUtils.extract_image_from_attachments(event.attachments)
 
     author = d.get('author', {})
+    author = author if isinstance(author, dict) else {}
     event.user_id = author.get('member_openid') or author.get('id', '')
     event.raw_user_id = event.user_id
     event.username = author.get('username', '')

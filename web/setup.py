@@ -70,12 +70,46 @@ async def _api_no_cache_middleware(request: web.Request, handler):
     return resp
 
 
+_NOINDEX_HEADERS = {
+    'X-Robots-Tag': 'noindex, nofollow, noarchive, nosnippet, noimageindex',
+    'Referrer-Policy': 'no-referrer',
+}
+
+
+def _apply_noindex_headers(resp: web.StreamResponse):
+    """给响应补上禁止收录相关头 (已存在的头不覆盖)"""
+    for key, value in _NOINDEX_HEADERS.items():
+        resp.headers.setdefault(key, value)
+
+
+@web.middleware
+async def _noindex_middleware(request: web.Request, handler):
+    """全局禁止搜索引擎收录: 服务器会暴露部署 IP 与面板登录地址, 不应被收录"""
+    try:
+        resp = await handler(request)
+    except web.HTTPException as e:
+        _apply_noindex_headers(e)
+        raise
+    _apply_noindex_headers(resp)
+    return resp
+
+
+_ROBOTS_TXT = 'User-agent: *\nDisallow: /\n'
+
+
 def setup_web(app: web.Application, bot_manager, base_dir: str):
     """将 Web 面板挂载到 aiohttp 应用"""
     _disable_sendfile_on_windows()
     app.middlewares.append(_api_no_cache_middleware)
+    app.middlewares.append(_noindex_middleware)
     _auth.init(base_dir)
     _panel_api.set_context(bot_manager, base_dir)
+
+    # 禁止搜索引擎抓取任何路径 (爬虫默认请求根路径下的 /robots.txt)
+    app.router.add_get('/robots.txt', lambda _request: web.Response(
+        text=_ROBOTS_TXT,
+        headers={'X-Robots-Tag': _NOINDEX_HEADERS['X-Robots-Tag']},
+    ))
 
     # 注入日志推送 / 错误回调 / logging handler
     try:

@@ -138,10 +138,6 @@ class _HttpMixin:
                         f'[{self._appid}] 网络异常自动重试 {net_retries}/{_NET_MAX_RETRIES}: '
                         f'{type(e).__name__} {method} {endpoint}'
                     )
-                    self._report_send_error(
-                        f'网络异常自动重试 {net_retries}/{_NET_MAX_RETRIES}: {method} {endpoint}',
-                        _describe_exception(e, method, endpoint),
-                    )
                     await asyncio.sleep(_NET_RETRY_DELAY * net_retries)
                     continue
                 return False, _describe_exception(e, method, endpoint)
