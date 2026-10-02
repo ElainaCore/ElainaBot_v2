@@ -106,10 +106,7 @@ def setup_web(app: web.Application, bot_manager, base_dir: str):
     _panel_api.set_context(bot_manager, base_dir)
 
     # 禁止搜索引擎抓取任何路径 (爬虫默认请求根路径下的 /robots.txt)
-    app.router.add_get('/robots.txt', lambda _request: web.Response(
-        text=_ROBOTS_TXT,
-        headers={'X-Robots-Tag': _NOINDEX_HEADERS['X-Robots-Tag']},
-    ))
+    app.router.add_get('/robots.txt', _robots_txt)
 
     # 注入日志推送 / 错误回调 / logging handler
     try:
@@ -306,6 +303,13 @@ def _spa_index_or_404(dist_root: str):
     if os.path.isfile(index):
         return _serve_index(dist_root, index)
     return web.Response(text='Not Found', status=404)
+
+
+async def _robots_txt(request: web.Request):
+    return web.Response(
+        text=_ROBOTS_TXT,
+        headers={'X-Robots-Tag': _NOINDEX_HEADERS['X-Robots-Tag']},
+    )
 
 
 async def _redirect_to_web(request: web.Request):
