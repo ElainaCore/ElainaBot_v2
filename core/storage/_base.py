@@ -351,7 +351,7 @@ class _BaseLogService:
         while not self._stop.is_set():
             try:
                 now = datetime.now()
-                target = now.replace(hour=1, minute=0, second=0, microsecond=0)
+                target = now.replace(hour=4, minute=10, second=0, microsecond=0)
                 if now >= target:
                     target += timedelta(days=1)
                 try:
