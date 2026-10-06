@@ -19,6 +19,11 @@ class _SenderLogMixin:
 
     __slots__ = ()
 
+    def _store_raw(self):
+        """record_raw_message 关闭时不记录原始响应, 大幅减少日志体积"""
+        from core.base.config import cfg
+        return cfg.get('logging', 'record_raw_message', True)
+
     def _report_send_error(self, content, data=None, payload=None):
         """发送链路统一错误写入入口 (错误数据库): 发送失败/限频补发/网络重试共用"""
         report_error_raw(
@@ -40,7 +45,7 @@ class _SenderLogMixin:
             elif parts[1] == 'users':
                 user_id = parts[2]
         text = self._extract_log_text(payload, content)
-        raw_msg = json.dumps(payload, ensure_ascii=False, default=str)
+        raw_msg = json.dumps(payload, ensure_ascii=False, default=str) if self._store_raw() else ''
         msg_id = extract_message_id(resp_data)
         ref_id = extract_reference_id(resp_data)
         self._emit_log(
@@ -51,7 +56,7 @@ class _SenderLogMixin:
             'proactive',
             message_id=msg_id,
             reference_id=ref_id,
-            context=resp_data if resp_data is not None else '',
+            context=resp_data if resp_data is not None and self._store_raw() else '',
         )
 
     def _extract_log_text(self, payload, content, media_label=''):
@@ -221,7 +226,7 @@ class _SenderLogMixin:
         text = self._extract_log_text(payload, content, media_label)
         user_id = getattr(event, 'user_id', '') or ''
         group_id = getattr(event, 'group_id', '') or ''
-        raw_msg = json.dumps(payload, ensure_ascii=False, default=str)
+        raw_msg = json.dumps(payload, ensure_ascii=False, default=str) if self._store_raw() else ''
         msg_id = extract_message_id(resp_data)
         ref_id = extract_reference_id(resp_data)
         if reply_log_cb:
@@ -268,5 +273,5 @@ class _SenderLogMixin:
                 plugin_name or 'framework',
                 message_id=msg_id,
                 reference_id=ref_id,
-                context=resp_data if resp_data is not None else '',
+                context=resp_data if resp_data is not None and self._store_raw() else '',
             )

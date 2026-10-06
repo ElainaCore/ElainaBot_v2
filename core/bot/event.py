@@ -249,9 +249,11 @@ class EventHandlerMixin:
             return f'{content}<{event.image_url}>' if content else f'<{event.image_url}>'
         return content
 
-    def _message_log_data(self, event, content, raw_json):
+    def _message_log_data(self, event, content):
         # 仅全量群消息区分是否艾特机器人; 非全量消息收不到未艾特消息, 一律算艾特
         at_bot = event.is_at_self if event.event_type == GROUP_MESSAGE_CREATE else True
+        # record_raw_message 关闭时不存原始响应, 大幅减少日志体积
+        raw_json = json.dumps(event.raw, ensure_ascii=False) if cfg.get('logging', 'record_raw_message', True) else ''
         return {
             'message_id': event.message_id or '',
             'user_id': event.user_id or '',
@@ -265,8 +267,7 @@ class EventHandlerMixin:
 
     def _record_message_event(self, bot, event, appid):
         content = self._message_content(event)
-        raw_json = json.dumps(event.raw, ensure_ascii=False)
-        log_data = self._message_log_data(event, content, raw_json)
+        log_data = self._message_log_data(event, content)
         bot.log_service.add_sync('message', log_data)
         self._push_web_log(
             'message',

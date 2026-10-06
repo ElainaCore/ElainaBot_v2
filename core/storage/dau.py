@@ -16,9 +16,9 @@ from core.storage.lifecycle_stats import compute_lifecycle_counts
 
 log = get_logger(FRAMEWORK, 'DAU统计')
 
-# 默认每日执行时间
-_SCHEDULE_HOUR = 0
-_SCHEDULE_MINUTE = 10
+# 默认每日执行时间 (凌晨 4 点, 统计昨日)
+_SCHEDULE_HOUR = 4
+_SCHEDULE_MINUTE = 0
 
 
 class DAUService(DailyScanService):
@@ -42,6 +42,7 @@ class DAUService(DailyScanService):
     async def _backfill_missing(self):
         """启动时检查最近3天(不含今天)是否有遗漏的DAU, 补算并记录"""
         await asyncio.sleep(5)  # 等待其他服务就绪
+        # 刚过 4 点调度刚写入昨日数据, 稍作延迟避免与调度任务重复计算
         today = datetime.now().date()
         appids = self.list_appids()
         if not appids:

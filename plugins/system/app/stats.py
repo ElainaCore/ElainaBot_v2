@@ -368,8 +368,54 @@ def _query_yesterday_same_period_sync(bot):
     return dict(agg[0])
 
 
+def _query_stats_for_date_sync(bot, date_str):
+    """现场从消息日志计算指定日期的完整统计 (用于 4 点前查询昨日 DAU)。"""
+    q = bot.log_service.query
+
+    agg = q('message', _AGG_SQL, date=date_str)
+    if not agg or not agg[0]['total']:
+        return None
+    stats = dict(agg[0])
+
+    peak = q(
+        'message',
+        f'SELECT substr(timestamp, 12, 2) AS hr, COUNT(*) AS c FROM log WHERE {_RECV} GROUP BY hr ORDER BY c DESC LIMIT 1',
+        date=date_str,
+    )
+    stats['peak_hour'] = int(peak[0]['hr']) if peak and peak[0].get('hr') else 0
+    stats['peak_hour_count'] = peak[0]['c'] if peak else 0
+
+    stats['top_groups'] = q(
+        'message',
+        f"""
+        SELECT group_id, COUNT(*) AS c FROM log
+        WHERE group_id != '' AND group_id != 'c2c' AND {_RECV}
+        GROUP BY group_id ORDER BY c DESC LIMIT 3
+    """,
+        date=date_str,
+    )
+    stats['top_users'] = q(
+        'message',
+        f"SELECT user_id, COUNT(*) AS c FROM log WHERE user_id != '' AND {_RECV} GROUP BY user_id ORDER BY c DESC LIMIT 3",
+        date=date_str,
+    )
+
+    try:
+        counts = lifecycle_counts_from_rows(q('lifecycle', LIFECYCLE_COUNTS_SQL, date=date_str))
+    except Exception:
+        lifecycle = q(
+            'lifecycle',
+            'SELECT type, user_id, group_id FROM log ORDER BY id',
+            date=date_str,
+        )
+        counts = compute_lifecycle_counts((r.get('type', ''), r.get('user_id', ''), r.get('group_id', '')) for r in lifecycle)
+    stats['group_join'] = counts['group_join_count']
+    stats['group_leave'] = counts['group_leave_count']
+    return stats
+
+
 async def _handle_history_dau(event, bot, date_str):
-    """从日活数据库查询历史统计。"""
+    """查询历史统计: 今日 4 点 DAU 统计前查昨日时现场计算, 其余从日活数据库查询。"""
     started_at = perf_counter()
 
     year = datetime.now().year
@@ -381,41 +427,52 @@ async def _handle_history_dau(event, bot, date_str):
     except ValueError:
         return await reply(event, '❌ 日期格式错误 (MMDD)')
 
-    from core.application import get_app
+    target_date = target.strftime('%Y-%m-%d')
+    now = datetime.now()
+    today_run = now.replace(hour=4, minute=0, second=0, microsecond=0)
+    yesterday = (now - timedelta(days=1)).strftime('%Y-%m-%d')
 
-    app = get_app()
-    dau_svc = app.dau_service if app else None
-    if not dau_svc:
-        return await reply(event, '❌ DAU 服务未启动')
+    if now < today_run and target_date == yesterday:
+        # 4 点前昨日 DAU 尚未写入 dau.db, 现场从消息日志计算
+        stats = await asyncio.to_thread(_query_stats_for_date_sync, bot, target_date)
+        if not stats:
+            return await reply(event, f'<@{event.user_id}>\n❌ {date_str[:2]}-{date_str[2:]} 无消息数据')
+    else:
+        from core.application import get_app
 
-    data = await dau_svc.load(event.appid, target.strftime('%Y-%m-%d'))
-    if not data:
-        return await reply(event, f'<@{event.user_id}>\n❌ {date_str[:2]}-{date_str[2:]} 无 DAU 数据')
+        app = get_app()
+        dau_svc = app.dau_service if app else None
+        if not dau_svc:
+            return await reply(event, '❌ DAU 服务未启动')
 
-    # 将数据库记录转换为统一统计结构
-    detail = data.get('message_stats_detail', {})
-    if isinstance(detail, str):
-        import json
+        data = await dau_svc.load(event.appid, target_date)
+        if not data:
+            return await reply(event, f'<@{event.user_id}>\n❌ {date_str[:2]}-{date_str[2:]} 无 DAU 数据')
 
-        try:
-            detail = json.loads(detail)
-        except Exception:
-            detail = {}
+        # 将数据库记录转换为统一统计结构
+        detail = data.get('message_stats_detail', {})
+        if isinstance(detail, str):
+            import json
 
-    stats = {
-        'users': data.get('active_users', 0),
-        'groups_': data.get('active_groups', 0),
-        'total': data.get('total_messages', 0),
-        'received': data.get('received_messages', 0) or 0,
-        'sent': data.get('sent_messages', 0) or 0,
-        'private': data.get('private_messages', 0),
-        'group_join': data.get('group_join_count', 0) or 0,
-        'group_leave': data.get('group_leave_count', 0) or 0,
-        'peak_hour': detail.get('peak_hour', 0),
-        'peak_hour_count': detail.get('peak_hour_count', 0),
-        'top_groups': detail.get('top_groups', []),
-        'top_users': detail.get('top_users', []),
-    }
+            try:
+                detail = json.loads(detail)
+            except Exception:
+                detail = {}
+
+        stats = {
+            'users': data.get('active_users', 0),
+            'groups_': data.get('active_groups', 0),
+            'total': data.get('total_messages', 0),
+            'received': data.get('received_messages', 0) or 0,
+            'sent': data.get('sent_messages', 0) or 0,
+            'private': data.get('private_messages', 0),
+            'group_join': data.get('group_join_count', 0) or 0,
+            'group_leave': data.get('group_leave_count', 0) or 0,
+            'peak_hour': detail.get('peak_hour', 0),
+            'peak_hour_count': detail.get('peak_hour_count', 0),
+            'top_groups': detail.get('top_groups', []),
+            'top_users': detail.get('top_users', []),
+        }
 
     elapsed = round((perf_counter() - started_at) * 1000)
     await _reply_dau(event, bot, stats, target, elapsed)

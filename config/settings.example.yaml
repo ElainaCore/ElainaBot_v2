@@ -41,6 +41,7 @@ logging:
   batch_size: 0                              # 单次最大写入条数, 0=不限
   retention_days: 5                          # 按日期目录保留天数, 0=永久
   wal_mode: true                             # SQLite WAL模式(推荐开启)
+  record_raw_message: true                   # 日志是否记录消息原始响应(关闭后不再记录 context 和 raw_message, 可大幅减少日志体积; 关闭后无法通过数据库读取历史报错的原始内容)
 
 # 依赖管理
 pip:
