@@ -22,7 +22,7 @@ class _SenderLogMixin:
     def _store_raw(self):
         """record_raw_message 关闭时不记录原始响应, 大幅减少日志体积"""
         from core.base.config import cfg
-        return cfg.get('logging', 'record_raw_message', True)
+        return cfg.get('settings', 'logging.record_raw_message', True)
 
     def _report_send_error(self, content, data=None, payload=None):
         """发送链路统一错误写入入口 (错误数据库): 发送失败/限频补发/网络重试共用"""

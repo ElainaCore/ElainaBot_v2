@@ -253,7 +253,7 @@ class EventHandlerMixin:
         # 仅全量群消息区分是否艾特机器人; 非全量消息收不到未艾特消息, 一律算艾特
         at_bot = event.is_at_self if event.event_type == GROUP_MESSAGE_CREATE else True
         # record_raw_message 关闭时不存原始响应, 大幅减少日志体积
-        raw_json = json.dumps(event.raw, ensure_ascii=False) if cfg.get('logging', 'record_raw_message', True) else ''
+        raw_json = json.dumps(event.raw, ensure_ascii=False) if cfg.get('settings', 'logging.record_raw_message', True) else ''
         return {
             'message_id': event.message_id or '',
             'user_id': event.user_id or '',

@@ -16,6 +16,21 @@ from core.storage.lifecycle_stats import compute_lifecycle_counts
 
 log = get_logger(FRAMEWORK, 'DAU统计')
 
+try:
+    import ctypes
+    _libc = ctypes.CDLL('libc.so.6')
+except Exception:
+    _libc = None
+
+
+def trim_memory():
+    """将 glibc 空闲堆内存归还系统 (大扫描后调用, 避免 RSS 居高不下)"""
+    if _libc is not None:
+        try:
+            _libc.malloc_trim(0)
+        except Exception:
+            pass
+
 # 默认每日执行时间 (凌晨 4 点, 统计昨日)
 _SCHEDULE_HOUR = 4
 _SCHEDULE_MINUTE = 0
@@ -99,6 +114,13 @@ class DAUService(DailyScanService):
         if not os.path.isfile(msg_db):
             log.debug(f'[{appid}] {date_str} 无消息日志')
             return False
+        try:
+            return self._regenerate_inner(appid, date_str, msg_db)
+        finally:
+            # 统计完成后归还空闲堆内存, 避免 RSS 居高不下
+            trim_memory()
+
+    def _regenerate_inner(self, appid, date_str, msg_db):
 
         msg_stats = self._compute_message_stats(msg_db)
         if not msg_stats:

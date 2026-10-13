@@ -62,7 +62,7 @@ def _make_reply_log_cb(plugin_name, log_service):
         if log_service:
             # record_raw_message 关闭时不记录原始响应, 大幅减少日志体积
             from core.base.config import cfg
-            store_raw = cfg.get('logging', 'record_raw_message', True)
+            store_raw = cfg.get('settings', 'logging.record_raw_message', True)
             log_service.add_sync(
                 'message',
                 {
