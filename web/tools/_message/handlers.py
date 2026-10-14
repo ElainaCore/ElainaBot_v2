@@ -439,7 +439,7 @@ async def handle_send_message(request: web.Request):
         bot_qq = getattr(bot, 'robot_qq', '') or ''
 
         if not message_reference_id and quote_message_id:
-            message_reference_id = _lookup_reference_id(bot, chat_type, chat_id, quote_message_id)
+            message_reference_id = await bot.log_service._run_io(_lookup_reference_id, bot, chat_type, chat_id, quote_message_id)
 
         # 发送方式: default=全量群主动/普通群被动, active=主动, passive=被动, custom_msg_id/custom_event_id=手动指定 ID
         event_id = ''
@@ -589,7 +589,7 @@ async def handle_recall_message(request: web.Request):
     if ok:
         # 标记消息为已撤回 (raw_message 设为 [recalled])
         with contextlib.suppress(Exception):
-            _mark_recalled(bot, message_id)
+            await bot.log_service._run_io(_mark_recalled, bot, message_id)
         return web.json_response({'success': True})
     err = data.get('message', '撤回失败') if isinstance(data, dict) else str(data)
     return web.json_response({'success': False, 'message': err})
@@ -606,12 +606,8 @@ def _mark_recalled(bot, message_id):
         if not os.path.isfile(db_path):
             continue
         try:
-            conn = svc._get_conn(db_path, 'message')
-            lock = svc._conn_locks.get(db_path)
-            if lock:
-                with lock:
-                    conn.execute(sql, (message_id,))
-                    conn.commit()
+            with svc._transaction(db_path, 'message') as conn:
+                conn.execute(sql, (message_id,))
         except Exception as e:
             log.debug(f'标记撤回失败 {d}: {e}')
 

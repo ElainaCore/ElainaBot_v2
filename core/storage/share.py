@@ -1,6 +1,5 @@
 """分享来源服务 (ShareMixin)"""
 
-import asyncio
 import json
 
 from core.base.logger import now_str
@@ -43,15 +42,12 @@ class ShareMixin:
         """记录分享关系: sharer_id 邀请了 referral_id"""
         if not sharer_id or not referral_id:
             return False
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, self._share_record_sync, sharer_id, referral_id, scene)
+        return await self._run_write(self._resolve_db_path('share'), self._share_record_sync, sharer_id, referral_id, scene)
 
     def _share_record_sync(self, sharer_id, referral_id, scene):
         db_path = self._resolve_db_path('share')
-        conn = self._get_conn(db_path, 'share')
-        lock = self._conn_locks.get(db_path)
         now = now_str()
-        with lock:
+        with self._transaction(db_path, 'share') as conn:
             row = conn.execute('SELECT referrals FROM log WHERE openid=?', (sharer_id,)).fetchone()
             if not row:
                 conn.execute(
@@ -63,7 +59,6 @@ class ShareMixin:
                         now,
                     ),
                 )
-                conn.commit()
                 return True
             try:
                 referrals = json.loads(row[0]) if row[0] else {}
@@ -76,25 +71,21 @@ class ShareMixin:
                 'UPDATE log SET referrals=?, updated_at=? WHERE openid=?',
                 (json.dumps(referrals, ensure_ascii=False), now, sharer_id),
             )
-            conn.commit()
         return True
 
     async def share_get_referrals(self, sharer_id):
         """获取分享者邀请的用户 {referral_id: scene}"""
         if not sharer_id:
             return {}
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, self._share_get_referrals_sync, sharer_id)
+        return await self._run_io(self._share_get_referrals_sync, sharer_id)
 
     def _share_get_referrals_sync(self, sharer_id):
         db_path = self._resolve_db_path('share')
-        conn = self._get_conn(db_path, 'share')
-        lock = self._conn_locks.get(db_path)
-        with lock:
+        with self._locked_conn(db_path, 'share', read_only=True) as conn:
             row = conn.execute('SELECT referrals FROM log WHERE openid=?', (sharer_id,)).fetchone()
-        if row and row[0]:
+        if row and row['referrals']:
             try:
-                return json.loads(row[0])
+                return json.loads(row['referrals'])
             except (json.JSONDecodeError, TypeError):
                 pass
         return {}
@@ -108,23 +99,20 @@ class ShareMixin:
         """根据被邀请者查找分享者 openid"""
         if not referral_id:
             return None
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, self._share_find_sharer_sync, referral_id)
+        return await self._run_io(self._share_find_sharer_sync, referral_id)
 
     def _share_find_sharer_sync(self, referral_id):
         db_path = self._resolve_db_path('share')
-        conn = self._get_conn(db_path, 'share')
-        lock = self._conn_locks.get(db_path)
-        with lock:
+        with self._locked_conn(db_path, 'share', read_only=True) as conn:
             rows = conn.execute(
                 'SELECT openid, referrals FROM log WHERE referrals LIKE ?',
                 (f'%{referral_id}%',),
             ).fetchall()
         for row in rows:
             try:
-                referrals = json.loads(row[1]) if row[1] else {}
+                referrals = json.loads(row['referrals']) if row['referrals'] else {}
                 if referral_id in referrals:
-                    return row[0]
+                    return row['openid']
             except (json.JSONDecodeError, TypeError):
                 pass
         return None

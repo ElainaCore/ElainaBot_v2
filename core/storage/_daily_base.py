@@ -9,6 +9,19 @@ import re
 import sqlite3
 from datetime import datetime, timedelta
 
+try:
+    import ctypes
+    _libc = ctypes.CDLL('libc.so.6')
+except Exception:
+    _libc = None
+
+
+def trim_memory():
+    """大扫描后归还 glibc 空闲堆，其他运行时直接跳过。"""
+    if _libc is not None:
+        with contextlib.suppress(Exception):
+            _libc.malloc_trim(0)
+
 
 class DailyScanService:
     """每日定时任务基类: 子类实现 _run_scheduled() 执行到点任务"""

@@ -12,24 +12,9 @@ from datetime import datetime, timedelta
 from core.base.config import cfg
 from core.base.logger import FRAMEWORK, get_logger, now_str
 from core.base.tasks import spawn
-from core.storage._daily_base import DailyScanService
+from core.storage._daily_base import DailyScanService, trim_memory
 
 log = get_logger(FRAMEWORK, '统计')
-
-try:
-    import ctypes
-    _libc = ctypes.CDLL('libc.so.6')
-except Exception:
-    _libc = None
-
-
-def trim_memory():
-    """将 glibc 空闲堆内存归还系统 (大扫描后调用, 避免 RSS 居高不下)"""
-    if _libc is not None:
-        try:
-            _libc.malloc_trim(0)
-        except Exception:
-            pass
 
 # 默认每日执行时间 (凌晨 4 点)
 _SCHEDULE_HOUR = 4
@@ -215,7 +200,8 @@ class StatisticsService(DailyScanService):
             dst.execute(_USER_TABLE_SQL)
             dst.execute(_GROUP_TABLE_SQL)
             dst.execute(_PROCESSED_TABLE_SQL)
-            # 再次确认幂等 (并发/重入保护)
+            # 数据库写事务内确认幂等，跨任务/进程只能有一个累加提交者。
+            dst.execute('BEGIN IMMEDIATE')
             if dst.execute('SELECT 1 FROM processed WHERE date=?', (date_str,)).fetchone():
                 return False
             now = now_str()

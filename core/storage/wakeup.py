@@ -1,7 +1,5 @@
 """唤醒系统服务 (WakeupMixin)"""
 
-import asyncio
-import sqlite3
 from datetime import datetime
 
 # 唤醒阶段阈值: (最大不活跃天数, 目标阶段)
@@ -36,49 +34,35 @@ _GET_USERS_SQL = """
 class WakeupMixin:
     """唤醒系统 (wakeup.db) 方法集"""
 
-    def _wakeup_locked(self):
-        """获取 wakeup.db 连接和锁"""
-        db_path = self._resolve_db_path('wakeup')
-        conn = self._get_conn(db_path, 'wakeup')
-        return conn, self._conn_locks.get(db_path)
-
     async def wakeup_update(self, openid):
         """用户发消息时更新活跃日期, stage 重置为 0"""
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, self._wakeup_update_sync, openid)
+        return await self._run_write(self._resolve_db_path('wakeup'), self._wakeup_update_sync, openid)
 
     def _wakeup_update_sync(self, openid):
         now = datetime.now()
         today = now.strftime('%Y-%m-%d')
         now_str = now.strftime('%Y-%m-%d %H:%M:%S')
-        conn, lock = self._wakeup_locked()
-        with lock:
+        with self._transaction(self._resolve_db_path('wakeup'), 'wakeup') as conn:
             row = conn.execute('SELECT last_msg_date FROM log WHERE openid=?', (openid,)).fetchone()
             if row and row[0] == today:
                 conn.execute('UPDATE log SET updated_at=? WHERE openid=?', (now_str, openid))
-                conn.commit()
                 return
             conn.execute(
                 'INSERT INTO log (openid, last_msg_date, wakeup_stage, updated_at) VALUES (?,?,0,?) '
                 'ON CONFLICT(openid) DO UPDATE SET last_msg_date=?, wakeup_stage=0, updated_at=?',
                 (openid, today, now_str, today, now_str),
             )
-            conn.commit()
 
     async def wakeup_can_send(self, openid):
         """检查是否可发唤醒, 返回 (can_send, target_stage, days_inactive)"""
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, self._wakeup_can_send_sync, openid)
+        return await self._run_io(self._wakeup_can_send_sync, openid)
 
     def _wakeup_can_send_sync(self, openid):
-        conn, lock = self._wakeup_locked()
-        with lock:
-            conn.row_factory = sqlite3.Row
+        with self._locked_conn(self._resolve_db_path('wakeup'), 'wakeup', read_only=True) as conn:
             row = conn.execute(
                 'SELECT last_msg_date, wakeup_stage, last_wakeup_date FROM log WHERE openid=?',
                 (openid,),
             ).fetchone()
-            conn.row_factory = None
         if not row:
             return (False, 0, -1)
         today = datetime.now().date()
@@ -94,33 +78,26 @@ class WakeupMixin:
 
     async def wakeup_mark_sent(self, openid, stage):
         """标记已发送唤醒消息"""
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, self._wakeup_mark_sent_sync, openid, stage)
+        return await self._run_write(self._resolve_db_path('wakeup'), self._wakeup_mark_sent_sync, openid, stage)
 
     def _wakeup_mark_sent_sync(self, openid, stage):
         today = datetime.now().strftime('%Y-%m-%d')
-        conn, lock = self._wakeup_locked()
-        with lock:
+        with self._transaction(self._resolve_db_path('wakeup'), 'wakeup') as conn:
             conn.execute(
                 'UPDATE log SET wakeup_stage=?, last_wakeup_date=?, updated_at=? WHERE openid=?',
                 (stage, today, today, openid),
             )
-            conn.commit()
 
     async def wakeup_get_users(self, target_stage=None):
         """获取可唤醒用户列表"""
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, self._wakeup_get_users_sync, target_stage)
+        return await self._run_io(self._wakeup_get_users_sync, target_stage)
 
     def _wakeup_get_users_sync(self, target_stage=None):
-        conn, lock = self._wakeup_locked()
         sql = _GET_USERS_SQL
         params = [datetime.now().strftime('%Y-%m-%d')]
         if target_stage is not None:
             sql += ' AND stage = ?2'
             params.append(target_stage)
-        with lock:
-            conn.row_factory = sqlite3.Row
+        with self._locked_conn(self._resolve_db_path('wakeup'), 'wakeup', read_only=True) as conn:
             rows = conn.execute(sql, params).fetchall()
-            conn.row_factory = None
-        return [{'openid': r['openid'], 'days': r['days'], 'stage': r['stage']} for r in rows]
+        return rows

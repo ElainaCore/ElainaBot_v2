@@ -1,7 +1,5 @@
 """订阅消息服务 (SubscribeMixin) — 模板ID ↔ 群/用户 映射 (subscribe.db)"""
 
-import asyncio
-
 from core.base.logger import now_str
 
 SUB_TYPE_ONCE = 'once'
@@ -23,17 +21,11 @@ _UPSERT_SQL = (
 class SubscribeMixin:
     """订阅消息映射 (subscribe.db) 方法集"""
 
-    def _subscribe_locked(self):
-        """获取 subscribe.db 连接和锁"""
-        db_path = self._resolve_db_path('subscribe')
-        conn = self._get_conn(db_path, 'subscribe')
-        return conn, self._conn_locks.get(db_path)
-
     async def subscribe_record(self, results, group_id='', user_id='', once_template_ids=()):
         """记录订阅事件 result 列表并返回写入条数: group_id 非空为群聊链路否则单聊, 模板 ID 在 once_template_ids 中为单次订阅否则永久, op 1=开启(status=1) 2=关闭(status=0)"""
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(
-            None, self._subscribe_record_sync, results, group_id, user_id, once_template_ids)
+        return await self._run_write(
+            self._resolve_db_path('subscribe'), self._subscribe_record_sync,
+            results, group_id, user_id, once_template_ids)
 
     def _subscribe_record_sync(self, results, group_id, user_id, once_template_ids):
         target_id = group_id or user_id
@@ -63,10 +55,8 @@ class SubscribeMixin:
             ))
         if not rows:
             return 0
-        conn, lock = self._subscribe_locked()
-        with lock:
+        with self._transaction(self._resolve_db_path('subscribe'), 'subscribe') as conn:
             conn.executemany(_UPSERT_SQL, rows)
-            conn.commit()
         return len(rows)
 
     def subscribe_get_map(self, sub_type=None, target_type='group'):
@@ -107,14 +97,11 @@ class SubscribeMixin:
 
     async def subscribe_consume(self, template_id, target_id):
         """单次订阅发送后作废 (status=0)"""
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, self._subscribe_consume_sync, template_id, target_id)
+        return await self._run_write(self._resolve_db_path('subscribe'), self._subscribe_consume_sync, template_id, target_id)
 
     def _subscribe_consume_sync(self, template_id, target_id):
-        conn, lock = self._subscribe_locked()
-        with lock:
+        with self._transaction(self._resolve_db_path('subscribe'), 'subscribe') as conn:
             conn.execute(
                 'UPDATE log SET status=0, updated_at=? WHERE template_id=? AND target_id=?',
                 (now_str(), str(template_id), str(target_id)),
             )
-            conn.commit()

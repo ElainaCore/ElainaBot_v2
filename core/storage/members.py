@@ -23,21 +23,25 @@ COLUMN_KEYS = frozenset({
 _LEGACY_CONSTANT_KEYS = {'value': 1}
 
 
-def parse_member_entries(raw):
+def parse_member_entries(raw, *, strict=False):
     """把 users 列的原始 JSON 解析为 {uid: entry}。
 
-    兼容字符串元素、缺失字段与损坏 JSON; 解析失败返回空映射, 不抛异常。
+    默认容忍损坏 JSON；迁移使用 strict，避免把无法解析的数据当空集合删除。
     同一 uid 重复出现时后者覆盖前者, 与迁移前的解析行为一致。
     """
     if isinstance(raw, (bytes, bytearray)):
-        raw = raw.decode('utf-8', 'ignore')
+        raw = raw.decode('utf-8', 'strict' if strict else 'ignore')
     if not raw:
         return {}
     try:
         items = json.loads(raw)
     except (TypeError, ValueError):
+        if strict:
+            raise
         return {}
     if not isinstance(items, list):
+        if strict:
+            raise ValueError('群成员 JSON 必须为列表')
         return {}
     result = {}
     for item in items:
@@ -47,8 +51,12 @@ def parse_member_entries(raw):
         else:
             uid = item
             entry = {}
+        if strict and not isinstance(uid, str | int):
+            raise ValueError('群成员条目缺少有效用户 ID')
         uid = str(uid or '').strip()
         if not uid:
+            if strict:
+                raise ValueError('群成员条目缺少有效用户 ID')
             continue
         result[uid] = entry if isinstance(entry, dict) else {}
     return result

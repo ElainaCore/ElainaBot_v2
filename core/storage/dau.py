@@ -10,26 +10,11 @@ from datetime import datetime, timedelta
 
 from core.base.logger import FRAMEWORK, get_logger
 from core.base.tasks import spawn
-from core.storage._daily_base import DailyScanService
+from core.storage._daily_base import DailyScanService, trim_memory
 from core.storage._schema import DAU_TABLE_SQL
 from core.storage.lifecycle_stats import compute_lifecycle_counts
 
 log = get_logger(FRAMEWORK, 'DAU统计')
-
-try:
-    import ctypes
-    _libc = ctypes.CDLL('libc.so.6')
-except Exception:
-    _libc = None
-
-
-def trim_memory():
-    """将 glibc 空闲堆内存归还系统 (大扫描后调用, 避免 RSS 居高不下)"""
-    if _libc is not None:
-        try:
-            _libc.malloc_trim(0)
-        except Exception:
-            pass
 
 # 默认每日执行时间 (凌晨 4 点, 统计昨日)
 _SCHEDULE_HOUR = 4

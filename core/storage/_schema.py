@@ -316,11 +316,11 @@ def _rebuild_groups_users(conn):
                 'SELECT allow_proactive_msg FROM full_access_groups f '
                 'WHERE f.group_id=groups_users.group_id), 0))'
             )
-    conn.executescript(
-        f"""
-        DROP TABLE IF EXISTS groups_users_new;
-        CREATE TABLE groups_users_new {_GROUPS_USERS_DEFINITION};
-        INSERT INTO groups_users_new (
+    # execute 保留调用方的事务；executescript 会先提交，破坏重建的原子性。
+    for sql in (
+        'DROP TABLE IF EXISTS groups_users_new',
+        f'CREATE TABLE groups_users_new {_GROUPS_USERS_DEFINITION}',
+        f"""INSERT INTO groups_users_new (
             group_id, group_name, group_member_num,
             is_admin, is_full_access, allow_proactive_msg, in_group
         )
@@ -328,13 +328,13 @@ def _rebuild_groups_users(conn):
             group_id, {values['group_name']}, {values['group_member_num']},
             {values['is_admin']}, {values['is_full_access']},
             {values['allow_proactive_msg']}, {values['in_group']}
-        FROM groups_users;
-        DROP TABLE groups_users;
-        ALTER TABLE groups_users_new RENAME TO groups_users;
-        DROP TABLE IF EXISTS group_bot_admin;
-        DROP TABLE IF EXISTS full_access_groups;
-        """
-    )
+        FROM groups_users""",
+        'DROP TABLE groups_users',
+        'ALTER TABLE groups_users_new RENAME TO groups_users',
+        'DROP TABLE IF EXISTS group_bot_admin',
+        'DROP TABLE IF EXISTS full_access_groups',
+    ):
+        conn.execute(sql)
     log.info(f'自动迁移 data.db {_DATA_SCHEMA_VERSION}: 群管理员及全量权限已合并至 groups_users')
 
 
@@ -357,6 +357,8 @@ def _migrate_group_members(conn, thorough_verify=False):
     last_group = ''
     log.info(f'开始迁移群成员到 group_members (data.db {_DATA_SCHEMA_VERSION})')
     try:
+        if conn.execute("SELECT 1 FROM groups_users WHERE group_id IS NULL OR group_id='' LIMIT 1").fetchone():
+            raise ValueError('旧群记录缺少 group_id，保留原表等待修复')
         while True:
             rows = conn.execute(
                 'SELECT group_id, users FROM groups_users '
@@ -368,7 +370,7 @@ def _migrate_group_members(conn, thorough_verify=False):
             last_group = rows[-1][0]
             batch = []
             for group_id, raw in rows:
-                entries = parse_member_entries(raw)
+                entries = parse_member_entries(raw, strict=True)
                 expected += len(entries)
                 for uid, entry in entries.items():
                     batch.append((
@@ -390,6 +392,7 @@ def _migrate_group_members(conn, thorough_verify=False):
             if bots:
                 _store_bots(conn, bots)
                 bots.clear()
+            _verify_member_batch(conn, batch, [row[0] for row in rows])
             conn.commit()
             groups += len(rows)
             if groups % (_GROUP_MIGRATE_BATCH * 40) == 0:
@@ -423,6 +426,24 @@ def _migrate_group_members(conn, thorough_verify=False):
     return True, checked, mismatched
 
 
+def _verify_member_batch(conn, batch, group_ids):
+    """源成员的键和字段必须完整保留；新表额外的成员不影响迁移。"""
+    if not batch:
+        return
+    placeholders = ','.join('?' for _ in group_ids)
+    expected = {(gid, uid): (active, role, extra) for gid, uid, active, role, extra in batch}
+    for gid, uid, active, role, extra in conn.execute(
+        'SELECT group_id, user_id, last_active, member_role, extra FROM group_members '
+        f'WHERE group_id IN ({placeholders})', group_ids):
+        source = expected.pop((gid, uid), None)
+        if source is not None and (
+            source[:2] != (active, role) or json.loads(source[2] or '{}') != json.loads(extra or '{}')
+        ):
+            raise ValueError(f'成员迁移字段不一致: {gid}/{uid}')
+    if expected:
+        raise ValueError(f'成员迁移缺少 {len(expected)} 条记录')
+
+
 def _store_bots(conn, bots):
     """写入机器人账号 (全局去重)。"""
     stamp = now_str()
@@ -447,7 +468,7 @@ def _verify_group_members(conn):
             break
         last_group = rows[-1][0]
         for group_id, raw in rows:
-            expected = len(parse_member_entries(raw))
+            expected = len(parse_member_entries(raw, strict=True))
             actual = conn.execute(
                 'SELECT COUNT(*) FROM group_members WHERE group_id=?', (group_id,)
             ).fetchone()[0]
@@ -481,6 +502,8 @@ def migrate_data_db(conn, *, thorough_verify=False):
             log.info(f'自动迁移: {table} 表新增列 {col}')
         except Exception as e:
             log.warning(f'迁移列 {table}.{col} 失败: {e}')
+            result['reason'] = f'迁移列 {table}.{col} 失败: {e}'
+            return result
 
     # 即使旧库没有 users 列，也要幂等补齐新表，避免版本号与结构不一致。
     conn.executescript(_GROUP_MEMBERS_SQL + _BOTS_SQL)
@@ -492,17 +515,16 @@ def migrate_data_db(conn, *, thorough_verify=False):
         result['reason'] = '成员迁移未完成, 保留 groups_users.users 待重试'
         return result
     try:
+        conn.execute('BEGIN IMMEDIATE')
         _rebuild_groups_users(conn)
         conn.execute(_FULL_ACCESS_INDEX)
+        conn.execute(f'PRAGMA user_version = {_DATA_SCHEMA_USER_VERSION}')
         conn.commit()
     except Exception as e:
         conn.rollback()
         log.warning(f'迁移群数据表失败: {e}')
         result['reason'] = f'重建群数据表失败: {e}'
         return result
-    with contextlib.suppress(Exception):
-        conn.execute(f'PRAGMA user_version = {_DATA_SCHEMA_USER_VERSION}')
-        conn.commit()
     result['ok'] = True
     return result
 
@@ -524,7 +546,9 @@ def _migrate_data_tables(conn):
                 return
     except sqlite3.Error:
         pass
-    migrate_data_db(conn)
+    result = migrate_data_db(conn)
+    if not result['ok']:
+        raise sqlite3.DatabaseError(result['reason'])
 
 
 def _migrate_missing_columns(conn, log_type):
@@ -532,10 +556,7 @@ def _migrate_missing_columns(conn, log_type):
     schema = _SCHEMAS.get(log_type)
     if not schema or log_type == 'data':
         return
-    try:
-        existing = {row[1] for row in conn.execute('PRAGMA table_info(log)').fetchall()}
-    except Exception:
-        return
+    existing = {row[1] for row in conn.execute('PRAGMA table_info(log)').fetchall()}
     col_pattern = re.compile(r'^\s+(\w+)\s+(TEXT|INTEGER|REAL)(.*)$', re.MULTILINE)
     for m in col_pattern.finditer(schema):
         col_name = m.group(1)
@@ -548,6 +569,7 @@ def _migrate_missing_columns(conn, log_type):
             log.info(f'自动迁移: log 表新增列 {col_name} ({log_type})')
         except Exception as e:
             log.warning(f'自动迁移列 {col_name} 失败: {e}')
+            raise
 
 
 def _ensure_indexes(conn, log_type):
