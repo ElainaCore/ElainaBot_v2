@@ -83,7 +83,7 @@ class _BaseLogService:
         self._unprepared_batches = {t: [] for t in queue_types}
         self._flush_jobs = {}
         self._io_futures = set()
-        self._write_queues = {}
+        self._db_queues = {}
         self._shutdown_job = None
         self._stop = asyncio.Event()
         self._tasks = []
@@ -246,21 +246,27 @@ class _BaseLogService:
             future.exception()  # 同时处理调用方已取消的情况，避免未收集异常。
 
     async def _run_write(self, db_path, func, *args, draining=False):
+        return await self._run_db((db_path, False), func, *args, draining=draining)
+
+    async def _run_read(self, log_type, func, *args):
+        return await self._run_db((self._resolve_db_path(log_type), True), func, *args)
+
+    async def _run_db(self, key, func, *args, draining=False):
         if not draining and not self._accepting:
             raise RuntimeError('SQLite 日志服务正在关闭')
-        # 排队发生在事件循环；同一文件的等待者不占住 executor 线程。
+        # 同库的读、写各自排队；连接锁的等待者不占住 executor 线程。
         loop = asyncio.get_running_loop()
         with self._queue_lock:
-            start = db_path not in self._write_queues
-            queue = self._write_queues.setdefault(db_path, deque())
+            start = key not in self._db_queues
+            queue = self._db_queues.setdefault(key, deque())
         if start:
             try:
                 future = loop.run_in_executor(None, func, *args)
             except BaseException:
                 with self._queue_lock:
-                    self._write_queues.pop(db_path)
+                    self._db_queues.pop(key)
                 raise
-            future.add_done_callback(lambda _: self._continue_writer(db_path))
+            future.add_done_callback(lambda _: self._continue_db_worker(key))
             return await asyncio.shield(self._track_io(future))
         result = loop.create_future()
         result.add_done_callback(self._io_finished)
@@ -269,23 +275,23 @@ class _BaseLogService:
         # 取消结果等待不会撤销入队操作；工作线程的 Future 跟踪整个队列。
         return await result
 
-    def _start_writer(self, loop, db_path):
+    def _start_db_worker(self, loop, key):
         try:
-            future = loop.run_in_executor(None, self._drain_writes, loop, db_path)
+            future = loop.run_in_executor(None, self._drain_db_ops, loop, key)
         except BaseException as exc:
             with self._queue_lock:
-                pending = self._write_queues.pop(db_path)
+                pending = self._db_queues.pop(key)
             for _, _, result in pending:
                 self._write_finished(result, None, exc)
         else:
             # 先延续未执行的队列，再解除线程 Future 的停机跟踪。
-            future.add_done_callback(lambda done: self._writes_drained(db_path, done))
+            future.add_done_callback(lambda done: self._db_ops_drained(key, done))
             self._track_io(future)
 
-    def _drain_writes(self, loop, db_path):
-        """同文件一个工作线程连续提交，避免每条小事务反复切换线程。"""
+    def _drain_db_ops(self, loop, key):
+        """同一连接的操作由一个线程连续执行，避免反复切换线程。"""
         with self._queue_lock:
-            queue = self._write_queues[db_path]
+            queue = self._db_queues[key]
             func, args, result = queue.popleft()
         while True:
             try:
@@ -299,19 +305,19 @@ class _BaseLogService:
             loop.call_soon_threadsafe(self._write_finished, result, value, error)
             func, args, result = next_job
 
-    def _writes_drained(self, db_path, future):
+    def _db_ops_drained(self, key, future):
         if future.cancelled():
             return
         self._write_finished(*future.result())
-        self._continue_writer(db_path)
+        self._continue_db_worker(key)
 
-    def _continue_writer(self, db_path):
+    def _continue_db_worker(self, key):
         with self._queue_lock:
-            pending = bool(self._write_queues[db_path])
+            pending = bool(self._db_queues[key])
             if not pending:
-                self._write_queues.pop(db_path)
+                self._db_queues.pop(key)
         if pending:
-            self._start_writer(asyncio.get_running_loop(), db_path)
+            self._start_db_worker(asyncio.get_running_loop(), key)
 
     @staticmethod
     def _write_finished(result, value, error):

@@ -22,6 +22,7 @@ from core.storage.subscribe import SubscribeMixin
 from core.storage.wakeup import WakeupMixin
 
 log = get_logger(SERVICE, '日志')
+_DATA_BATCH_SIZE = 1000  # 后台事务分批提交，让插件确认写入有机会穿插执行。
 
 
 class LogService(_BaseLogService, ShareMixin, WakeupMixin, SubscribeMixin):
@@ -148,7 +149,7 @@ class LogService(_BaseLogService, ShareMixin, WakeupMixin, SubscribeMixin):
         return super()._has_backlog() or bool(self._data_pending) or not self._data_write_queue.empty()
 
     def db_queue(self, sql, params=()):
-        """非阻塞入队；返回是否接受，关键状态可用 db_execute 等待提交确认。"""
+        """非阻塞入队；返回是否接受。需提交确认/原子事务时用 db_execute / db_execute_ops。"""
         with self._queue_lock:
             if not self._accepting:
                 return False
@@ -168,18 +169,26 @@ class LogService(_BaseLogService, ShareMixin, WakeupMixin, SubscribeMixin):
         ops = self._data_pending
         if not ops and self._data_write_queue.empty():
             return True
+        remaining = max(self._batch_size or 10000, len(ops))
         try:
-            await self._run_write(self._resolve_db_path('data'), self._flush_data_queue_sync, ops, draining=True)
+            while remaining > 0:
+                await self._run_write(
+                    self._resolve_db_path('data'), self._flush_data_queue_sync,
+                    ops, min(remaining, _DATA_BATCH_SIZE), draining=True,
+                )
+                remaining -= len(ops)
+                ops.clear()  # 已提交批次不重试，失败批次仍保留在 ops 中。
+                if self._data_write_queue.empty():
+                    break
         except Exception as exc:
             counter('data_flush_failures')
             log.error(f'[{self._appid}] data.db 刷写失败，保留批次重试: {exc}')
             return False
-        ops.clear()
         return True
 
-    def _flush_data_queue_sync(self, ops):
+    def _flush_data_queue_sync(self, ops, limit):
         if not ops:
-            ops.extend(self._data_write_queue.take(self._batch_size or 10000))
+            ops.extend(self._data_write_queue.take(limit))
         with self._transaction(self._resolve_db_path('data'), 'data') as conn:
             # 仅合并相邻同 SQL；保留 INSERT→DELETE→INSERT 等业务顺序。
             for sql, adjacent in groupby(ops, key=lambda op: op[0]):
@@ -226,14 +235,14 @@ class LogService(_BaseLogService, ShareMixin, WakeupMixin, SubscribeMixin):
             conn.executescript(script)
 
     async def db_fetch_one(self, sql, params=()):
-        return await self._run_io(self._db_fetch_one_sync, sql, params)
+        return await self._run_read('data', self._db_fetch_one_sync, sql, params)
 
     def _db_fetch_one_sync(self, sql, params):
         rows = self.query('data', sql, params)
         return rows[0] if rows else None
 
     async def db_fetch_all(self, sql, params=()):
-        return await self._run_io(self._db_fetch_all_sync, sql, params)
+        return await self._run_read('data', self._db_fetch_all_sync, sql, params)
 
     def _db_fetch_all_sync(self, sql, params):
         return self.query('data', sql, params)
@@ -426,7 +435,7 @@ class LogService(_BaseLogService, ShareMixin, WakeupMixin, SubscribeMixin):
 
     async def group_member_entries(self, group_id, limit=None):
         """群成员完整条目 (异步包装)。"""
-        return await self._run_io(self.group_member_entries_sync, group_id, limit)
+        return await self._run_read('data', self.group_member_entries_sync, group_id, limit)
 
     def group_member_ids_sync(self, group_id, *, exclude_bots=True,
                               roles=None, limit=None):
@@ -452,7 +461,8 @@ class LogService(_BaseLogService, ShareMixin, WakeupMixin, SubscribeMixin):
     async def group_member_ids(self, group_id, exclude_bots=True, *,
                                roles=None, limit=None):
         """群成员 ID 列表 (异步包装)。"""
-        return await self._run_io(
+        return await self._run_read(
+            'data',
             lambda: self.group_member_ids_sync(
                 group_id, exclude_bots=exclude_bots,
                 roles=roles, limit=limit),
@@ -483,7 +493,7 @@ class LogService(_BaseLogService, ShareMixin, WakeupMixin, SubscribeMixin):
 
     async def group_member_roles(self, group_id):
         """成员角色映射 (异步包装)。"""
-        return await self._run_io(self.group_member_roles_sync, group_id)
+        return await self._run_read('data', self.group_member_roles_sync, group_id)
 
     def group_last_active_map_sync(self, limit, offset=0):
         """跨群扫描: [{'group_id', 'last_active'}] (同步版)。
@@ -509,7 +519,7 @@ class LogService(_BaseLogService, ShareMixin, WakeupMixin, SubscribeMixin):
 
     async def group_member_count(self, group_id):
         """群成员数 (异步包装)。"""
-        return await self._run_io(self.group_member_count_sync, group_id)
+        return await self._run_read('data', self.group_member_count_sync, group_id)
 
     async def group_row_delete(self, group_id):
         """机器人退群: 单事务清掉群记录与其成员行。"""

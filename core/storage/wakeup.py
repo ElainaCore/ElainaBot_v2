@@ -55,7 +55,7 @@ class WakeupMixin:
 
     async def wakeup_can_send(self, openid):
         """检查是否可发唤醒, 返回 (can_send, target_stage, days_inactive)"""
-        return await self._run_io(self._wakeup_can_send_sync, openid)
+        return await self._run_read('wakeup', self._wakeup_can_send_sync, openid)
 
     def _wakeup_can_send_sync(self, openid):
         with self._locked_conn(self._resolve_db_path('wakeup'), 'wakeup', read_only=True) as conn:
@@ -90,7 +90,7 @@ class WakeupMixin:
 
     async def wakeup_get_users(self, target_stage=None):
         """获取可唤醒用户列表"""
-        return await self._run_io(self._wakeup_get_users_sync, target_stage)
+        return await self._run_read('wakeup', self._wakeup_get_users_sync, target_stage)
 
     def _wakeup_get_users_sync(self, target_stage=None):
         sql = _GET_USERS_SQL

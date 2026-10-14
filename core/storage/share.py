@@ -77,7 +77,7 @@ class ShareMixin:
         """获取分享者邀请的用户 {referral_id: scene}"""
         if not sharer_id:
             return {}
-        return await self._run_io(self._share_get_referrals_sync, sharer_id)
+        return await self._run_read('share', self._share_get_referrals_sync, sharer_id)
 
     def _share_get_referrals_sync(self, sharer_id):
         db_path = self._resolve_db_path('share')
@@ -99,7 +99,7 @@ class ShareMixin:
         """根据被邀请者查找分享者 openid"""
         if not referral_id:
             return None
-        return await self._run_io(self._share_find_sharer_sync, referral_id)
+        return await self._run_read('share', self._share_find_sharer_sync, referral_id)
 
     def _share_find_sharer_sync(self, referral_id):
         db_path = self._resolve_db_path('share')
