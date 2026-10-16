@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 
 try:
     import ctypes
-    _libc = ctypes.CDLL('libc.so.6')
+    _libc: ctypes.CDLL | None = ctypes.CDLL('libc.so.6')
 except Exception:
     _libc = None
 
