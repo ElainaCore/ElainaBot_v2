@@ -11,8 +11,8 @@ from datetime import datetime, timedelta
 
 from core.base.config import cfg
 from core.base.logger import FRAMEWORK, get_logger, now_str
-from core.base.tasks import spawn
 from core.storage._daily_base import DailyScanService, trim_memory
+from core.storage._workers import SQLITE_EXECUTOR
 
 log = get_logger(FRAMEWORK, '统计')
 
@@ -90,7 +90,7 @@ class StatisticsService(DailyScanService):
             return
         self._running = True
         self._task = asyncio.create_task(self._scheduler_loop())
-        spawn(self._startup_catchup())
+        self._startup_task = asyncio.create_task(self._startup_catchup())
         log.info(f'已启动 [每日 {self._schedule_hour:02d}:{self._schedule_minute:02d}]')
 
     async def _startup_catchup(self):
@@ -99,12 +99,7 @@ class StatisticsService(DailyScanService):
         if not self._enabled():
             return
         now = datetime.now()
-        today_run = now.replace(
-            hour=self._schedule_hour,
-            minute=self._schedule_minute,
-            second=0,
-            microsecond=0,
-        )
+        today_run = self._scheduled_time(now)
         if now < today_run:
             return  # 未到今日统计时间, 交给调度器
         # 已过今日统计时间: 今日应执行的是聚合"昨日"
@@ -113,7 +108,7 @@ class StatisticsService(DailyScanService):
             appid
             for appid in self.list_appids()
             if os.path.isfile(self._message_db_path(appid, yesterday))
-            and not self._is_processed(appid, yesterday)
+            and not await asyncio.get_running_loop().run_in_executor(SQLITE_EXECUTOR, self._is_processed, appid, yesterday)
         ]
         if not pending:
             return
@@ -141,8 +136,7 @@ class StatisticsService(DailyScanService):
 
     async def aggregate(self, appid, date_str):
         """聚合指定机器人 + 日期的统计 (累加到 statistics.db)"""
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, self._aggregate_sync, appid, date_str)
+        return await self._run_scan(appid, date_str, self._aggregate_sync)
 
     # ===== 路径 / appid =====
 
@@ -361,11 +355,11 @@ class StatisticsService(DailyScanService):
 
     async def get_user_stats(self, appid, userid):
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, self._get_one_sync, appid, 'user_stats', 'userid', userid, self._USER_JSON_KEYS)
+        return await loop.run_in_executor(SQLITE_EXECUTOR, self._get_one_sync, appid, 'user_stats', 'userid', userid, self._USER_JSON_KEYS)
 
     async def get_group_stats(self, appid, groupid):
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, self._get_one_sync, appid, 'group_stats', 'groupid', groupid, self._GROUP_JSON_KEYS)
+        return await loop.run_in_executor(SQLITE_EXECUTOR, self._get_one_sync, appid, 'group_stats', 'groupid', groupid, self._GROUP_JSON_KEYS)
 
     def _get_one_sync(self, appid, table, pk_col, pk_val, json_keys):
         conn = self._open_ro(self._stats_db_path(appid))

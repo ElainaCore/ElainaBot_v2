@@ -9,8 +9,11 @@ import re
 import sqlite3
 from datetime import datetime, timedelta
 
+from core.storage._workers import DAILY_SCAN_EXECUTOR
+
 try:
     import ctypes
+
     _libc: ctypes.CDLL | None = ctypes.CDLL('libc.so.6')
 except Exception:
     _libc = None
@@ -26,7 +29,7 @@ def trim_memory():
 class DailyScanService:
     """每日定时任务基类: 子类实现 _run_scheduled() 执行到点任务"""
 
-    __slots__ = ('_log_dir', '_running', '_task', '_schedule_hour', '_schedule_minute')
+    __slots__ = ('_log_dir', '_running', '_task', '_startup_task', '_schedule_hour', '_schedule_minute', '_scan_jobs')
 
     _logger = None  # 子类设置为自己的 log
 
@@ -39,14 +42,32 @@ class DailyScanService:
         self._schedule_minute = schedule_minute
         self._running = False
         self._task = None
+        self._startup_task = None
+        self._scan_jobs = {}
 
     async def stop(self):
         self._running = False
-        if self._task:
-            self._task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._task
-            self._task = None
+        tasks = [task for task in (self._task, self._startup_task) if task is not None]
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        self._task = self._startup_task = None
+
+    async def _run_scan(self, appid, date_str, func):
+        """同一机器人同一天的在途扫描合并；等待方取消不撤销后台扫描。"""
+        key = (str(appid), date_str)
+        future = self._scan_jobs.get(key)
+        if future is None:
+            future = asyncio.get_running_loop().run_in_executor(DAILY_SCAN_EXECUTOR, func, appid, date_str)
+            self._scan_jobs[key] = future
+            future.add_done_callback(lambda done: self._scan_finished(key, done))
+        return await asyncio.shield(future)
+
+    def _scan_finished(self, key, future):
+        if self._scan_jobs.get(key) is future:
+            self._scan_jobs.pop(key)
+        if not future.cancelled():
+            future.exception()
 
     async def _run_scheduled(self):
         raise NotImplementedError
@@ -69,13 +90,16 @@ class DailyScanService:
 
     def _next_run_time(self):
         now = datetime.now()
-        today_run = now.replace(
+        today_run = self._scheduled_time(now)
+        return today_run if today_run > now else today_run + timedelta(days=1)
+
+    def _scheduled_time(self, now):
+        return now.replace(
             hour=self._schedule_hour,
             minute=self._schedule_minute,
             second=0,
             microsecond=0,
         )
-        return today_run if today_run > now else today_run + timedelta(days=1)
 
     def list_appids(self):
         """列出所有有日志记录的 appid (排除 SharedLogService 的日期目录)"""

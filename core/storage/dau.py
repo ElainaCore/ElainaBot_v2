@@ -9,9 +9,9 @@ import sqlite3
 from datetime import datetime, timedelta
 
 from core.base.logger import FRAMEWORK, get_logger
-from core.base.tasks import spawn
 from core.storage._daily_base import DailyScanService, trim_memory
 from core.storage._schema import DAU_TABLE_SQL
+from core.storage._workers import SQLITE_EXECUTOR
 from core.storage.lifecycle_stats import compute_lifecycle_counts
 
 log = get_logger(FRAMEWORK, 'DAU统计')
@@ -36,18 +36,19 @@ class DAUService(DailyScanService):
             return
         self._running = True
         self._task = asyncio.create_task(self._scheduler_loop())
-        spawn(self._backfill_missing())
+        self._startup_task = asyncio.create_task(self._backfill_missing())
         log.info(f'已启动 [每日 {self._schedule_hour:02d}:{self._schedule_minute:02d}]')
 
     async def _backfill_missing(self):
-        """启动时检查最近3天(不含今天)是否有遗漏的DAU, 补算并记录"""
+        """启动补算最近三天；昨日数据到每日统计时间后才允许补算。"""
         await asyncio.sleep(5)  # 等待其他服务就绪
-        # 刚过 4 点调度刚写入昨日数据, 稍作延迟避免与调度任务重复计算
-        today = datetime.now().date()
+        now = datetime.now()
+        today = now.date()
         appids = self.list_appids()
         if not appids:
             return
-        for i in range(1, 4):
+        first_day = 1 if now >= self._scheduled_time(now) else 2
+        for i in range(first_day, 4):
             date_str = (today - timedelta(days=i)).isoformat()
             missing = [
                 appid
@@ -59,7 +60,13 @@ class DAUService(DailyScanService):
             log.info(f'补算 {date_str} DAU: {len(missing)} 个机器人')
             for appid in missing:
                 with contextlib.suppress(Exception):
-                    await self.regenerate(appid, date_str)
+                    await self._run_scan(appid, date_str, self._regenerate_missing_sync)
+
+    def _regenerate_missing_sync(self, appid, date_str):
+        # 队列等待期间定时任务可能已经完成；执行前再检查，避免重复扫库。
+        if self._load_sync(appid, date_str):
+            return False
+        return self._regenerate_sync(appid, date_str)
 
     async def _run_scheduled(self):
         await self.regenerate_yesterday()
@@ -75,18 +82,17 @@ class DAUService(DailyScanService):
 
     async def regenerate(self, appid, date_str):
         """重算指定机器人 + 日期的 DAU"""
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, self._regenerate_sync, appid, date_str)
+        return await self._run_scan(appid, date_str, self._regenerate_sync)
 
     async def load(self, appid, date_str):
         """读取已存储的 DAU 数据"""
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, self._load_sync, appid, date_str)
+        return await loop.run_in_executor(SQLITE_EXECUTOR, self._load_sync, appid, date_str)
 
     async def recent(self, appid, days=7):
         """读取最近 N 天 DAU"""
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, self._recent_sync, appid, days)
+        return await loop.run_in_executor(SQLITE_EXECUTOR, self._recent_sync, appid, days)
 
     def _lifecycle_db_path(self, appid, date_str):
         return os.path.join(self._log_dir, appid, date_str, 'lifecycle.db')

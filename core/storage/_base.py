@@ -26,6 +26,7 @@ from core.storage._schema import (
     _missing_index_sqls,
 )
 from core.storage._sqlite import SQLiteConnectionPool
+from core.storage._workers import SQLITE_EXECUTOR
 
 
 def _dict_factory(cursor, row):
@@ -237,7 +238,7 @@ class _BaseLogService:
 
     async def _run_io(self, func, *args):
         """取消调用方不取消线程工作；停机等待全部在途工作。"""
-        future = asyncio.get_running_loop().run_in_executor(None, func, *args)
+        future = asyncio.get_running_loop().run_in_executor(SQLITE_EXECUTOR, func, *args)
         return await asyncio.shield(self._track_io(future))
 
     def _io_finished(self, future):
@@ -261,7 +262,7 @@ class _BaseLogService:
             queue = self._db_queues.setdefault(key, deque())
         if start:
             try:
-                future = loop.run_in_executor(None, func, *args)
+                future = loop.run_in_executor(SQLITE_EXECUTOR, func, *args)
             except BaseException:
                 with self._queue_lock:
                     self._db_queues.pop(key)
@@ -277,7 +278,7 @@ class _BaseLogService:
 
     def _start_db_worker(self, loop, key):
         try:
-            future = loop.run_in_executor(None, self._drain_db_ops, loop, key)
+            future = loop.run_in_executor(SQLITE_EXECUTOR, self._drain_db_ops, loop, key)
         except BaseException as exc:
             with self._queue_lock:
                 pending = self._db_queues.pop(key)
