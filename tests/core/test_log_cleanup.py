@@ -1,6 +1,7 @@
 """_cleanup_expired 单元测试 — 验证日期目录校验和保留天数逻辑"""
 
 import os
+import sqlite3
 import tempfile
 from datetime import datetime, timedelta
 
@@ -123,20 +124,28 @@ class TestCleanupExpired:
             assert not os.path.exists(expired), '过期日期目录未被清理'
 
     @pytest.mark.asyncio
-    async def test_conn_locks_cleaned_up(self):
-        """清理过期目录时应同步清理 _conn_locks"""
+    async def test_pool_connections_cleaned_up(self):
+        """清理过期目录时应关闭读写连接并释放连接池条目。"""
         with tempfile.TemporaryDirectory() as tmpdir:
             svc = _make_service(tmpdir, retention_days=5)
 
             old_date = (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')
-            old_dir = _mkdir(tmpdir, old_date)
-            db_path = os.path.join(old_dir, 'placeholder.db')
+            db_path = svc._resolve_db_path('message', old_date)
+            old_dir = os.path.dirname(db_path)
 
-            # 模拟已有连接锁
-            import threading
+            try:
+                with svc._locked_conn(db_path, 'message') as writer:
+                    writer.execute('SELECT 1')
+                with svc._locked_conn(db_path, 'message', read_only=True) as reader:
+                    reader.execute('SELECT 1')
+                assert db_path in svc._pool.paths()
 
-            svc._conn_locks[db_path] = threading.Lock()
+                await svc._cleanup_expired()
 
-            await svc._cleanup_expired()
-
-            assert db_path not in svc._conn_locks, '_conn_locks 未被清理'
+                assert not os.path.exists(old_dir), '过期目录未被清理'
+                assert db_path not in svc._pool.paths(), '连接池条目未被清理'
+                for conn in (writer, reader):
+                    with pytest.raises(sqlite3.ProgrammingError, match='closed'):
+                        conn.execute('SELECT 1')
+            finally:
+                await svc._shutdown_base()
