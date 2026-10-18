@@ -54,7 +54,7 @@ class ModuleContext(BaseContext):
         return self._hooks.group_lifecycle.api_version
 
     def subscribe_group_lifecycle(self, callback, *, appid=None, timeout=5.0):
-        """Subscribe independently of plugins; automatically removed on unload."""
+        """独立于插件订阅群变化，模块卸载时自动注销。"""
         if self._group_subscriptions_closed:
             raise RuntimeError('module context is unloaded')
         subscription = self._hooks.group_lifecycle.subscribe(callback, owner=self.name, appid=appid, timeout=timeout)

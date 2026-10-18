@@ -185,6 +185,7 @@ class Event:
     """事件数据容器"""
 
     __slots__ = (
+        '_group_lifecycle_scope',
         '_group_lifecycle_prepared',
         '_group_lifecycle_barriers',
         'group_lifecycle_delivery',
@@ -246,6 +247,7 @@ class Event:
     )
 
     def __init__(self):
+        self._group_lifecycle_scope = None
         self._group_lifecycle_prepared = False
         self._group_lifecycle_barriers = ()
         self.group_lifecycle_delivery = None

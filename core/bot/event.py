@@ -292,7 +292,7 @@ class EventHandlerMixin:
         if not bot:
             return
 
-        # Transport normally reserves before scheduling; retain a fallback for adapters.
+        # 内置传输在调度前登记顺序；此处为自定义适配器保留回退。
         self._prepare_event(event)
         await self._hook_manager.group_lifecycle.wait(event)
         et = event.event_type

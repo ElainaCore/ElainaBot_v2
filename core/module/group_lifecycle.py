@@ -1,4 +1,4 @@
-"""Version 1 module notifications for native QQ group lifecycle deliveries."""
+"""模块群生命周期通知：保留 QQ 原生身份的第 1 版接口。"""
 
 import asyncio
 import inspect
@@ -10,9 +10,11 @@ from dataclasses import dataclass
 from uuid import uuid4
 
 from core.base.tasks import spawn
+from core.message.event import GROUP_JOIN_REQUEST, GROUP_MSG_RECEIVE, GROUP_MSG_REJECT, GROUP_TYPES, INTERACTION_CREATE, SUBSCRIBE_MESSAGE_STATUS
 
 GROUP_LIFECYCLE_API_VERSION = 1
 GROUP_LIFECYCLE_TYPES = frozenset({'GROUP_MEMBER_ADD', 'GROUP_MEMBER_REMOVE', 'GROUP_ADD_ROBOT', 'GROUP_DEL_ROBOT'})
+_GROUP_EVENT_TYPES = GROUP_LIFECYCLE_TYPES | GROUP_TYPES | {GROUP_JOIN_REQUEST, GROUP_MSG_RECEIVE, GROUP_MSG_REJECT}
 
 
 def _native_id(value):
@@ -26,7 +28,7 @@ def _consume_task(task):
 
 @dataclass(frozen=True, slots=True)
 class GroupLifecycleEvent:
-    """Native identities only; None means unavailable, never inferred from display IDs."""
+    """仅保留原生身份；缺失为 None，不从显示 ID 推断。"""
 
     delivery_id: str
     appid: str
@@ -54,22 +56,22 @@ class GroupLifecycleResult:
 
 
 class GroupLifecycleDelivery:
-    """A process-local receipt. Waiting is shielded from waiter cancellation."""
+    """进程内投递回执；取消等待者不会取消实际处理。"""
 
-    def __init__(self, event, task):
+    def __init__(self, event, completion):
         self.event = event
-        self._task = task
+        self._completion = completion
 
     @property
     def results(self) -> tuple[GroupLifecycleResult, ...] | None:
-        return self._task.result() if self._task.done() else None
+        return self._completion.result() if self._completion.done() else None
 
     async def wait(self) -> tuple[GroupLifecycleResult, ...]:
-        return await asyncio.shield(self._task)
+        return await asyncio.shield(self._completion)
 
 
 class GroupLifecycleSubscription:
-    """Owned by one module context; history retains the latest 100 results."""
+    """订阅由单个模块上下文拥有，历史保留最近 100 个结果。"""
 
     def __init__(self, manager, callback, owner, appid, timeout):
         self.subscription_id = uuid4().hex
@@ -93,7 +95,7 @@ class GroupLifecycleSubscription:
         return tuple(self._history)
 
     def cancel(self):
-        """Idempotently unsubscribe. In-flight calls report unsubscribed."""
+        """幂等取消订阅；在途调用返回 unsubscribed 结果。"""
         self._close('unsubscribed')
 
     def _close(self, status):
@@ -136,7 +138,7 @@ class GroupLifecycleSubscription:
                         task.cancel()
                     task.add_done_callback(_consume_task)
 
-                    # Keep cancellation-resistant calls visible until they really stop.
+                    # 保留尚未响应取消的调用，直到它真正退出。
                     def release(finished):
                         self._abandoned.discard(finished)
                         if self._running.get(key) is finished:
@@ -148,14 +150,26 @@ class GroupLifecycleSubscription:
         return result
 
 
+@dataclass(slots=True)
+class _PendingDelivery:
+    """队列保留逐事件数据和完成凭据，不为等待中的事件创建任务。"""
+
+    event: GroupLifecycleEvent
+    predecessors: tuple[asyncio.Future, ...]
+    subscribers: tuple[GroupLifecycleSubscription, ...]
+    completion: asyncio.Future
+
+
 class GroupLifecycleManager:
-    """Ingress reservation and notification barriers, scoped to Bot/group."""
+    """按 Bot／群登记接收顺序，并等待通知处理屏障。"""
 
     api_version = GROUP_LIFECYCLE_API_VERSION
 
     def __init__(self):
         self._subscriptions: dict[str, GroupLifecycleSubscription] = {}
-        self._tails: dict[str, dict[str | None, asyncio.Task]] = {}
+        self._tails: dict[str, dict[str | None, asyncio.Future]] = {}
+        self._pending: dict[tuple[str, str | None], deque[_PendingDelivery]] = {}
+        self._drainers: dict[tuple[str, str | None], asyncio.Task] = {}
 
     def subscribe(self, callback: Callable[[GroupLifecycleEvent], Awaitable[None]], *, owner='unknown', appid=None, timeout=5.0):
         if not inspect.iscoroutinefunction(callback):
@@ -167,7 +181,7 @@ class GroupLifecycleManager:
         return subscription
 
     def prepare(self, event, *, transport='internal', session_id=None):
-        """Synchronously reserve before transport schedules concurrent handlers."""
+        """在传输层启动并发处理前，同步登记接收顺序。"""
         if event._group_lifecycle_prepared:
             return
         event._group_lifecycle_prepared = True
@@ -176,10 +190,18 @@ class GroupLifecycleManager:
         data = raw.get('d')
         data = data if isinstance(data, dict) else {}
         native_group = _native_id(data.get('group_openid'))
-        # Compatible group_id adapters may order locally, but never fabricate native identity.
+        group_event = event.event_type in _GROUP_EVENT_TYPES
+        if event.event_type == INTERACTION_CREATE:
+            group_event = event.is_group or data.get('chat_type') == 1 or data.get('scene') == 'group'
+        elif event.event_type == SUBSCRIBE_MESSAGE_STATUS:
+            group_event = bool(native_group or _native_id(event.group_id))
+        if not group_event:
+            return
+        # 兼容 group_id 的适配器可参与本地排序，但不补造原生身份。
         group = native_group if event.event_type in GROUP_LIFECYCLE_TYPES else native_group or _native_id(event.group_id)
         tails = self._tails.get(appid, {})
         predecessors = tuple(tails.values()) if group is None else tuple(task for task in (tails.get(None), tails.get(group)) if task is not None)
+        event._group_lifecycle_scope = (appid, group)
         event._group_lifecycle_barriers = predecessors
         if event.event_type not in GROUP_LIFECYCLE_TYPES:
             return
@@ -202,11 +224,16 @@ class GroupLifecycleManager:
             time.monotonic(),
         )
         subscribers = tuple(s for s in self._subscriptions.values() if s.appid is None or s.appid == appid)
-        task = spawn(self._deliver(notification, predecessors, subscribers))
-        event.group_lifecycle_delivery = GroupLifecycleDelivery(notification, task)
-        event._group_lifecycle_barriers = (*predecessors, task)
+        completion = asyncio.get_running_loop().create_future()
+        event.group_lifecycle_delivery = GroupLifecycleDelivery(notification, completion)
+        event._group_lifecycle_barriers = (*predecessors, completion)
         tails = self._tails.setdefault(appid, {})
-        tails[group] = task
+        tails[group] = completion
+        key = (appid, group)
+        pending = self._pending.setdefault(key, deque())
+        pending.append(_PendingDelivery(notification, predecessors, subscribers, completion))
+        if key not in self._drainers:
+            self._drainers[key] = spawn(self._drain(key, pending))
 
         def release(finished):
             if tails.get(group) is finished:
@@ -214,15 +241,27 @@ class GroupLifecycleManager:
             if not tails and self._tails.get(appid) is tails:
                 self._tails.pop(appid, None)
 
-        task.add_done_callback(release)
+        completion.add_done_callback(release)
 
-    async def _deliver(self, event, predecessors, subscribers):
-        for previous in predecessors:
-            await asyncio.shield(previous)
-        return tuple(await asyncio.gather(*(s._invoke(event) for s in subscribers)))
+    async def _drain(self, key, pending):
+        """每个 Bot／群只运行一个排空任务，队列保持接收顺序。"""
+        try:
+            while pending:
+                item = pending[0]
+                for previous in item.predecessors:
+                    await asyncio.shield(previous)
+                results = tuple(await asyncio.gather(*(s._invoke(item.event) for s in item.subscribers)))
+                item.completion.set_result(results)
+                pending.popleft()
+        finally:
+            # 事件循环关闭时释放未完成凭据，不把中断误报为成功。
+            for item in pending:
+                item.completion.cancel()
+            self._pending.pop(key, None)
+            self._drainers.pop(key, None)
 
     async def wait(self, event):
-        """Wait for known changes before storage, welcome replies or plugin dispatch."""
+        """在记录、欢迎回复及插件分发前，等待已知群变化。"""
         for previous in event._group_lifecycle_barriers:
             await asyncio.shield(previous)
         if event.group_lifecycle_delivery is not None:
