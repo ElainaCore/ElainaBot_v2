@@ -60,6 +60,20 @@ stateDiagram-v2
 `reconnect_exhausted`，启动失败为 `start_failed`。只有 socket 曾建立才报告其实际 `disconnected`；
 建连前失败保持 `unknown`，随后报告重试或耗尽。服务端重连请求原因为 `server_reconnect`，
 正常读取结束为 `socket_eof`，异常为 `connection_error`，无效会话为 `invalid_session`。
+
+`WSClient.connect()` 是返回协程的同步工厂，仍可 `await client.connect()` 或交给 `asyncio.create_task()`；
+依赖 `inspect.iscoroutinefunction(WSClient.connect)` 检测方法类型的集成需要调整。
+调用时记录本次启动请求所属的停机代际；`await client.close()` 使此前已创建但尚未执行的连接协程失效，
+这些协程之后执行时直接返回，不建立 socket，也不发布新状态。停机后重新调用 `connect()` 才是有意重启。
+被替换的客户端永久失去该 Bot/传输的状态来源所有权，排队连接或再次调用 `connect()` 均不能重新注册夺回来源；
+当前替代客户端继续使用自己的代际。已经入队的旧通知仍按下文的身份与顺序规则处理。
+
+重连耗尽只停止该轮接收循环，保留协议恢复参数及与之配对的公开会话身份。
+同一当前客户端之后有意调用 `connect()` 时，会继续尝试 Resume，保持 `session_id`、`session_generation`、
+`bot_generation`，并更换 `connection_generation`、`resume_attempt_id`。这保留耗尽后重试的既有协议行为；
+只有官方链路的有效 RESUMED 才能证明服务端本轮补发结束。主动 `close()` 仍清除协议恢复参数，
+之后有意重启使用 Identify，并在有效 READY 时产生新会话代际。
+
 通知不包含异常消息、凭据或配置快照。
 
 `continuity` 有三个值：

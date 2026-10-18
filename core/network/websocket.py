@@ -84,6 +84,7 @@ class WSClient:
         self._resume_provable = False
         self._resume_max_sequence = None
         self._connect_task = None
+        self._stop_generation = 0
         self._tm = token_manager
         self._on_event = on_event
         self._on_event_received = on_event_received
@@ -113,12 +114,19 @@ class WSClient:
         # 交互事件仍单独走信号量路径，保证 ACK 倒计时不被普通消息队列阻塞。
         self._event_sem = asyncio.Semaphore(_MAX_INFLIGHT_EVENTS)
 
-    async def connect(self):
-        """连接并开始接收事件；同一客户端只允许一个接收循环。"""
+    def connect(self):
+        """返回连接协程；close 使此前创建但尚未执行的连接请求失效。"""
+        return self._connect(self._stop_generation)
+
+    async def _connect(self, stop_generation):
+        if stop_generation != self._stop_generation:
+            return
         if self._connect_task is not None:
             raise RuntimeError('WebSocket client is already connecting')
-        if self._status.stopped:
-            self._status = self.connection_status._register(self._appid, 'websocket', bot_generation=self._status.context.bot_generation)
+        if not self._status.reactivate():
+            return
+        if self._session_id is None:
+            self._status.update_context(session_id=None, session_generation=None, resume_attempt_id=None)
         self._connect_task = asyncio.current_task()
         self._closed = False
         self._ensure_event_workers()
@@ -187,6 +195,7 @@ class WSClient:
             self._connect_task = None
 
     async def close(self, *, reason='local_stop'):
+        self._stop_generation += 1
         self._closed = True
         self._status.publish('stopped', reason=reason)
         connecting = self._connect_task

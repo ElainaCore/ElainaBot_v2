@@ -225,6 +225,14 @@ class _ConnectionReporter:
         self._status = None
         self.stopped = False
 
+    def reactivate(self):
+        """仅当前来源可重启，并保留与协议恢复参数配对的会话身份。"""
+        key = (self.context.appid, self.context.transport)
+        if self._manager._sources.get(key) is not self:
+            return False
+        self.stopped = False
+        return True
+
     def new_session(self, session_id):
         """同一 Bot 实例替换 WSClient 后仍能区分后续新会话。"""
         appid = self.context.appid
