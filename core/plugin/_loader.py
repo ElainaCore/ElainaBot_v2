@@ -114,9 +114,12 @@ class _LoaderMixin:
             get_logger(PLUGIN, name).error(f'[{name}]插件所在目录不存在: {plugin_dir}')
             return
         py_files = self._list_py_files(plugin_dir)
-        py_files = [p for p in py_files if f'{name}/{os.path.basename(p)[:-3]}' not in self._disabled_plugins]
         if not py_files:
             get_logger(PLUGIN, name).error(f'[{name}]插件所在目录中无可用 .py 文件: {plugin_dir}')
+            return
+        py_files = [p for p in py_files if f'{name}/{os.path.basename(p)[:-3]}' not in self._disabled_plugins]
+        if not py_files:
+            await self.unload(name)
             return
         async with self._lock:
             if name in self._plugins:

@@ -11,6 +11,7 @@ from aiohttp import BodyPartReader, web
 
 from web.tools._plugin_mgr.shared import (
     create_backup_archive,
+    find_entry,
     get_pm,
     log,
     plugins_dir,
@@ -65,7 +66,11 @@ async def handle_toggle_plugin(request: web.Request):
             elif action == 'disable' and name in pm.plugins:
                 await pm.unload(name)
         else:
-            if name in pm.plugins:
+            if name in pm.plugins or (
+                action == 'enable'
+                and not pm.is_plugin_disabled(name)
+                and not find_entry(os.path.join(plugins_dir(), name))
+            ):
                 await pm.reload(name)
         label = '已启用' if action == 'enable' else '已禁用'
         return web.json_response({'success': True, 'message': f'{key} {label}', 'plugin_name': name})
