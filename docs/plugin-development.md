@@ -43,6 +43,7 @@
 - [7. Web 面板扩展](#7-web-面板扩展)
 - [8. Image Hosting 模块](#8-image-hosting-模块)
 - [9. 模块群生命周期订阅](#9-模块群生命周期订阅)
+- [10. 模块连接与会话状态](#10-模块连接与会话状态)
 - [9. 调试与运行限制](#9-调试与运行限制)
 - [10. 参考实现](#10-参考实现)
 
@@ -1342,3 +1343,12 @@ except Exception as error:
 独立于插件匹配和过滤，并获取可关联的处理结果。原有插件 `event_types` 保持现有行为。
 接口版本、原生身份、前置调度顺序、取消/卸载与完成语义见
 [模块群生命周期订阅](module-group-lifecycle.md)。
+
+
+## 10. 模块连接与会话状态
+
+模块可通过 `subscribe_connection_status()` 订阅连接事实，并通过 `get_connection_status()`、
+`get_connection_capabilities()` 查询不可变状态与传输能力。API 版本为 `connection_status_api_version == 1`。
+官方 WS 的 RESUMED 只说明服务端本轮补发结束，本地模块完成保证需要另行关联处理回执。
+Bot/连接/会话代际、事件上下文、Webhook 与自定义网关限制、订阅顺序和错误语义见
+[模块连接与会话状态](module-connection-status.md)。

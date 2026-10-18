@@ -71,6 +71,9 @@ class WebhookHandler:
 
         try:
             event = Event.from_webhook({**headers, 'X-Bot-Appid': appid}, body)
+            observe = getattr(bot, 'observe_webhook', None)
+            if observe is not None:
+                event.connection_context = observe(body.get('s'))
             if self._on_event_received is not None:
                 self._on_event_received(event, transport='webhook')
             if is_interaction:

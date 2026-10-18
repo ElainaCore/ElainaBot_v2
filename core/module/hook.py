@@ -4,6 +4,7 @@ import asyncio
 from collections import defaultdict
 
 from core.base.logger import FRAMEWORK, get_logger
+from core.module.connection_status import ConnectionStatusManager
 from core.module.group_lifecycle import GroupLifecycleManager
 
 log = get_logger(FRAMEWORK, 'Hook')
@@ -21,10 +22,11 @@ def _make_callback(cb, args, kwargs):
 class HookManager:
     """通用 Hook 管理器 (全局单例, 任意字符串作为 hook 名称)"""
 
-    __slots__ = ('_hooks', '_sorted', 'group_lifecycle')
+    __slots__ = ('_hooks', '_sorted', 'group_lifecycle', 'connection_status')
 
     def __init__(self):
         self.group_lifecycle = GroupLifecycleManager()
+        self.connection_status = ConnectionStatusManager()
         self._hooks = defaultdict(list)  # {name: [(pri, owner, cb, is_coro)]}
         self._sorted = {}
 

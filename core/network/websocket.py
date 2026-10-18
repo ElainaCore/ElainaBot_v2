@@ -6,12 +6,15 @@ import json
 import platform as _platform
 import ssl as _ssl_mod
 from collections import deque
+from urllib.parse import urlsplit
+from uuid import uuid4
 
 import websockets
 
 from core.base.logger import SERVICE, get_logger
 from core.base.tasks import spawn
 from core.message.event import Event
+from core.module.connection_status import ConnectionCapabilities, ConnectionStatusManager
 
 log = get_logger(SERVICE, 'WebSocket')
 
@@ -60,6 +63,8 @@ class WSClient:
         *,
         ack_interaction,
         on_event_received=None,
+        connection_status=None,
+        bot_generation=None,
         reconnect_interval=5,
         max_reconnects=-1,
         custom_url='',
@@ -67,6 +72,18 @@ class WSClient:
         subscribe_channel_events=False,
     ):
         self._appid = str(appid)
+        self.connection_status = connection_status if connection_status is not None else ConnectionStatusManager()
+        self._status = self.connection_status._register(self._appid, 'websocket', bot_generation=bot_generation)
+        self._login_kind = None
+        self._auth_mode = None
+        self._ready_seen = False
+        self._resumed_seen = False
+        self._receive_index = 0
+        self._resume_pending = False
+        self._resume_from_sequence = None
+        self._resume_provable = False
+        self._resume_max_sequence = None
+        self._connect_task = None
         self._tm = token_manager
         self._on_event = on_event
         self._on_event_received = on_event_received
@@ -97,34 +114,87 @@ class WSClient:
         self._event_sem = asyncio.Semaphore(_MAX_INFLIGHT_EVENTS)
 
     async def connect(self):
-        """连接并开始接收事件"""
+        """连接并开始接收事件；同一客户端只允许一个接收循环。"""
+        if self._connect_task is not None:
+            raise RuntimeError('WebSocket client is already connecting')
+        if self._status.stopped:
+            self._status = self.connection_status._register(self._appid, 'websocket', bot_generation=self._status.context.bot_generation)
+        self._connect_task = asyncio.current_task()
         self._closed = False
         self._ensure_event_workers()
-        while not self._closed:
-            try:
-                url = await self._get_gateway_url()
-                log.info(f'[{self._appid}] 正在连接 WebSocket: {url}')
-                _ssl = _ssl_mod.create_default_context() if url.startswith('wss://') else None
-                ua = build_user_agent(self._client_name)
-                kw = {'ssl': _ssl, 'additional_headers': {'User-Agent': ua}}
-                async with websockets.connect(url, **kw) as ws:
-                    self._ws = ws
-                    self._reconnect_count = 0
-                    await self._handle_connection()
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
+        try:
+            while not self._closed:
+                opened, failed = False, False
+                reason = 'socket_eof'
+                self._status.update_context(connection_generation=uuid4().hex, resume_attempt_id=None)
+                self._status.publish('connecting', reason='connect_attempt')
+                try:
+                    url = await self._get_gateway_url()
+                    parsed = urlsplit(url)
+                    official = (
+                        not self._custom_url
+                        and self._tm.api_base in {'https://api.bot.qq.com', 'https://api.sgroup.qq.com'}
+                        and parsed.scheme == 'wss'
+                        and parsed.hostname in {'api.bot.qq.com', 'api.sgroup.qq.com'}
+                        and parsed.port in (None, 443)
+                        and parsed.username is None
+                    )
+                    self._status.capabilities = ConnectionCapabilities(True, official, official, 'qq_official_ws' if official else 'unverified_gateway')
+                    log.info(f'[{self._appid}] 正在连接 WebSocket: {url}')
+                    _ssl = _ssl_mod.create_default_context() if url.startswith('wss://') else None
+                    ua = build_user_agent(self._client_name)
+                    kw = {'ssl': _ssl, 'additional_headers': {'User-Agent': ua}}
+                    async with websockets.connect(url, **kw) as ws:
+                        self._ws = ws
+                        opened = True
+                        self._auth_mode = None
+                        self._ready_seen = False
+                        self._resumed_seen = False
+                        self._status.publish('connected', reason='socket_open')
+                        self._reconnect_count = 0
+                        reason = await self._handle_connection()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    if self._closed:
+                        break
+                    failed = True
+                    reason = 'connection_error'
+                    self._reconnect_count += 1
+                    log.warning(f'[{self._appid}] 连接断开: {e}, {self._reconnect_interval}s 后重连 ({self._reconnect_count})')
+                finally:
+                    self._ws = None
+                    if self._heartbeat_task and not self._heartbeat_task.done():
+                        self._heartbeat_task.cancel()
                 if self._closed:
                     break
-                self._reconnect_count += 1
-                if 0 < self._max_reconnects <= self._reconnect_count:
+                if self._resume_pending:
+                    self._status.publish('resume_failed', reason=reason)
+                    self._resume_pending = False
+                self._status.publish('disconnected' if opened else 'unknown', reason=reason)
+                if failed and 0 < self._max_reconnects <= self._reconnect_count:
                     log.error(f'[{self._appid}] 达到最大重连次数 {self._max_reconnects}')
+                    self._status.publish('stopped', reason='reconnect_exhausted')
                     break
-                log.warning(f'[{self._appid}] 连接断开: {e}, {self._reconnect_interval}s 后重连 ({self._reconnect_count})')
-                await asyncio.sleep(self._reconnect_interval)
+                self._status.publish('reconnecting', reason=reason)
+                if failed:
+                    await asyncio.sleep(self._reconnect_interval)
+        except asyncio.CancelledError:
+            if not self._closed:
+                await self.close(reason='connect_cancelled')
+            raise
+        finally:
+            self._connect_task = None
 
-    async def close(self):
+    async def close(self, *, reason='local_stop'):
         self._closed = True
+        self._status.publish('stopped', reason=reason)
+        connecting = self._connect_task
+        if connecting is not None and connecting is not asyncio.current_task():
+            connecting.cancel()
+        self._session_id = None
+        self._seq = None
+        self._resume_pending = False
         if self._heartbeat_task and not self._heartbeat_task.done():
             self._heartbeat_task.cancel()
         workers, self._event_workers = self._event_workers, []
@@ -151,6 +221,8 @@ class WSClient:
             self._event_queue.task_done()
         if self._ws:
             await self._ws.close()
+        if connecting is not None and connecting is not asyncio.current_task():
+            await asyncio.gather(connecting, return_exceptions=True)
 
     def _ensure_event_workers(self):
         if any(not worker.done() for worker in self._event_workers):
@@ -201,12 +273,29 @@ class WSClient:
 
     async def _handle_connection(self):
         """处理 WS 消息循环"""
-        async for message in self._ws:
+        ws = self._ws
+        async for message in ws:
+            if self._closed or self._ws is not ws:
+                return 'stale_connection'
             try:
                 payload = json.loads(message)
             except json.JSONDecodeError:
+                self._resume_provable = False
+                self._status.publish('unknown', reason='invalid_payload')
                 continue
+            if not isinstance(payload, dict):
+                self._resume_provable = False
+                self._status.publish('unknown', reason='invalid_payload')
+                continue
+            self._receive_index += 1
+            sequence = payload.get('s')
+            self._status.update_context(receive_index=self._receive_index, sequence=sequence if type(sequence) is int else None)
             op = payload.get('op')
+            if self._resume_pending and op == _OP_DISPATCH:
+                if type(sequence) is not int or sequence < self._resume_max_sequence:
+                    self._resume_provable = False
+                else:
+                    self._resume_max_sequence = sequence
             if payload.get('s') is not None:
                 self._seq = payload['s']
             if op == _OP_HELLO:
@@ -217,8 +306,10 @@ class WSClient:
                 pass
             elif op == _OP_RECONNECT:
                 log.info(f'[{self._appid}] 收到重连请求')
-                break
+                return 'server_reconnect'
             elif op == _OP_INVALID_SESSION:
+                self._status.publish('resume_failed' if self._auth_mode == 'resume' else 'unknown', reason='invalid_session')
+                self._resume_pending = False
                 resumable = payload.get('d', False) and self._session_id
                 if not resumable:
                     log.warning(f'[{self._appid}] 会话无效, 重新鉴权')
@@ -228,7 +319,8 @@ class WSClient:
                     log.warning(f'[{self._appid}] 会话无效但可恢复')
                 self._gateway_url = None
                 await asyncio.sleep(3)
-                break
+                return 'invalid_session'
+        return 'socket_eof'
 
     async def _on_hello(self, payload):
         """Hello → 启动心跳 + 鉴权/恢复"""
@@ -239,6 +331,9 @@ class WSClient:
         if self._session_id and self._seq is not None:
             await self._send_resume()
         else:
+            self._auth_mode = 'identify'
+            self._status.update_context(session_id=None, session_generation=None, resume_attempt_id=None)
+            self._status.publish('identifying', reason='identify')
             await self._send_identify()
 
     async def _on_dispatch(self, payload):
@@ -247,14 +342,49 @@ class WSClient:
             return
         event_type = payload.get('t', '')
         if event_type == 'READY':
-            self._session_id = payload.get('d', {}).get('session_id')
+            if self._ready_seen:
+                return
+            if self._auth_mode != 'identify':
+                self._resume_pending = False
+                self._status.publish('unknown', reason='unexpected_ready')
+                return
+            data = payload.get('d')
+            session_id = data.get('session_id') if isinstance(data, dict) else None
+            if not isinstance(session_id, str) or not session_id:
+                self._status.publish('unknown', reason='invalid_ready')
+                return
+            self._ready_seen = True
+            self._session_id = session_id
+            self._login_kind = self._status.new_session(session_id)
+            self._status.publish('ready', reason='ready', login_kind=self._login_kind)
             log.info(f'[{self._appid}] WebSocket 已就绪 (session={self._session_id})')
             return
         if event_type == 'RESUMED':
+            if self._resumed_seen:
+                return
+            self._resumed_seen = True
+            if not self._resume_pending or self._auth_mode != 'resume':
+                self._status.publish('unknown', reason='unexpected_resumed')
+                return
+            self._resume_pending = False
+            sequence = payload.get('s')
+            if not self._resume_provable or type(sequence) is not int or sequence < self._resume_from_sequence:
+                self._status.publish('unknown', reason='unproven_resumed', login_kind='resume')
+                return
+            self._status.publish(
+                'replay_complete',
+                reason='resumed',
+                continuity='resumed',
+                login_kind='resume',
+                resume_from_sequence=self._resume_from_sequence,
+                replay_end_sequence=sequence,
+                replay_end_receive_index=self._receive_index,
+            )
             log.info(f'[{self._appid}] 会话已恢复')
             return
         try:
             event = Event.from_websocket(self._appid, payload)
+            event.connection_context = self._status.context
             if self._on_event_received is not None:
                 self._on_event_received(event, transport='websocket', session_id=self._session_id)
             log.debug(f'[{self._appid}] WS事件: {event}')
@@ -313,6 +443,21 @@ class WSClient:
 
     async def _send_resume(self):
         token = await self._tm.get_token()
+        self._auth_mode = 'resume'
+        self._resume_pending = True
+        self._resume_from_sequence = self._seq
+        self._resume_provable = (
+            self._status.capabilities.replay_boundary and self._status.context.session_generation is not None and type(self._seq) is int and self._seq >= 0
+        )
+        self._resume_max_sequence = self._seq if type(self._seq) is int else -1
+        self._status.update_context(resume_attempt_id=uuid4().hex)
+        self._status.publish(
+            'resuming',
+            reason='resume',
+            continuity='pending' if self._resume_provable else 'unknown',
+            login_kind='resume',
+            resume_from_sequence=self._seq,
+        )
         await self._send_op(
             _OP_RESUME,
             {

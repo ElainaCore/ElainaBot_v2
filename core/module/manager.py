@@ -37,13 +37,14 @@ _DEFAULT_MANIFEST = {
 class ModuleContext(BaseContext):
     """模块上下文 — 继承 BaseContext, 额外提供 Hook 注册"""
 
-    __slots__ = ('_hooks', '_group_subscriptions', '_group_subscriptions_closed')
+    __slots__ = ('_hooks', '_group_subscriptions', '_subscriptions_closed', '_connection_subscriptions')
 
     def __init__(self, name, module_dir, hook_manager):
         super().__init__(name, module_dir, EXTENSION)
         self._hooks = hook_manager
         self._group_subscriptions = WeakSet()
-        self._group_subscriptions_closed = False
+        self._connection_subscriptions = WeakSet()
+        self._subscriptions_closed = False
 
     @property
     def module_dir(self):
@@ -55,17 +56,49 @@ class ModuleContext(BaseContext):
 
     def subscribe_group_lifecycle(self, callback, *, appid=None, timeout=5.0):
         """独立于插件订阅群变化，模块卸载时自动注销。"""
-        if self._group_subscriptions_closed:
+        if self._subscriptions_closed:
             raise RuntimeError('module context is unloaded')
         subscription = self._hooks.group_lifecycle.subscribe(callback, owner=self.name, appid=appid, timeout=timeout)
         self._group_subscriptions.add(subscription)
         return subscription
 
-    def _close_group_subscriptions(self):
-        self._group_subscriptions_closed = True
+    @property
+    def connection_status_api_version(self):
+        return self._hooks.connection_status.api_version
+
+    @property
+    def connection_statuses(self):
+        return self._hooks.connection_status.statuses
+
+    def get_connection_status(self, appid, *, transport='websocket'):
+        return self._hooks.connection_status.get(appid, transport=transport)
+
+    def get_connection_capabilities(self, appid, *, transport='websocket'):
+        return self._hooks.connection_status.capabilities(appid, transport=transport)
+
+    def subscribe_connection_status(self, callback, *, appid=None, transport=None, timeout=5.0, replay_current=True):
+        """订阅连接事实，回调结果不构成本地恢复完成凭证。"""
+        if self._subscriptions_closed:
+            raise RuntimeError('module context is unloaded')
+        subscription = self._hooks.connection_status.subscribe(
+            callback,
+            owner=self.name,
+            appid=appid,
+            transport=transport,
+            timeout=timeout,
+            replay_current=replay_current,
+        )
+        self._connection_subscriptions.add(subscription)
+        return subscription
+
+    def _close_subscriptions(self):
+        self._subscriptions_closed = True
         for subscription in self._group_subscriptions:
             subscription._close('unloaded')
         self._group_subscriptions.clear()
+        for subscription in self._connection_subscriptions:
+            subscription._close('unloaded')
+        self._connection_subscriptions.clear()
 
     # ---------- Hook ----------
 
@@ -241,7 +274,7 @@ class ModuleManager:
                 try:
                     result = await _await_if_coro(setup_fn(ctx)) if setup_fn else None
                 except BaseException:
-                    ctx._close_group_subscriptions()
+                    ctx._close_subscriptions()
                     raise
                 info.instance = result if result is not None else True
                 info.error = None
@@ -262,7 +295,7 @@ class ModuleManager:
                 if _persist:
                     self.set_module_enabled_persist(name, False)
                 return False
-            info.ctx._close_group_subscriptions()
+            info.ctx._close_subscriptions()
             try:
                 teardown_fn = getattr(info.module, 'teardown', None)
                 if teardown_fn:
