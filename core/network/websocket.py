@@ -299,14 +299,17 @@ class WSClient:
             self._receive_index += 1
             sequence = payload.get('s')
             self._status.update_context(receive_index=self._receive_index, sequence=sequence if type(sequence) is int else None)
+            if payload.get('s') is not None:
+                self._seq = payload['s']
             op = payload.get('op')
+            if type(op) is not int:
+                self._status.publish('unknown', reason='invalid_opcode')
+                continue
             if self._resume_pending and op == _OP_DISPATCH:
                 if type(sequence) is not int or sequence < self._resume_max_sequence:
                     self._resume_provable = False
                 else:
                     self._resume_max_sequence = sequence
-            if payload.get('s') is not None:
-                self._seq = payload['s']
             if op == _OP_HELLO:
                 await self._on_hello(payload)
             elif op == _OP_DISPATCH:
@@ -329,6 +332,8 @@ class WSClient:
                 self._gateway_url = None
                 await asyncio.sleep(3)
                 return 'invalid_session'
+            else:
+                self._status.publish('unknown', reason='unknown_opcode')
         return 'socket_eof'
 
     async def _on_hello(self, payload):

@@ -95,6 +95,12 @@ stateDiagram-v2
 报告 `unknown` / `unexpected_hello`，并使该轮恢复证明失效；后续 RESUMED 保持 `unknown`。
 新的 socket 仍按正常 Hello 流程重新尝试恢复。
 
+收到框架未支持或未识别的整数 opcode 时，报告 `unknown` / `unknown_opcode`；
+缺失 `op` 或其类型不是整数时，报告 `unknown` / `invalid_opcode`，布尔值和浮点数也不作为整数操作码处理。
+这些帧仍按既有规则更新接收序号，但不会触发已知协议操作，也不推断丢事件或重新启动鉴权。
+通知保留当前会话及恢复轮次；这些帧本身不会撤销该轮后续有效 RESUMED 的证明资格，
+新的 socket 也仍可正常尝试恢复。已有其他异常导致该轮无法证明时，仍保持原有保守规则。
+
 ## 身份、接收上下文与补发边界
 
 `ConnectionStatus.context`、内置传输的 `Event.connection_context` 以及
