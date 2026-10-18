@@ -268,6 +268,7 @@ class Application(EventHandlerMixin):
         self._bot_registry = BotRegistry(
             log_base=log_base,
             on_event=self._on_event,
+            on_event_received=self._prepare_event,
             push_web_log=self._push_web_log,
             media_dir=self._media_dir,
         )
@@ -424,6 +425,7 @@ class Application(EventHandlerMixin):
         handler = WebhookHandler(
             bot_registry=self._bot_registry,
             on_event=self._on_event,
+            on_event_received=self._prepare_event,
         )
         return await handler.handle(request)
 
