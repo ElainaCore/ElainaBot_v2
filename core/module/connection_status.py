@@ -137,7 +137,10 @@ class ConnectionStatusSubscription:
         previous = self._running.get(key)
         if previous is not None and not previous.done():
             return 'busy', None
-        task = asyncio.create_task(self._callback(status))
+        try:
+            task = asyncio.create_task(self._callback(status))
+        except Exception as invocation_error:
+            return 'error', type(invocation_error).__name__
         self._running[key] = task
         closed = asyncio.create_task(self._closed.wait())
         try:

@@ -91,6 +91,9 @@ stateDiagram-v2
 同一连接中重复 READY/RESUMED 不重复创建会话或补发结束边界；未请求的 RESUMED、
 缺失/非法 READY 身份、缺失/非法或倒退的补发序号均保持 `unknown`。收到无法解析的载荷为 `invalid_payload`，该轮恢复不授予连续性证明。
 只有一次有效 Resume 对应的首个 RESUMED 可建立边界，不能把迟到的状态当作新一轮恢复。
+同一 socket 首次 Hello 已选择 Identify/Resume 后，重复 Hello 不再发送鉴权帧或更换恢复轮次，
+报告 `unknown` / `unexpected_hello`，并使该轮恢复证明失效；后续 RESUMED 保持 `unknown`。
+新的 socket 仍按正常 Hello 流程重新尝试恢复。
 
 ## 身份、接收上下文与补发边界
 
@@ -147,7 +150,7 @@ Bot/传输过滤参数为 `None` 时匹配全部；默认 `replay_current=True` 
 | outcome | 含义 |
 | --- | --- |
 | `success` | 该次 await 的回调正常返回 |
-| `error` | 该回调抛出异常，error_type 为类型名 |
+| `error` | 调用或 await 该回调时抛出异常（含参数绑定错误），error_type 为类型名 |
 | `timeout` | 该回调超时，已请求取消 |
 | `cancelled` | 回调自身取消 |
 | `unsubscribed` / `unloaded` | 手动取消 / 模块卸载，包含已排队及在途通知 |

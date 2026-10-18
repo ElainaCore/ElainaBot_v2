@@ -333,6 +333,10 @@ class WSClient:
 
     async def _on_hello(self, payload):
         """Hello → 启动心跳 + 鉴权/恢复"""
+        if self._auth_mode is not None:
+            self._resume_provable = False
+            self._status.publish('unknown', reason='unexpected_hello')
+            return
         self._heartbeat_interval = payload.get('d', {}).get('heartbeat_interval', 45000) / 1000
         if self._heartbeat_task and not self._heartbeat_task.done():
             self._heartbeat_task.cancel()
