@@ -36,9 +36,10 @@ def _finish_interaction(event, task):
 class WebhookHandler:
     """处理 QQ Bot webhook 回调: 签名验证 → 事件构造 → 分发"""
 
-    def __init__(self, bot_registry, on_event, on_error=None):
+    def __init__(self, bot_registry, on_event, on_error=None, *, on_event_received=None):
         self._bot_registry = bot_registry
         self._on_event = on_event
+        self._on_event_received = on_event_received
         self._on_error = on_error or _log_webhook_error
 
     async def handle(self, request: web.Request) -> web.Response:
@@ -69,7 +70,9 @@ class WebhookHandler:
         is_interaction = body.get('t') == 'INTERACTION_CREATE'
 
         try:
-            event = Event.from_webhook(headers, body)
+            event = Event.from_webhook({**headers, 'X-Bot-Appid': appid}, body)
+            if self._on_event_received is not None:
+                self._on_event_received(event, transport='webhook')
             if is_interaction:
                 # 启动 ACK 倒计时, 分发结束后用插件设置的 code 兜底/返回
                 event.start_ack_countdown()

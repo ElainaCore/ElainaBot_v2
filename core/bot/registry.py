@@ -16,10 +16,11 @@ log = logging.getLogger('ElainaBot.registry')
 class BotRegistry:
     """管理多个 BotInstance 的生命周期和配置热重载"""
 
-    def __init__(self, log_base: str, on_event=None, push_web_log=None, media_dir=''):
+    def __init__(self, log_base: str, on_event=None, push_web_log=None, media_dir='', *, on_event_received=None):
         self._bots: dict[str, object] = {}  # {appid: BotInstance}
         self._log_base = log_base
         self._on_event = on_event
+        self._on_event_received = on_event_received
         self._push_web_log = push_web_log or (lambda t, e: None)
         self._media_dir = media_dir
         self._loop = None
@@ -65,7 +66,7 @@ class BotRegistry:
             if self._loop is None:
                 self._loop = asyncio.get_running_loop()
             instance = BotInstance(bot_cfg, self._log_base)
-            await instance.start(self._on_event)
+            await instance.start(self._on_event, on_event_received=self._on_event_received)
             if self._media_dir:
                 instance.sender.bind_instance(media_dir=self._media_dir)
             if self._sender_log_cb:
@@ -84,6 +85,7 @@ class BotRegistry:
             appid=appid,
             token_manager=bot.token_manager,
             on_event=self._on_event,
+            on_event_received=self._on_event_received,
             ack_interaction=bot.sender.ack_interaction,
             reconnect_interval=ws_cfg.get('reconnect_interval', 5),
             max_reconnects=ws_cfg.get('max_reconnects', -1),

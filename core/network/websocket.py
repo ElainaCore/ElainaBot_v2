@@ -58,6 +58,7 @@ class WSClient:
         on_event,
         *,
         ack_interaction,
+        on_event_received=None,
         reconnect_interval=5,
         max_reconnects=-1,
         custom_url='',
@@ -67,6 +68,7 @@ class WSClient:
         self._appid = str(appid)
         self._tm = token_manager
         self._on_event = on_event
+        self._on_event_received = on_event_received
         self._ack_interaction = ack_interaction
         self._reconnect_interval = reconnect_interval
         self._max_reconnects = max_reconnects
@@ -87,6 +89,8 @@ class WSClient:
         # 固定 worker 消化事件，避免每条事件创建一个等待信号量的 Task。
         self._event_queue = asyncio.Queue()
         self._event_workers = []
+        self._deferred_events = {}
+        self._deferred_tasks = set()
         # 交互事件仍单独走信号量路径，保证 ACK 倒计时不被普通消息队列阻塞。
         self._event_sem = asyncio.Semaphore(_MAX_INFLIGHT_EVENTS)
 
@@ -126,6 +130,11 @@ class WSClient:
             worker.cancel()
         if workers:
             await asyncio.gather(*workers, return_exceptions=True)
+        deferred = tuple(self._deferred_tasks)
+        for task in deferred:
+            task.cancel()
+        if deferred:
+            await asyncio.gather(*deferred, return_exceptions=True)
         if self._ws:
             await self._ws.close()
 
@@ -140,12 +149,40 @@ class WSClient:
     async def _event_worker(self):
         while True:
             event = await self._event_queue.get()
+            if self._defer_event(event):
+                continue
             try:
                 await self._on_event(event)
             except Exception as e:
                 log.error(f'[{self._appid}] 事件回调异常: {e}')
             finally:
                 self._event_queue.task_done()
+
+    def _defer_event(self, event):
+        # Waiting for a group barrier must not occupy all fixed workers.
+        barriers = tuple(task for task in event._group_lifecycle_barriers if not task.done())
+        if not barriers:
+            return False
+        waiting = self._deferred_events.get(barriers)
+        if waiting is None:
+            waiting = self._deferred_events[barriers] = []
+            task = spawn(self._resume_deferred(barriers, waiting))
+            self._deferred_tasks.add(task)
+            task.add_done_callback(self._deferred_tasks.discard)
+        waiting.append(event)
+        return True
+
+    async def _resume_deferred(self, barriers, waiting):
+        try:
+            for barrier in barriers:
+                await asyncio.shield(barrier)
+            for event in waiting:
+                self._event_queue.put_nowait(event)
+        finally:
+            # Balance the original queue entries, including cancellation at close.
+            for _ in waiting:
+                self._event_queue.task_done()
+            self._deferred_events.pop(barriers, None)
 
     async def _handle_connection(self):
         """处理 WS 消息循环"""
@@ -201,6 +238,8 @@ class WSClient:
             return
         try:
             event = Event.from_websocket(self._appid, payload)
+            if self._on_event_received is not None:
+                self._on_event_received(event, transport='websocket', session_id=self._session_id)
             log.debug(f'[{self._appid}] WS事件: {event}')
             if event_type == 'INTERACTION_CREATE':
                 # 分发插件后用其 code 回复交互回调 (独立任务等待, 不阻塞读取循环)

@@ -63,7 +63,7 @@ class BotInstance:
         self.avatar_url = ''
         self.union_openid = ''
 
-    async def start(self, on_event):
+    async def start(self, on_event, *, on_event_received=None):
         """启动机器人: Token + 日志 + WS(可选)"""
         bot_log = get_logger(FRAMEWORK, self.name)
         bot_log.info(f'正在启动 (appid={self.appid})')
@@ -82,6 +82,7 @@ class BotInstance:
                 appid=self.appid,
                 token_manager=self.token_manager,
                 on_event=on_event,
+                on_event_received=on_event_received,
                 ack_interaction=self.sender.ack_interaction,
                 reconnect_interval=ws_cfg.get('reconnect_interval', 5),
                 max_reconnects=ws_cfg.get('max_reconnects', -1),

@@ -282,12 +282,19 @@ class EventHandlerMixin:
 
     # ==================== 事件入口 ====================
 
+    def _prepare_event(self, event, *, transport='internal', session_id=None):
+        if event.appid in self._bots:
+            self._hook_manager.group_lifecycle.prepare(event, transport=transport, session_id=session_id)
+
     async def _on_event(self, event):
         appid = event.appid
         bot = self._bots.get(appid)
         if not bot:
             return
 
+        # Transport normally reserves before scheduling; retain a fallback for adapters.
+        self._prepare_event(event)
+        await self._hook_manager.group_lifecycle.wait(event)
         et = event.event_type
 
         # 去重

@@ -42,6 +42,7 @@
   - [6.7 返回值与错误处理](#67-返回值与错误处理)
 - [7. Web 面板扩展](#7-web-面板扩展)
 - [8. Image Hosting 模块](#8-image-hosting-模块)
+- [9. 模块群生命周期订阅](#9-模块群生命周期订阅)
 - [9. 调试与运行限制](#9-调试与运行限制)
 - [10. 参考实现](#10-参考实现)
 
@@ -1333,3 +1334,11 @@ except Exception as error:
 | [docs/image-hosting.md](image-hosting.md) | 统一图床完整 API 与配置 |
 
 插件可以在 Web 面板的“插件”页面启用、禁用或重载；禁用状态保存在 `data/plugins_disabled.json`。
+
+
+## 9. 模块群生命周期订阅
+
+模块可通过 `ModuleContext.subscribe_group_lifecycle()` 观察成员加入/退出及 Bot 加入/移出群，
+独立于插件匹配和过滤，并获取可关联的处理结果。原有插件 `event_types` 保持现有行为。
+接口版本、原生身份、前置调度顺序、取消/卸载与完成语义见
+[模块群生命周期订阅](module-group-lifecycle.md)。
