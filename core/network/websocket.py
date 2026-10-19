@@ -127,9 +127,23 @@ class WSClient:
             return
         if self._session_id is None:
             self._status.update_context(session_id=None, session_generation=None, resume_attempt_id=None)
-        self._connect_task = asyncio.current_task()
         self._closed = False
         self._ensure_event_workers()
+        # close 只取消客户端拥有的连接循环，不取消 await connect() 的调用者。
+        connecting = self._connect_task = asyncio.create_task(self._run_connection())
+        try:
+            await connecting
+        except asyncio.CancelledError:
+            # 主动关闭允许调用者正常继续；调用者自身的取消仍须向外传播。
+            if stop_generation == self._stop_generation:
+                # 连接循环尚未开始就被取消时，其 finally 不会运行。
+                if self._connect_task is connecting:
+                    await self.close(reason='connect_cancelled')
+                raise
+            if asyncio.current_task().cancelling():
+                raise
+
+    async def _run_connection(self):
         try:
             while not self._closed:
                 opened, failed = False, False
@@ -232,6 +246,8 @@ class WSClient:
             await self._ws.close()
         if connecting is not None and connecting is not asyncio.current_task():
             await asyncio.gather(connecting, return_exceptions=True)
+            if self._connect_task is connecting:
+                self._connect_task = None
 
     def _ensure_event_workers(self):
         if any(not worker.done() for worker in self._event_workers):
