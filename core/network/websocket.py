@@ -483,7 +483,7 @@ class WSClient:
         token = await self._tm.get_token()
         self._auth_mode = 'resume'
         self._resume_pending = True
-        self._resume_from_sequence = self._seq
+        self._resume_from_sequence = self._seq if type(self._seq) is int else None
         self._resume_provable = (
             self._status.capabilities.replay_boundary and self._status.context.session_generation is not None and type(self._seq) is int and self._seq >= 0
         )
@@ -494,7 +494,7 @@ class WSClient:
             reason='resume',
             continuity='pending' if self._resume_provable else 'unknown',
             login_kind='resume',
-            resume_from_sequence=self._seq,
+            resume_from_sequence=self._resume_from_sequence,
         )
         await self._send_op(
             _OP_RESUME,

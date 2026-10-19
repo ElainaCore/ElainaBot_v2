@@ -124,7 +124,7 @@ stateDiagram-v2
 
 `ConnectionStatus` 还提供进程内递增的 `revision`、`phase`、`reason`、`capabilities`，以及：
 
-- `resume_from_sequence`：本轮 Resume 实际发送的 seq。
+- `resume_from_sequence`：本轮 Resume 实际发送的整数 seq；原始 seq 不是整数（含布尔值）时为 `None`，不公开原始对象，也不授予连续性证明。
 - `replay_end_sequence`：可靠 RESUMED 的实际 s。
 - `replay_end_receive_index`：本轮 RESUMED 的固定接收位置，后续收到帧也不会改写此边界。
 
