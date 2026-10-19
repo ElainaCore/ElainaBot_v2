@@ -276,11 +276,13 @@ class WSClient:
         scope = event._group_lifecycle_scope
         waiting = self._deferred_events.get(scope)
         if waiting is None:
-            waiting = self._deferred_events[scope] = deque()
+            # eager 工厂可能立即开始排空，创建任务前先保存首条事件。
+            waiting = self._deferred_events[scope] = deque([event])
             task = spawn(self._resume_deferred(scope, waiting))
             self._deferred_tasks.add(task)
             task.add_done_callback(self._deferred_tasks.discard)
-        waiting.append(event)
+        else:
+            waiting.append(event)
         return True
 
     async def _resume_deferred(self, scope, waiting):

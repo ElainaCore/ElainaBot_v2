@@ -249,6 +249,8 @@ class GroupLifecycleManager:
     async def _drain(self, key, pending):
         """每个 Bot／群只运行一个排空任务，队列保持接收顺序。"""
         try:
+            # 无订阅者时也可能同步排空，先让创建方登记任务。
+            await asyncio.sleep(0)
             while pending:
                 item = pending[0]
                 for previous in item.predecessors:
