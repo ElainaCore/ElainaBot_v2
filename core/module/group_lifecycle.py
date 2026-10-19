@@ -11,6 +11,7 @@ from uuid import uuid4
 
 from core.base.tasks import spawn
 from core.message.event import GROUP_JOIN_REQUEST, GROUP_MSG_RECEIVE, GROUP_MSG_REJECT, GROUP_TYPES, INTERACTION_CREATE, SUBSCRIBE_MESSAGE_STATUS
+from core.module.connection_status import ConnectionContext
 
 GROUP_LIFECYCLE_API_VERSION = 1
 GROUP_LIFECYCLE_TYPES = frozenset({'GROUP_MEMBER_ADD', 'GROUP_MEMBER_REMOVE', 'GROUP_ADD_ROBOT', 'GROUP_DEL_ROBOT'})
@@ -42,6 +43,7 @@ class GroupLifecycleEvent:
     transport: str
     session_id: str | None
     received_at: float
+    connection_context: ConnectionContext | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -222,6 +224,7 @@ class GroupLifecycleManager:
             transport,
             _native_id(session_id),
             time.monotonic(),
+            event.connection_context,
         )
         subscribers = tuple(s for s in self._subscriptions.values() if s.appid is None or s.appid == appid)
         completion = asyncio.get_running_loop().create_future()
@@ -246,6 +249,8 @@ class GroupLifecycleManager:
     async def _drain(self, key, pending):
         """每个 Bot／群只运行一个排空任务，队列保持接收顺序。"""
         try:
+            # 无订阅者时也可能同步排空，先让创建方登记任务。
+            await asyncio.sleep(0)
             while pending:
                 item = pending[0]
                 for previous in item.predecessors:

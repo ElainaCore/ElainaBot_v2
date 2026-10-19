@@ -2,10 +2,12 @@
 """单机器人实例 — Token / Sender / WS / LogService 管理"""
 
 import asyncio
+from uuid import uuid4
 
 from core.base.config import cfg
 from core.base.logger import FRAMEWORK, get_logger
 from core.message.sender import MessageSender
+from core.module.connection_status import ConnectionStatusManager
 from core.network.access import DEFAULT_API_VERSION, TokenManager
 from core.network.websocket import WSClient
 from core.storage.log import LogService
@@ -16,6 +18,9 @@ class BotInstance:
 
     __slots__ = (
         'appid',
+        'bot_generation',
+        'connection_status',
+        '_webhook_status',
         'name',
         'secret',
         'bot_cfg',
@@ -30,9 +35,11 @@ class BotInstance:
         'owner_ids',
     )
 
-    def __init__(self, bot_cfg, base_log_dir):
+    def __init__(self, bot_cfg, base_log_dir, *, connection_status=None):
         self.bot_cfg = bot_cfg
         self.appid = str(bot_cfg['appid'])
+        self.bot_generation = uuid4().hex
+        self.connection_status = connection_status if connection_status is not None else ConnectionStatusManager()
         self.name = self.appid
         self.secret = str(bot_cfg['secret'])
 
@@ -62,6 +69,7 @@ class BotInstance:
         self.bot_id = ''
         self.avatar_url = ''
         self.union_openid = ''
+        self._webhook_status = self.connection_status._register(self.appid, 'webhook', bot_generation=self.bot_generation)
 
     async def start(self, on_event, *, on_event_received=None):
         """启动机器人: Token + 日志 + WS(可选)"""
@@ -83,6 +91,8 @@ class BotInstance:
                 token_manager=self.token_manager,
                 on_event=on_event,
                 on_event_received=on_event_received,
+                connection_status=self.connection_status,
+                bot_generation=self.bot_generation,
                 ack_interaction=self.sender.ack_interaction,
                 reconnect_interval=ws_cfg.get('reconnect_interval', 5),
                 max_reconnects=ws_cfg.get('max_reconnects', -1),
@@ -91,6 +101,7 @@ class BotInstance:
                 subscribe_channel_events=ws_cfg.get('subscribe_channel_events', False),
             )
 
+        self._webhook_status.publish('unknown', reason='http_callback')
         api_info = f', API={self.token_manager.api_base}'
         bot_log.info(f'✅ 启动完成 (WS={"启用" if self.ws_client else "禁用"}{api_info})')
 
@@ -114,11 +125,18 @@ class BotInstance:
         except Exception as e:
             get_logger(FRAMEWORK, self.appid).warning(f'获取机器人昵称异常: {e}, 使用 appid 代替')
 
-    async def stop(self):
+    def observe_webhook(self, sequence):
+        """HTTP 接收没有可证明的会话或补发结束边界。"""
+        source = self._webhook_status
+        source.update_context(receive_index=source.context.receive_index + 1, sequence=sequence if type(sequence) is int else None)
+        return source.context
+
+    async def stop(self, *, reason='local_stop'):
         """停止机器人"""
+        self._webhook_status.publish('stopped', reason=reason)
         tasks = []
         if self.ws_client:
-            tasks.append(self.ws_client.close())
+            tasks.append(self.ws_client.close(reason=reason))
         tasks.extend(
             [
                 self.log_service.shutdown(),

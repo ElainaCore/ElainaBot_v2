@@ -7,6 +7,7 @@ from core.base.config import cfg
 from core.base.logger import SYSTEM, report_error
 from core.base.tasks import spawn
 from core.bot.instance import BotInstance
+from core.module.connection_status import ConnectionStatusManager
 from core.network.access import DEFAULT_API_VERSION
 from core.network.websocket import WSClient
 
@@ -16,11 +17,12 @@ log = logging.getLogger('ElainaBot.registry')
 class BotRegistry:
     """管理多个 BotInstance 的生命周期和配置热重载"""
 
-    def __init__(self, log_base: str, on_event=None, push_web_log=None, media_dir='', *, on_event_received=None):
+    def __init__(self, log_base: str, on_event=None, push_web_log=None, media_dir='', *, on_event_received=None, connection_status=None):
         self._bots: dict[str, object] = {}  # {appid: BotInstance}
         self._log_base = log_base
         self._on_event = on_event
         self._on_event_received = on_event_received
+        self._connection_status = connection_status if connection_status is not None else ConnectionStatusManager()
         self._push_web_log = push_web_log or (lambda t, e: None)
         self._media_dir = media_dir
         self._loop = None
@@ -62,10 +64,11 @@ class BotRegistry:
 
     async def _start_one(self, bot_cfg):
         appid = str(bot_cfg['appid'])
+        instance = None
         try:
             if self._loop is None:
                 self._loop = asyncio.get_running_loop()
-            instance = BotInstance(bot_cfg, self._log_base)
+            instance = BotInstance(bot_cfg, self._log_base, connection_status=self._connection_status)
             await instance.start(self._on_event, on_event_received=self._on_event_received)
             if self._media_dir:
                 instance.sender.bind_instance(media_dir=self._media_dir)
@@ -76,6 +79,8 @@ class BotRegistry:
                 spawn(instance.ws_client.connect())
             return instance
         except Exception as e:
+            if instance is not None:
+                await instance.stop(reason='start_failed')
             report_error(SYSTEM, '启动器', e, context={'appid': appid})
             return None
 
@@ -86,6 +91,8 @@ class BotRegistry:
             token_manager=bot.token_manager,
             on_event=self._on_event,
             on_event_received=self._on_event_received,
+            connection_status=self._connection_status,
+            bot_generation=getattr(bot, 'bot_generation', None),
             ack_interaction=bot.sender.ack_interaction,
             reconnect_interval=ws_cfg.get('reconnect_interval', 5),
             max_reconnects=ws_cfg.get('max_reconnects', -1),

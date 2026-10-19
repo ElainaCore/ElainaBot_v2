@@ -189,6 +189,7 @@ class Event:
         '_group_lifecycle_prepared',
         '_group_lifecycle_barriers',
         'group_lifecycle_delivery',
+        'connection_context',
         'appid',
         'event_id',
         'event_type',
@@ -251,6 +252,7 @@ class Event:
         self._group_lifecycle_prepared = False
         self._group_lifecycle_barriers = ()
         self.group_lifecycle_delivery = None
+        self.connection_context = None
         self.appid = None
         self.event_id = None
         self.event_type = None
