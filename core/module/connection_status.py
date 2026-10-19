@@ -121,6 +121,8 @@ class ConnectionStatusSubscription:
 
     async def _drain(self, key, pending):
         try:
+            # 先登记排空任务，避免 eager 工厂同步结束后回写已完成的任务。
+            await asyncio.sleep(0)
             while pending:
                 status = pending.popleft()
                 outcome, error = await self._invoke(key, status)

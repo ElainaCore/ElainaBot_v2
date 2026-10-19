@@ -145,6 +145,8 @@ class WSClient:
 
     async def _run_connection(self):
         try:
+            # 先让创建方登记任务，兼容 eager 工厂在 create_task 内立即执行协程。
+            await asyncio.sleep(0)
             while not self._closed:
                 opened, failed = False, False
                 reason = 'socket_eof'
