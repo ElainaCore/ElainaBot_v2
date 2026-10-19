@@ -114,7 +114,9 @@ class GroupLifecycleSubscription:
         key = (event.appid, event.group_openid)
         if self.active:
             previous = self._running.get(key)
-            bot_busy = any(task in self._abandoned and not task.done() for (bot, _), task in self._running.items() if bot == event.appid)
+            bot_busy = bool(self._abandoned) and any(
+                task in self._abandoned and not task.done() for (bot, _), task in self._running.items() if bot == event.appid
+            )
             if bot_busy or (previous is not None and not previous.done()):
                 status = 'busy'
             else:
@@ -229,7 +231,8 @@ class GroupLifecycleManager:
         subscribers = tuple(s for s in self._subscriptions.values() if s.appid is None or s.appid == appid)
         completion = asyncio.get_running_loop().create_future()
         event.group_lifecycle_delivery = GroupLifecycleDelivery(notification, completion)
-        event._group_lifecycle_barriers = (*predecessors, completion)
+        # 排空任务已等待前序事件，入口只需等待本次完成凭据。
+        event._group_lifecycle_barriers = (completion,)
         tails = self._tails.setdefault(appid, {})
         tails[group] = completion
         key = (appid, group)
@@ -269,5 +272,3 @@ class GroupLifecycleManager:
         """在记录、欢迎回复及插件分发前，等待已知群变化。"""
         for previous in event._group_lifecycle_barriers:
             await asyncio.shield(previous)
-        if event.group_lifecycle_delivery is not None:
-            await event.group_lifecycle_delivery.wait()

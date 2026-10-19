@@ -91,13 +91,17 @@ class _DispatchMixin:
             for et, specific in by_et.items()
         }
 
-    def _handlers_for(self, et: str) -> list[dict[str, Any]]:
+    def _handlers_for(self, et: str, *, explicit_only: bool = False) -> list[dict[str, Any]]:
         """返回该事件类型的 handler 列表 (预合并, O(1) 查找)"""
-        return self._et_merged.get(et, self._handlers_any_et)
+        handlers = self._et_merged.get(et, self._handlers_any_et)
+        if explicit_only:
+            return [h for h in handlers if et in (h['event_types'] or ())]
+        return handlers
 
     # ---------- 分发 ----------
 
-    async def dispatch(self, event: Event, sender: Any) -> bool:
+    async def dispatch(self, event: Event, sender: Any, *, explicit_only: bool = False) -> bool:
+        """分发事件；explicit_only 仅匹配显式声明了当前 event_types 的处理器。"""
         content: str = event.content or ''
         user_id: str = event.user_id or ''
         appid: str = event.appid or self._appid
@@ -107,7 +111,7 @@ class _DispatchMixin:
 
         # ── 非消息事件快速路径: 跳过黑名单/维护/权限检查 ──
         if et not in _FULL_CHECK_TYPES:
-            handlers = self._handlers_for(et)
+            handlers = self._handlers_for(et, explicit_only=explicit_only)
             if not handlers:
                 event.finish_dispatch()
                 return False
@@ -191,7 +195,7 @@ class _DispatchMixin:
 
         # 普通处理器先完成原文和斜杠兼容匹配，均未命中才进入 fallback。
         scene = _event_scene(event)
-        handlers = self._handlers_for(et)
+        handlers = self._handlers_for(et, explicit_only=explicit_only)
         handler_content = content
         if is_group_msg and _get(appid, 'non_at_message.strip_bot_name_at', False):
             handler_content = _strip_leading_bot_name_at(content, getattr(sender, '_bot_name', '') or '')

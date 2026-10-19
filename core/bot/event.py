@@ -283,19 +283,20 @@ class EventHandlerMixin:
     # ==================== 事件入口 ====================
 
     def _prepare_event(self, event, *, transport='internal', session_id=None):
-        if event.appid in self._bots:
+        if event._group_lifecycle_prepared:
+            return
+        if self.get_bot(event.appid) is not None:
             self._hook_manager.group_lifecycle.prepare(event, transport=transport, session_id=session_id)
 
     async def _on_event(self, event):
         appid = event.appid
-        bot = self._bots.get(appid)
+        bot = self.get_bot(appid)
         if not bot:
             return
 
         # 内置传输在调度前登记顺序；此处为自定义适配器保留回退。
         self._prepare_event(event)
         await self._hook_manager.group_lifecycle.wait(event)
-        et = event.event_type
 
         # 去重
         if cfg.get_bot_setting(appid, 'dedup.enabled', False):
@@ -314,6 +315,15 @@ class EventHandlerMixin:
             )
             if need_swap:
                 event.user_id, event.union_openid, _ = IdentityHelper.swap_ids(event.raw_user_id, event.union_openid, True)
+
+        # 模块可接管或转换事件；返回 None 表示已经处理，不再进入内置分发。
+        if self._hook_manager.has('before_event'):
+            event = await self._hook_manager.pipeline('before_event', event)
+            if event is None:
+                return
+            if event.appid != appid:
+                raise ValueError('before_event hook must preserve appid')
+        et = event.event_type
 
         # 生命周期事件
         lc = self._LIFECYCLE_HANDLERS.get(et)
