@@ -127,67 +127,24 @@ def _fmt_diff(label, val, y_val, emoji):
     return f'{emoji} {label}: {val}'
 
 
-# 活跃统计只计算接收消息，全量群只计算提及机器人的消息
-_RECV = "direction != 'send' AND COALESCE(at_bot, 1) != 0"
-
-# 使用覆盖索引在单次扫描中完成全部计数，避免回表
-_AGG_SQL = f"""
-    SELECT COUNT(*) AS total,
-           COUNT(CASE WHEN group_id = 'c2c' OR group_id = '' THEN 1 END) AS private,
-           COUNT(CASE WHEN direction = 'receive' THEN 1 END) AS received,
-           COUNT(CASE WHEN direction = 'send' THEN 1 END) AS sent,
-           COUNT(DISTINCT CASE WHEN user_id != '' AND {_RECV} THEN user_id END) AS users,
-           COUNT(DISTINCT CASE WHEN group_id != '' AND group_id != 'c2c' AND {_RECV}
-                               THEN group_id END) AS groups_
-    FROM log
-"""
+def _stats_from_snapshot(snapshot):
+    return {
+        'total': snapshot['total_messages'],
+        'private': snapshot['private_messages'],
+        'received': snapshot['received_messages'],
+        'sent': snapshot['sent_messages'],
+        'users': snapshot['active_users'],
+        'groups_': snapshot['active_groups'],
+        'peak_hour': snapshot['peak_hour'],
+        'peak_hour_count': snapshot['peak_hour_count'],
+        'top_groups': snapshot['top_groups'],
+        'top_users': snapshot['top_users'],
+    }
 
 
 def _query_today_stats_sync(bot):
-    """用少量覆盖索引扫描实时查询今日消息统计。"""
-    today = datetime.now().strftime('%Y-%m-%d')
-    q = bot.log_service.query
-
-    agg = q('message', _AGG_SQL, date=today)
-    if not agg or not agg[0]['total']:
-        return None
-    stats = dict(agg[0])
-
-    peak = q(
-        'message',
-        f'SELECT substr(timestamp, 12, 2) AS hr, COUNT(*) AS c FROM log WHERE {_RECV} GROUP BY hr ORDER BY c DESC LIMIT 1',
-        date=today,
-    )
-    stats['peak_hour'] = int(peak[0]['hr']) if peak and peak[0].get('hr') else 0
-    stats['peak_hour_count'] = peak[0]['c'] if peak else 0
-
-    stats['top_groups'] = q(
-        'message',
-        f"""
-        SELECT group_id, COUNT(*) AS c FROM log
-        WHERE group_id != '' AND group_id != 'c2c' AND {_RECV}
-        GROUP BY group_id ORDER BY c DESC LIMIT 3
-    """,
-        date=today,
-    )
-    stats['top_users'] = q(
-        'message',
-        f"SELECT user_id, COUNT(*) AS c FROM log WHERE user_id != '' AND {_RECV} GROUP BY user_id ORDER BY c DESC LIMIT 3",
-        date=today,
-    )
-
-    try:
-        counts = lifecycle_counts_from_rows(q('lifecycle', LIFECYCLE_COUNTS_SQL, date=today))
-    except Exception:
-        lifecycle = q(
-            'lifecycle',
-            'SELECT type, user_id, group_id FROM log ORDER BY id',
-            date=today,
-        )
-        counts = compute_lifecycle_counts((r.get('type', ''), r.get('user_id', ''), r.get('group_id', '')) for r in lifecycle)
-    stats['group_join'] = counts['group_join_count']
-    stats['group_leave'] = counts['group_leave_count']
-    return stats
+    """今日 DAU 与看板共用持久化精确统计。"""
+    return _query_stats_for_date_sync(bot, datetime.now().strftime('%Y-%m-%d'))
 
 
 def _build_dau_message(event, stats, date, elapsed_ms, y_stats=None, is_today=False):
@@ -351,54 +308,34 @@ async def _handle_today_dau(event, bot):
     )
     if not stats:
         return await reply(event, f'<@{event.user_id}>\n❌ 今日暂无消息数据')
+    if stats.get('pending'):
+        return await reply(event, '⏳ 统计数据准备中，请稍后再试')
 
     elapsed = round((perf_counter() - started_at) * 1000)
     await _reply_dau(event, bot, stats, datetime.now(), elapsed, y_stats=y_stats, is_today=True)
 
 
 def _query_yesterday_same_period_sync(bot):
-    """用单次覆盖索引扫描查询昨日同时段统计。"""
+    """昨日同时段按分钟汇总和首次活跃时间查询，避免扫描整日消息。"""
     now = datetime.now()
     yesterday = (now - timedelta(days=1)).strftime('%Y-%m-%d')
     bound = f'{yesterday} {now.hour:02d}:{now.minute:02d}:00'
 
-    agg = bot.log_service.query('message', f'{_AGG_SQL} WHERE timestamp <= ?', (bound,), date=yesterday)
-    if not agg or not agg[0]['total']:
+    snapshot = bot.log_service.message_statistics(yesterday, before=bound)
+    if snapshot['pending'] or not snapshot['total_messages']:
         return None
-    return dict(agg[0])
+    return _stats_from_snapshot(snapshot)
 
 
 def _query_stats_for_date_sync(bot, date_str):
-    """现场从消息日志计算指定日期的完整统计 (用于 4 点前查询昨日 DAU)。"""
+    """读取指定日期的消息汇总和生命周期事件。"""
     q = bot.log_service.query
-
-    agg = q('message', _AGG_SQL, date=date_str)
-    if not agg or not agg[0]['total']:
+    snapshot = bot.log_service.message_statistics(date_str)
+    if snapshot['pending']:
+        return {'pending': True}
+    if not snapshot['total_messages']:
         return None
-    stats = dict(agg[0])
-
-    peak = q(
-        'message',
-        f'SELECT substr(timestamp, 12, 2) AS hr, COUNT(*) AS c FROM log WHERE {_RECV} GROUP BY hr ORDER BY c DESC LIMIT 1',
-        date=date_str,
-    )
-    stats['peak_hour'] = int(peak[0]['hr']) if peak and peak[0].get('hr') else 0
-    stats['peak_hour_count'] = peak[0]['c'] if peak else 0
-
-    stats['top_groups'] = q(
-        'message',
-        f"""
-        SELECT group_id, COUNT(*) AS c FROM log
-        WHERE group_id != '' AND group_id != 'c2c' AND {_RECV}
-        GROUP BY group_id ORDER BY c DESC LIMIT 3
-    """,
-        date=date_str,
-    )
-    stats['top_users'] = q(
-        'message',
-        f"SELECT user_id, COUNT(*) AS c FROM log WHERE user_id != '' AND {_RECV} GROUP BY user_id ORDER BY c DESC LIMIT 3",
-        date=date_str,
-    )
+    stats = _stats_from_snapshot(snapshot)
 
     try:
         counts = lifecycle_counts_from_rows(q('lifecycle', LIFECYCLE_COUNTS_SQL, date=date_str))
@@ -437,6 +374,8 @@ async def _handle_history_dau(event, bot, date_str):
         stats = await asyncio.to_thread(_query_stats_for_date_sync, bot, target_date)
         if not stats:
             return await reply(event, f'<@{event.user_id}>\n❌ {date_str[:2]}-{date_str[2:]} 无消息数据')
+        if stats.get('pending'):
+            return await reply(event, '⏳ 统计数据准备中，请稍后再试')
     else:
         from core.application import get_app
 

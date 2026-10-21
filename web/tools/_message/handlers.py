@@ -17,6 +17,7 @@ from aiohttp import BodyPartReader, web
 
 import web.tools._message.shared as _shared
 from core.base.tasks import spawn
+from web.tools._message.history import compact_reference, query_page, query_raw, query_reply_id
 from web.tools._message.log_utils import (
     _build_display,
     _log_send_error,
@@ -25,10 +26,7 @@ from web.tools._message.log_utils import (
 from web.tools._message.media import _send_ark, _send_card, _send_media_bytes, _send_media_url, _send_text_with_image
 from web.tools._message.query import (
     _aggregate_chats_sync,
-    _query_chat_messages_sync,
-    _query_lifecycle_events_sync,
-    _query_older_messages_sync,
-    _recent_dates,
+    _fill_chat_previews_sync,
 )
 from web.tools._message.shared import (
     _batch_get_nicknames,
@@ -82,7 +80,8 @@ async def handle_get_nickname(request: web.Request):
     uid = body.get('user_id', '')
     if not uid:
         return web.json_response({'success': False, 'message': '缺少用户ID'}, status=400)
-    return web.json_response({'success': True, 'data': {'user_id': uid, 'nickname': _get_nickname(uid)}})
+    nickname = await asyncio.get_running_loop().run_in_executor(_chat_executor, _get_nickname, uid)
+    return web.json_response({'success': True, 'data': {'user_id': uid, 'nickname': nickname}})
 
 
 async def handle_get_nicknames_batch(request: web.Request):
@@ -90,7 +89,8 @@ async def handle_get_nicknames_batch(request: web.Request):
     uids = body.get('user_ids', [])
     if not uids or not isinstance(uids, list):
         return web.json_response({'success': False, 'message': '缺少用户ID列表'}, status=400)
-    result = {uid: _get_nickname(uid) for uid in uids}
+    uids = list(dict.fromkeys(str(uid) for uid in uids if uid))[:500]
+    result = await asyncio.get_running_loop().run_in_executor(_chat_executor, _batch_get_nicknames, uids)
     return web.json_response({'success': True, 'data': {'nicknames': result}})
 
 
@@ -107,14 +107,14 @@ def _enrich_group_chat(chat, remarks, metadata, full_access_ids):
         'in_group': meta.get('in_group', True),
         'remark': remark,
         'group_qq': _remark_qq(remark_value),
-        'is_full_access': chat.get('is_full_access', gid in full_access_ids),
+        'is_full_access': bool(meta.get('is_full_access', chat.get('is_full_access', gid in full_access_ids))),
+        'allow_proactive_msg': bool(meta.get('allow_proactive_msg', chat.get('allow_proactive_msg', False))),
     })
     return chat
 
 
-async def _build_chat_list(chat_type, appid_filter):
-    """构建聊天列表 (阻塞聚合在专用线程池执行)"""
-    loop = asyncio.get_running_loop()
+def _build_chat_list_sync(chat_type, appid_filter):
+    """所有列表查询和资料补全在专用线程执行，不阻塞机器人事件循环。"""
     if chat_type in ('full_access', 'remark'):
         # 全量群/备注群直接从各 bot 的 data.db 获取
         bots = _shared._bot_manager._bots if _shared._bot_manager else {}
@@ -155,7 +155,7 @@ async def _build_chat_list(chat_type, appid_filter):
                 'allow_proactive_msg': bool(r.get('allow_proactive_msg')),
             }, remarks, {}, fa_ids))
         return result
-    chats = await loop.run_in_executor(_chat_executor, _aggregate_chats_sync, chat_type, appid_filter)
+    chats = _aggregate_chats_sync(chat_type, appid_filter)
     if chat_type != 'user':
         fa_ids = _get_full_access_group_ids()
         remarks = _load_remarks()
@@ -163,6 +163,10 @@ async def _build_chat_list(chat_type, appid_filter):
         for c in chats:
             _enrich_group_chat(c, remarks, metadata, fa_ids)
     return chats
+
+
+async def _build_chat_list(chat_type, appid_filter):
+    return await asyncio.get_running_loop().run_in_executor(_chat_executor, _build_chat_list_sync, chat_type, appid_filter)
 
 
 async def _refresh_chat_list(cache_key, chat_type, appid_filter):
@@ -185,7 +189,7 @@ async def _add_user_nicknames(chats):
 
 
 async def handle_get_chats(request: web.Request):
-    """获取聊天列表 — SQL GROUP BY 聚合 + 批量昵称 + 缓存 (过期先返旧数据, 后台刷新)"""
+    """读取增量会话索引；过期先返缓存、后台刷新，只补本页预览。"""
     try:
         body = await request.json()
     except Exception:
@@ -204,7 +208,8 @@ async def handle_get_chats(request: web.Request):
     if cached:
         # 命中缓存 (即使过期) 立即返回, 过期时后台刷新, 避免请求在锁后排队超时
         chats = cached[1]
-        if time.time() - cached[0] >= _CHAT_LIST_TTL and cache_key not in _chat_refreshing:
+        ttl = 1 if getattr(chats, 'indexing', False) else _CHAT_LIST_TTL
+        if time.time() - cached[0] >= ttl and cache_key not in _chat_refreshing:
             _chat_refreshing.add(cache_key)
             spawn(_refresh_chat_list(cache_key, chat_type, appid_filter))
     else:
@@ -217,6 +222,7 @@ async def handle_get_chats(request: web.Request):
                 chats = await _build_chat_list(chat_type, appid_filter)
                 _chat_list_cache[cache_key] = (time.time(), chats)
 
+    indexing = getattr(chats, 'indexing', False)
     if search:
         if chat_type == 'user':
             chats = await _add_user_nicknames(chats)
@@ -228,6 +234,8 @@ async def handle_get_chats(request: web.Request):
     paged = chats[start : start + page_size]
     if chat_type == 'user' and not search and paged:
         paged = await _add_user_nicknames(paged)
+    if paged:
+        paged = await asyncio.get_running_loop().run_in_executor(_chat_executor, _fill_chat_previews_sync, paged)
 
     return web.json_response(
         {
@@ -237,6 +245,7 @@ async def handle_get_chats(request: web.Request):
                 'total': total,
                 'page': page,
                 'page_size': page_size,
+                'indexing': indexing,
             },
         }
     )
@@ -252,35 +261,30 @@ async def handle_get_chat_history(request: web.Request):
     chat_id = body.get('chat_id', '')
     appid_filter = body.get('appid', '')
     before_date = body.get('before_date', '')
+    cursor = body.get('cursor', '')
+    include_raw = body.get('include_raw', True) is not False
+    try:
+        limit = min(max(int(body.get('limit', 60)), 1), 100)
+    except (ValueError, TypeError):
+        limit = 60
 
     if not chat_id:
         return web.json_response({'success': True, 'data': {'messages': [], 'has_more': False}})
 
     loop = asyncio.get_running_loop()
 
-    if before_date:
-        rows, oldest_date, has_more = await loop.run_in_executor(
-            None,
-            _query_older_messages_sync,
-            chat_type,
-            chat_id,
-            appid_filter,
-            before_date,
-            300,
-            30,
+    from functools import partial
+    try:
+        if 'raw_id' in body:
+            raw = await loop.run_in_executor(None, query_raw, chat_type, chat_id, appid_filter, str(body.get('date', '')), int(body['raw_id']))
+            return web.json_response({'success': True, 'data': {'raw_message': raw}})
+        all_rows, next_cursor, oldest_date, has_more = await loop.run_in_executor(
+            None, partial(query_page, chat_type, chat_id, appid_filter, cursor=cursor, before_date=before_date, limit=limit)
         )
-    else:
-        rows = await loop.run_in_executor(None, _query_chat_messages_sync, chat_type, chat_id, appid_filter, 1, 300)
-        oldest_date = _date.today().strftime('%Y-%m-%d')
-        has_more = True
-
-    # 查询群成员加入/退出事件
-    lifecycle_rows = []
-    if chat_type == 'group':
-        lc_dates = [before_date] if before_date else _recent_dates(1)
-        lifecycle_rows = await loop.run_in_executor(
-            None, _query_lifecycle_events_sync, chat_type, chat_id, appid_filter, lc_dates
-        )
+    except (ValueError, TypeError):
+        return web.json_response({'success': False, 'message': '无效的消息分页参数'}, status=400)
+    rows = [row for row in all_rows if row['_kind'] == 'message']
+    lifecycle_rows = [row for row in all_rows if row['_kind'] == 'lifecycle']
 
     # 收集需要查询的 user_id (仅非bot消息), 批量取昵称
     uid_set = set()
@@ -313,6 +317,7 @@ async def handle_get_chat_history(request: web.Request):
         messages.append(
             {
                 'id': r.get('id', len(messages)),
+                'date': r.get('_date', ''),
                 'message_id': r.get('message_id', ''),
                 'reference_id': r.get('reference_id', ''),
                 'user_id': uid,
@@ -323,7 +328,9 @@ async def handle_get_chat_history(request: web.Request):
                 'timestamp': r.get('timestamp', ''),
                 'is_self': is_bot,
                 'source': source,
-                'raw_message': raw if not recalled else '',
+                'raw_message': raw if include_raw and not recalled else '',
+                'raw_available': bool(raw and not recalled),
+                'reference': compact_reference(raw) if not recalled else None,
                 'recalled': recalled,
             }
         )
@@ -356,15 +363,8 @@ async def handle_get_chat_history(request: web.Request):
 
     # 取最近一条非 bot 消息的 message_id 用于发送回复 (仅初始加载)
     last_msg_id = ''
-    if not before_date:
-        today_str = _date.today().strftime('%Y-%m-%d')
-        for r in reversed(rows):
-            if r.get('_date', '') != today_str:
-                continue
-            mid = r.get('message_id', '')
-            if mid and r.get('direction') != 'send':
-                last_msg_id = mid
-                break
+    if not before_date and not cursor:
+        last_msg_id = await loop.run_in_executor(None, query_reply_id, chat_type, chat_id, appid_filter)
 
     return web.json_response(
         {
@@ -374,6 +374,7 @@ async def handle_get_chat_history(request: web.Request):
                 'last_msg_id': last_msg_id,
                 'oldest_date': oldest_date,
                 'has_more': has_more,
+                'next_cursor': next_cursor,
             },
         }
     )
@@ -756,18 +757,29 @@ def _prune_roles_cache(now):
         _roles_cache.pop(key, None)
 
 
-def _get_group_members_sync(group_id, appid=''):
+def _get_group_members_sync(group_id, appid='', user_ids=None):
     """读取群成员角色信息 {user_id: {role, is_bot}} (存储细节由框架接口封装)"""
     now = time.time()
     cache_key = (str(appid or ''), str(group_id))
     cached = _roles_cache.get(cache_key)
     if cached and now - cached[0] < _ROLES_CACHE_TTL:
-        return cached[1]
+        return {uid: cached[1][uid] for uid in user_ids if uid in cached[1]} if user_ids is not None else cached[1]
     _prune_roles_cache(now)
     if not _shared._bot_manager:
         return {}
     members: dict[str, dict] = {}
     bot = _get_bot(appid)
+    if user_ids is not None:
+        if not bot or not user_ids:
+            return {}
+        placeholders = ','.join('?' for _ in user_ids)
+        rows = bot.log_service.query_data(
+            'SELECT m.user_id,m.member_role,b.user_id IS NOT NULL AS is_bot '
+            'FROM group_members m LEFT JOIN bots b ON b.user_id=m.user_id '
+            f'WHERE m.group_id=? AND m.user_id IN ({placeholders})',
+            (group_id, *user_ids),
+        )
+        return {row['user_id']: {'role': row.get('member_role') or '', 'is_bot': bool(row.get('is_bot'))} for row in rows}
     instances = [bot] if bot else []
     for inst in instances:
         try:
@@ -785,12 +797,20 @@ async def handle_get_group_roles(request: web.Request):
     body = await request.json()
     group_id = body.get('group_id', '')
     appid = body.get('appid', '')
+    user_ids = body.get('user_ids')
+    if user_ids is not None:
+        if not isinstance(user_ids, list):
+            return web.json_response({'success': False, 'message': 'user_ids 必须为列表'}, status=400)
+        user_ids = list(dict.fromkeys(str(uid) for uid in user_ids if uid))[:500]
     if not group_id:
         return web.json_response({'success': False, 'message': '缺少 group_id'}, status=400)
     loop = asyncio.get_running_loop()
-    members = await loop.run_in_executor(None, _get_group_members_sync, group_id, appid)
+    members = await loop.run_in_executor(None, _get_group_members_sync, group_id, appid, user_ids)
     bot = _get_bot(appid)
-    record = await bot.sender.get_group_record(group_id) if bot else None
+    records = await loop.run_in_executor(
+        None, bot.log_service.query_data, 'SELECT in_group,is_admin FROM groups_users WHERE group_id=?', (group_id,)
+    ) if bot else []
+    record = records[0] if records else None
     bot_is_admin = bool(record and record.get('in_group') and record.get('is_admin'))
     return web.json_response({
         'success': True,

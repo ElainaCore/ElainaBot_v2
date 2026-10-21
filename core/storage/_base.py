@@ -27,6 +27,7 @@ from core.storage._schema import (
 )
 from core.storage._sqlite import SQLiteConnectionPool
 from core.storage._workers import SQLITE_EXECUTOR
+from core.storage.message_stats import add_message_stats, init_message_stats
 
 
 def _dict_factory(cursor, row):
@@ -137,6 +138,9 @@ class _BaseLogService:
                     self._build_missing_indexes_bg(db_path, conn, log_type)
                 else:
                     _ensure_indexes(conn, log_type)
+                if log_type == 'message':
+                    init_message_stats(conn)
+                    conn.commit()
             return conn
         except BaseException:
             conn.close()
@@ -225,6 +229,8 @@ class _BaseLogService:
         try:
             with self._transaction(db_path, log_type) as conn:
                 conn.executemany(sql, rows)
+                if log_type == 'message':
+                    add_message_stats(conn, ((r[0], r[3], r[4], r[7], r[8], r[9]) for r in rows))
         except _ExpiredLogError:
             raise
         except Exception as e:

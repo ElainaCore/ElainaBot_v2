@@ -1,15 +1,13 @@
-"""统计数据 — DAU / 消息统计 HTTP 处理器 (聚合逻辑见 gather / hourly 模块)"""
+"""统计 HTTP 接口：短缓存、相同请求合并，数据库读取在工作线程执行。"""
 
 import asyncio
-import logging
 import time
-from collections.abc import Hashable
 from datetime import datetime
-from typing import Any, TypeVar
+from typing import Any
 
 from aiohttp import web
 
-from web.tools._stats import context, hourly
+from web.tools._stats import context
 from web.tools._stats.gather import (
     _gather_active,
     _gather_chart_sync,
@@ -22,144 +20,104 @@ from web.tools._stats.gather import (
     _gather_totals,
 )
 
-log = logging.getLogger('ElainaBot.web.stats')
-
-# 简单内存缓存: {(date, appid_filter): (timestamp, data)} — 避免短时间内重复全表扫描
-_stats_cache: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
-_chart_cache: dict[tuple[int, str], tuple[float, dict[str, Any]]] = {}
-_core_cache: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
-_CACHE_TTL = 10  # 秒
-
-_K = TypeVar('_K', bound=Hashable)
-_V = TypeVar('_V')
-
-
-def _cached(cache: dict[_K, tuple[float, _V]], key: _K) -> _V | None:
-    entry = cache.get(key)
-    if entry and time.monotonic() - entry[0] < _CACHE_TTL:
-        return entry[1]
-    return None
-
-
-def _store_cached(cache: dict[_K, tuple[float, _V]], key: _K, value: _V) -> _V:
-    now = time.monotonic()
-    for k in [k for k, (ts, _) in cache.items() if now - ts >= _CACHE_TTL]:
-        cache.pop(k, None)
-    cache[key] = (now, value)
-    return value
+_cache: dict[tuple[object, ...], tuple[float, dict[str, Any]]] = {}
+_inflight: dict[tuple[object, ...], asyncio.Task[dict[str, Any]]] = {}
+_CACHE_TTL = 10
 
 
 def set_context(bot_manager, base_dir=''):
     context.set_context(bot_manager, base_dir)
-    hourly.init()
+    _cache.clear()
 
 
-async def handle_get_statistics(request: web.Request):
-    """获取统计数据 — SQLite 查询放到 executor, 不阻塞事件循环"""
-    force = request.query.get('force_refresh', 'false') == 'true'
-    selected_date = request.query.get('date', '')
-    appid_filter = request.query.get('appid', '')
+async def _query_cached(gatherer, *args, force=False):
+    # 日期进入 key，跨零点不会复用前一天的今日统计。
+    key = (id(context.bot_manager), gatherer, datetime.now().strftime('%Y-%m-%d'), *args)
+    entry = _cache.get(key)
+    if not force and entry and time.monotonic() < entry[0]:
+        return entry[1]
+    task = _inflight.get(key)
+    if task is None:
+        task = asyncio.create_task(asyncio.to_thread(gatherer, *args))
+        _inflight[key] = task
 
-    cache_key = (selected_date, appid_filter)
-    if not force:
-        cached = _cached(_stats_cache, cache_key)
-        if cached is not None:
-            return web.json_response({'success': True, 'data': cached})
+        def finished(done):
+            _inflight.pop(key, None)
+            if done.cancelled() or done.exception() is not None:
+                return
+            result = done.result()
+            data = result.get('data', result)
+            ttl = 1 if data.get('pending') else _CACHE_TTL
+            now = time.monotonic()
+            for expired in [k for k, (until, _) in _cache.items() if until <= now]:
+                _cache.pop(expired, None)
+            _cache[key] = (now + ttl, result)
 
-    try:
-        data = await asyncio.to_thread(_gather_stats, selected_date, appid_filter)
-        _store_cached(_stats_cache, cache_key, data)
-        return web.json_response({'success': True, 'data': data})
-    except Exception as e:
-        return web.json_response({'success': False, 'error': str(e)}, status=500)
-
-
-async def handle_get_available_dates(request: web.Request):
-    """返回有 DAU 数据的日期列表"""
-    dates = [
-        {
-            'value': 'today',
-            'date': datetime.now().strftime('%Y-%m-%d'),
-            'display': '今日数据',
-            'is_today': True,
-        }
-    ]
-    return web.json_response({'success': True, 'dates': dates})
-
-
-async def handle_get_chart_data(request: web.Request):
-    """返回最近 N 天的折线图数据 — SQLite 查询放到 executor"""
-    days = max(1, min(30, int(request.query.get('days', '7'))))
-    appid_filter = request.query.get('appid', '')
-
-    cache_key = (days, appid_filter)
-    cached = _cached(_chart_cache, cache_key)
-    if cached is not None:
-        return web.json_response(cached)
-
-    payload = await asyncio.to_thread(_gather_chart_sync, days, appid_filter)
-    _store_cached(_chart_cache, cache_key, payload)
-    return web.json_response(payload)
-
-
-async def handle_get_hourly_statistics(request: web.Request):
-    """仪表盘轻量小时分布 — 避免进入仪表盘时触发完整统计扫描。"""
-    appid_filter = request.query.get('appid', '')
-    cache_key = (0, appid_filter)
-    cached = _cached(_chart_cache, cache_key)
-    if cached is not None:
-        return web.json_response(cached)
-
-    payload = await asyncio.to_thread(_gather_hourly_statistics_sync, appid_filter)
-    _store_cached(_chart_cache, cache_key, payload)
-    return web.json_response(payload)
-
-
-async def handle_get_core(request: web.Request):
-    date = request.query.get('date', '') or datetime.now().strftime('%Y-%m-%d')
-    appid = request.query.get('appid', '')
-    cache_key = (date, appid)
-    cached = _cached(_core_cache, cache_key)
-    if cached is not None:
-        return web.json_response({'success': True, 'data': cached})
-    try:
-        data = await asyncio.to_thread(_gather_core, date, appid)
-        _store_cached(_core_cache, cache_key, data)
-        return web.json_response({'success': True, 'data': data})
-    except Exception as e:
-        return web.json_response({'success': False, 'error': str(e)}, status=500)
+        task.add_done_callback(finished)
+    # 浏览器取消请求不撤销工作，也不让下一个请求重复启动同一次读取。
+    return await asyncio.shield(task)
 
 
 async def _handle_stat_query(request, gatherer, include_date=True):
     appid = request.query.get('appid', '')
     args = (request.query.get('date', '') or datetime.now().strftime('%Y-%m-%d'), appid) if include_date else (appid,)
     try:
-        data = await asyncio.to_thread(gatherer, *args)
+        data = await _query_cached(gatherer, *args)
         return web.json_response({'success': True, 'data': data})
-    except Exception as e:
-        return web.json_response({'success': False, 'error': str(e)}, status=500)
+    except Exception as exc:
+        return web.json_response({'success': False, 'error': str(exc)}, status=500)
+
+
+async def handle_get_statistics(request: web.Request):
+    try:
+        data = await _query_cached(
+            _gather_stats, request.query.get('date', ''), request.query.get('appid', ''),
+            force=request.query.get('force_refresh', 'false') == 'true',
+        )
+        return web.json_response({'success': True, 'data': data})
+    except Exception as exc:
+        return web.json_response({'success': False, 'error': str(exc)}, status=500)
+
+
+async def handle_get_available_dates(request: web.Request):
+    return web.json_response({'success': True, 'dates': [{
+        'value': 'today', 'date': datetime.now().strftime('%Y-%m-%d'), 'display': '今日数据', 'is_today': True,
+    }]})
+
+
+async def handle_get_chart_data(request: web.Request):
+    try:
+        days = max(1, min(30, int(request.query.get('days', '7'))))
+    except ValueError:
+        return web.json_response({'success': False, 'error': 'days 必须为整数'}, status=400)
+    payload = await _query_cached(_gather_chart_sync, days, request.query.get('appid', ''))
+    return web.json_response(payload)
+
+
+async def handle_get_hourly_statistics(request: web.Request):
+    payload = await _query_cached(_gather_hourly_statistics_sync, request.query.get('appid', ''))
+    return web.json_response(payload)
+
+
+async def handle_get_core(request: web.Request):
+    return await _handle_stat_query(request, _gather_core)
 
 
 async def handle_get_summary(request: web.Request):
-    """消息总量 (快)"""
     return await _handle_stat_query(request, _gather_summary)
 
 
 async def handle_get_active(request: web.Request):
-    """活跃用户/群 (慢 — COUNT DISTINCT)"""
     return await _handle_stat_query(request, _gather_active)
 
 
 async def handle_get_top(request: web.Request):
-    """TOP 排行 (中等)"""
     return await _handle_stat_query(request, _gather_top)
 
 
 async def handle_get_events(request: web.Request):
-    """生命周期事件 (快)"""
     return await _handle_stat_query(request, _gather_events)
 
 
 async def handle_get_totals(request: web.Request):
-    """累计用户/群组 (快)"""
     return await _handle_stat_query(request, _gather_totals, include_date=False)

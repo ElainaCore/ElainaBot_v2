@@ -106,14 +106,11 @@ def get_system_info() -> dict:
             plugins_count = getattr(pm, 'handler_count', 0)
         for inst in _bot_manager._bots.values():
             try:
-                rows = inst.log_service.query(
-                    'message',
-                    "SELECT COUNT(*) as cnt, COUNT(DISTINCT user_id) as users, COUNT(DISTINCT group_id) as groups FROM log WHERE user_id != ''",
-                )
-                if rows:
-                    today_messages += rows[0].get('cnt', 0)
-                    today_active += rows[0].get('users', 0)
-                    active_groups += rows[0].get('groups', 0)
+                stats = inst.log_service.message_statistics()
+                if not stats['pending']:
+                    today_messages += stats['total_messages']
+                    today_active += stats['active_users']
+                    active_groups += stats['active_groups']
             except Exception as e:
                 log.debug(f'统计今日消息失败: {e}')
             try:

@@ -196,6 +196,8 @@ class Event:
         'raw',
         'message_id',
         'message_type',
+        'ark_data',
+        'ark_type',
         'content',
         'raw_content',
         'timestamp',
@@ -259,6 +261,8 @@ class Event:
         self.raw = None
         self.message_id = None
         self.message_type = None
+        self.ark_data = {}
+        self.ark_type = ''
         self.content = ''
         self.raw_content = ''
         self.timestamp = None

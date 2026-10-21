@@ -5,6 +5,8 @@ __pycache__/
 .zcode/
 *.egg-info/
 dist/
+# The Web panel is shipped with the Python framework, including new build chunks.
+!/web/dist/
 build/
 *.egg
 

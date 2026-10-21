@@ -13,6 +13,7 @@ from core.storage._daily_base import DailyScanService, trim_memory
 from core.storage._schema import DAU_TABLE_SQL
 from core.storage._workers import SQLITE_EXECUTOR
 from core.storage.lifecycle_stats import compute_lifecycle_counts
+from core.storage.message_stats import read_message_stats
 
 log = get_logger(FRAMEWORK, 'DAU统计')
 
@@ -132,6 +133,12 @@ class DAUService(DailyScanService):
             log.warning(f'打开消息库失败 [{db_path}]: {e}')
             return None
         try:
+            conn.execute('BEGIN')
+            # 新库及已补算的旧库直接复用落库汇总；尚未迁移的历史库保持兼容。
+            with contextlib.suppress(sqlite3.OperationalError):
+                snapshot = read_message_stats(conn)
+                if not snapshot['pending']:
+                    return snapshot if snapshot['total_messages'] else None
             cur = conn.cursor()
             # 旧库可能没有 at_bot 列, 按已艾特处理
             has_at_bot = any(r['name'] == 'at_bot' for r in cur.execute('PRAGMA table_info(log)'))

@@ -45,6 +45,7 @@ def _batch_get_nicknames(user_ids):
     now = time.time()
     out = {}
     pending = []
+    user_ids = list(dict.fromkeys(user_ids))
     for uid in user_ids:
         if not uid:
             continue
@@ -74,6 +75,7 @@ def _batch_get_nicknames(user_ids):
     for uid in user_ids:
         if uid and uid not in out:
             out[uid] = f'用户{uid[-6:]}'
+            _nickname_cache[uid] = (now - _CACHE_TIMEOUT + 60, out[uid])
     return out
 def _get_bot(appid=''):
     """按 appid 获取单个 bot 实例, 找不到返回 None"""
@@ -120,7 +122,7 @@ def _get_proactive_group_ids():
 
 
 def _get_group_metadata(appid_filter=''):
-    """批量返回群名称、人数和在群状态。"""
+    """批量返回群名称、人数、在群状态和功能开关。"""
     if not _bot_manager:
         return {}
     result = {}
@@ -129,7 +131,8 @@ def _get_group_metadata(appid_filter=''):
             continue
         try:
             rows = inst.log_service.query_data(
-                'SELECT group_id, group_name, group_member_num, in_group FROM groups_users'
+                'SELECT group_id, group_name, group_member_num, in_group, '
+                'is_full_access, allow_proactive_msg FROM groups_users'
             )
         except Exception as e:
             log.debug(f'查询群资料失败 {appid}: {e}')
@@ -142,6 +145,8 @@ def _get_group_metadata(appid_filter=''):
                 'group_name': str(row.get('group_name') or ''),
                 'group_member_num': int(row.get('group_member_num') or 0),
                 'in_group': bool(row.get('in_group', 1)),
+                'is_full_access': bool(row.get('is_full_access')),
+                'allow_proactive_msg': bool(row.get('allow_proactive_msg')),
             }
     return result
 

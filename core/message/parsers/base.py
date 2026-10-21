@@ -87,6 +87,10 @@ def _parse_common_fields(event, d):
     """提取公共字段 (id/author/content/group/image)"""
     event.message_id = d.get('id', '')
     event.message_type = d.get('message_type')
+    ark_data = d.get('ark_data')
+    event.ark_data = ark_data if isinstance(ark_data, dict) else {}
+    ark_type = event.ark_data.get('ark_type')
+    event.ark_type = ark_type if isinstance(ark_type, str) else ''
     raw_content = d.get('content')
     event.raw_content = raw_content if isinstance(raw_content, str) else ''
     event.content = MessageUtils.sanitize_content(event.raw_content)

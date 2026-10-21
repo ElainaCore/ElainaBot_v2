@@ -32,6 +32,7 @@
   - [5.8 订阅消息](#58-订阅消息)
   - [5.9 Sender 工具方法](#59-sender-工具方法)
   - [5.10 自定义菜单与指令面板](#510-自定义菜单与指令面板)
+  - [5.11 Markdown 图片素材](#511-markdown-图片素材)
 - [6. 群管理 API](#6-群管理-api)
   - [6.1 权限与接口概览](#61-权限与接口概览)
   - [6.2 群资料与本地记录](#62-群资料与本地记录)
@@ -359,6 +360,8 @@ async def on_join_request(event, match):
 | `event.event_id` | `str` | 事件 ID |
 | `event.message_id` | `str` | 消息 ID |
 | `event.message_type` | `int 或 None` | 平台消息内容类型，如复合消息为 `103` |
+| `event.ark_data` | `dict` | 平台 Ark 消息数据，包含 `ark_type`、`ark_name`、`fields` 等；缺省为 `{}` |
+| `event.ark_type` | `str` | `ark_data.ark_type`，如图片为 `picture`；缺省为空字符串 |
 | `event.user_id` | `str` | 按身份配置转换后的用户 ID |
 | `event.raw_user_id` | `str` | 平台原始用户 OpenID |
 | `event.union_openid` | `str 或 None` | 跨机器人统一用户 ID，可能为空 |
@@ -379,6 +382,19 @@ async def on_join_request(event, match):
 | `event.subscribe_results` | `list` | 订阅状态变化结果 |
 | `event.raw` | `dict 或 None` | 原始事件载荷；处理链结束后可能被释放 |
 | `event.error` | `dict 或 None` | 上一次媒体上传失败响应 |
+
+群 @ 消息、群消息和单聊消息的 Ark 类型来自平台的 `ark_data.ark_type`。
+`event.ark_type` 可直接识别 `picture`（图片），完整内容保留在 `event.ark_data`：
+
+~~~python
+if event.ark_type == 'picture':
+    picture_fields = event.ark_data.get('fields')
+    print(picture_fields)
+~~~
+
+没有 Ark 数据时，`event.ark_data` 为 `{}`，`event.ark_type` 为空字符串。
+复合消息中各元素的 `ark_data` 保留在 `event.msg_elements` 内，需要逐个读取。
+`event.image_url` 从顶层 `attachments` 提取，与 Ark 图片数据分别读取。
 
 入群申请事件额外提供：
 
@@ -520,6 +536,10 @@ await event.reply_image(
 ~~~
 
 媒体上传失败时返回 `None`，原始失败响应会写入 `event.error`。
+
+在 Markdown 正文中使用平台素材图片时，先调用
+[`event.sender.upload_media_image()`](#511-markdown-图片素材) 获取引用，
+再通过 `event.reply(..., msg_type=2)` 发送。
 
 ### 5.2 私聊流式消息
 
@@ -836,6 +856,11 @@ ok, result = await event.send_wakeup(user_id, '召回提示')
 ok, result = await event.sender.force_wakeup(user_id, '强制召回')
 ~~~
 
+`get_share_link` 的 `callback_data` 必填，最多 32 个字符。框架按平台最新协议
+向 `/v2/generate_url_link` 发送 `{'callback_data': 'source_plugin'}`，
+从成功响应的 `data.url` 取出分享链接。返回值为链接字符串；参数缺失、超过长度限制
+或平台请求失败时返回 `None`。对应平台 2026-09-16 的字段说明更新。
+
 ### 5.10 自定义菜单与指令面板
 
 自定义菜单仅在单聊窗口生效，更新会覆盖完整配置：
@@ -934,6 +959,114 @@ ok, response = await event.sender.update_panel_targets(
 
 查询方法默认失败返回 `None`；需要错误详情时传 `return_error=True`。写操作
 统一返回 `(ok, response)`。
+
+### 5.11 Markdown 图片素材
+
+平台 2026-10-21 新增图片素材管理。插件调用 `event.sender.upload_media_image()`，
+框架自动完成图片校验、计算 MD5/SHA1、申请上传地址、直传图片和确认素材，返回可直接放入
+Markdown 正文的 `qqbot-media://` 引用。
+
+**一键上传并回复**
+
+~~~python
+image = await event.sender.upload_media_image('data/chart.png')
+if image:
+    await event.reply(f"![统计图]({image['url']})", msg_type=2)
+~~~
+
+方法参数：
+
+- `image`：本地文件路径（`str` 或 `pathlib.Path`），或图片字节（`bytes`、`bytearray`、`memoryview`）。
+- `file_name=None`：路径上传默认使用原文件名；字节上传默认根据图片格式生成名称，如 `image.png`。
+- `content_type=None`：默认根据图片格式识别；显式指定时必须与图片格式、文件扩展名一致。
+- `return_error=False`：默认返回素材字典或 `None`；设为 `True` 时返回 `(image, error)`。
+
+支持 PNG、JPEG、GIF、WebP，文件大小为 1 字节至 10 MB。无需额外配置图床。
+相对路径基于框架进程的工作目录；使用插件自带图片时，可以传入
+`Path(__file__).resolve().parent / 'assets' / 'chart.png'`（先 `from pathlib import Path`）。
+
+传入图片字节并处理失败：
+
+~~~python
+image, error = await event.sender.upload_media_image(
+    image_bytes,
+    file_name='chart.png',
+    return_error=True,
+)
+if error:
+    print(error)  # 平台错误响应，或包含 code、message 的框架错误
+else:
+    await event.reply(f"![统计图]({image['url']})", msg_type=2)
+~~~
+
+成功时 `error` 为 `None`，素材字典包含：
+
+- `image_id`：素材 ID，用于删除素材。
+- `url`：`qqbot-media://image/v1/...` 引用，用于 Markdown 图片语法。
+- `ttl`：平台返回的有效期秒数。
+- `preview_url`：临时预览地址。
+
+失败时 `image` 为 `None`。直接调用 Sender 的素材方法通过 `return_error=True`
+取得错误详情；该方法不会写入 `event.error`。
+
+**100 张额度与自动清理**
+
+每个机器人最多保存 100 张有效素材。上传前若已满 100 张，框架会遍历素材分页，
+按 `created_at` 删除最早上传的 **1 张**，再上传新图。例如当前有 99 张时直接上传；
+当前有 100 张时先删 1 张再上传，成功后仍为 100 张。清理依据是上传时间。
+
+同一 `MessageSender` 实例的一键上传串行执行，插件之间共享该实例的上传锁。
+格式、大小和文件读取检查在删除旧素材前完成；查询或删除失败会停止本次上传。
+旧素材一旦删除，后续申请、直传或确认失败也不会恢复它，调用方应检查上传结果。
+
+**分页查询与手动删除**
+
+`get_media_images(cursor='', return_error=False)` 返回当前页字典，包含 `images`、
+`next_cursor` 和 `total`。`images` 内的每项包含 `image_id`、`url`、`file_name`、
+`preview_url`、`created_at`、`expires_at`；时间字段为 Unix 秒级时间戳。
+`next_cursor` 为空字符串时已到末页，`total` 为平台返回的有效素材总数。
+
+下面的写法遍历全部分页，并在失败时保留已读取的结果：
+
+~~~python
+images = []
+cursor = ''
+while True:
+    page, error = await event.sender.get_media_images(cursor=cursor, return_error=True)
+    if error:
+        print(error)
+        break
+    images.extend(page['images'])
+    cursor = page['next_cursor']
+    if not cursor:
+        break
+~~~
+
+查询失败默认返回 `None`；`return_error=True` 时成功返回 `(page, None)`，
+失败返回 `(None, error)`。删除方法返回 `(ok, response)`：
+
+~~~python
+ok, response = await event.sender.delete_media_image(image_id)
+if not ok:
+    print(response)
+~~~
+
+`preview_url` 是临时预览地址，应刷新获取；消息中使用 `url`。素材引用仅限所属
+机器人使用，最后一次成功用于发送消息后有效期续为 90 天。删除素材后，后续消息
+不能再使用该引用，已经发送的消息不受影响。复用素材时保存 `image_id` 和 `url`。
+
+**底层上传接口**
+
+需要自行控制上传流程时，Sender 也提供：
+
+- `prepare_media_image(file_name, file_size, content_type, md5, sha1)`：申请上传任务。
+  `file_size` 为字节数，`md5` 为 32 位十六进制字符串，`sha1` 为 40 位十六进制字符串。
+  成功响应包含 `upload_id`、`presigned_url`、`expires_in`。
+- `complete_media_image(upload_id, md5)`：确认直传完成，成功响应为素材字典。
+
+两个底层方法均返回 `(ok, response)`，调用方负责向 `presigned_url` 发送二进制
+`PUT`，并使用与申请一致的 `Content-Type`。一键上传方法同时负责额度清理和串行控制。
+接口字段以[官方素材管理文档](https://bot.q.qq.com/wiki/develop/api-v2/server-inter/message/material-management.html)为准。
 
 ---
 

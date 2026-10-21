@@ -22,6 +22,7 @@ from core.message._http import (
     _msg_seq,
     log,
 )
+from core.message._material import _MaterialMixin
 from core.message._media_send import (
     _MediaSendMixin,
     _set_msg_or_event_id,
@@ -85,7 +86,7 @@ def _parse_stream_chunk(item):
     return kind == 'replace', text
 
 
-class MessageSender(_HttpMixin, _MediaSendMixin, _SenderLogMixin):
+class MessageSender(_HttpMixin, _MediaSendMixin, _MaterialMixin, _SenderLogMixin):
     """消息发送器 (每个机器人实例一个)"""
 
     __slots__ = (
@@ -96,6 +97,7 @@ class MessageSender(_HttpMixin, _MediaSendMixin, _SenderLogMixin):
         '_bot_name',
         '_bot_qq',
         '_media_dir',
+        '_material_upload_lock',
         '_log_service',
         '_group_member_sync_locks',
         '_group_record_cache',
@@ -118,6 +120,7 @@ class MessageSender(_HttpMixin, _MediaSendMixin, _SenderLogMixin):
         self._reply_log_cb = None
         self._reply_plugin_name = ''
         self._media_dir = ''
+        self._material_upload_lock = asyncio.Lock()
 
     def bind_instance(self, *, log_service=None, bot_name='', bot_qq='', media_dir=''):
         """由 BotInstance 调用, 注入运行时依赖"""
@@ -593,11 +596,13 @@ class MessageSender(_HttpMixin, _MediaSendMixin, _SenderLogMixin):
     # ==================== 工具 ====================
 
     async def get_share_link(self, callback_data=None):
-        if not callback_data:
+        """生成添加机器人好友的分享链接，callback_data 最长 32 字符。"""
+        callback_data = '' if callback_data is None else str(callback_data)
+        if not callback_data or len(callback_data) > 32:
             return None
-        success, data = await self.post_json('/v2/generate_url_link', {'callbackData': str(callback_data)})
-        if success and data.get('retcode') == 0:
-            return data.get('data', {}).get('url')
+        success, data = await self.post_json('/v2/generate_url_link', {'callback_data': callback_data})
+        if success and isinstance(data.get('data'), dict):
+            return data['data'].get('url')
         return None
 
     # ==================== 自定义菜单 / 指令面板 ====================

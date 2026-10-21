@@ -17,6 +17,7 @@ from core.storage._schema import (
     _json_field,
 )
 from core.storage.members import build_member_entry
+from core.storage.message_stats import backfill_message_stats, empty_message_stats, read_message_stats
 from core.storage.share import ShareMixin
 from core.storage.subscribe import SubscribeMixin
 from core.storage.wakeup import WakeupMixin
@@ -51,9 +52,12 @@ class LogService(_BaseLogService, ShareMixin, WakeupMixin, SubscribeMixin):
         self._log_tag = self._appid
         self._data_write_queue = _BatchQueue(maxsize=_QUEUE_MAXSIZE)
         self._data_pending = []
+        self._message_stats_loop = None
+        self._message_stats_jobs = {}
 
     async def start(self):
         """启动日志服务"""
+        self._message_stats_loop = asyncio.get_running_loop()
         if not LogService._global_callbacks_registered:
             LogService._global_callbacks_registered = True
             on_error(LogService._global_error_dispatch)
@@ -61,6 +65,58 @@ class LogService(_BaseLogService, ShareMixin, WakeupMixin, SubscribeMixin):
         # 昨日库结构/索引后台预热, 避免首次统计查询时现场建索引
         spawn(self._run_io(self._warm_yesterday_message_schema))
         await self._start_tasks()
+        for day in (datetime.now(), datetime.now() - timedelta(days=1)):
+            self._start_message_stats_backfill(day.strftime('%Y-%m-%d'))
+
+    def message_statistics(self, date=None, *, before=None):
+        """线程中读取汇总；旧库补算交给后台，HTTP 请求不等待扫库。"""
+        date = date or datetime.now().strftime('%Y-%m-%d')
+        path = self._resolve_db_path('message', date)
+        if not os.path.isfile(path):
+            return empty_message_stats()
+        try:
+            with self._locked_conn(path, 'message', read_only=True) as conn:
+                conn.execute('BEGIN')
+                try:
+                    stats = read_message_stats(conn, before=before)
+                finally:
+                    conn.rollback()
+        except FileNotFoundError:
+            return empty_message_stats()
+        if stats['pending'] and self._message_stats_loop is not None and self._message_stats_loop.is_running():
+            self._message_stats_loop.call_soon_threadsafe(self._start_message_stats_backfill, date)
+        return stats
+
+    def _start_message_stats_backfill(self, date):
+        if not self._accepting or date in self._message_stats_jobs:
+            return
+        task = asyncio.create_task(self._backfill_message_statistics(date))
+        self._message_stats_jobs[date] = task
+        self._tasks.append(task)
+
+        def finished(done):
+            self._message_stats_jobs.pop(date, None)
+            self._tasks.remove(done)
+            if not done.cancelled():
+                done.exception()
+
+        task.add_done_callback(finished)
+
+    async def _backfill_message_statistics(self, date):
+        path = self._resolve_db_path('message', date)
+        if not os.path.isfile(path):
+            return
+        try:
+            while self._accepting:
+                if await self._run_write(path, self._backfill_message_stats_sync, path):
+                    return
+                await asyncio.sleep(0.05)  # 每批释放写锁，让消息落库优先穿插。
+        except Exception as exc:
+            log.warning(f'[{self._appid}] {date} 消息统计补算失败，下次查询重试: {exc}')
+
+    def _backfill_message_stats_sync(self, path):
+        with self._transaction(path, 'message') as conn:
+            return backfill_message_stats(conn)
 
     def _ensure_today_message_schema(self):
         """启动时主动校验当天 message.db 结构。"""
