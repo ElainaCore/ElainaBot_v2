@@ -15,8 +15,36 @@ _V2_ALLOWED_PREFIXES = (
     '/api/v1/logout',
     '/cgi-bin/callback/check_webhook',
 )
+# Notification APIs use /pb/ on q.qq.com rather than /cgi-bin/v2/.
+# Allow these exact endpoints without opening up the whole /pb/ namespace.
+_V2_ALLOWED_PATHS = frozenset((
+    '/pb/AppFetchPrivateMsg',
+    '/pb/AppOperatePrivateMsg',
+))
 
 _AVATAR_MAX_SIZE = 2 * 1024 * 1024
+_PANEL_MENU_LIMIT = 20
+
+
+def _panel_menu_limit_error(payload):
+    if not isinstance(payload, dict):
+        return '菜单与指令配置无效'
+    for key, label in (('menu', '菜单'), ('panel', '指令')):
+        records = payload.get(key) or []
+        if not isinstance(records, list):
+            return '菜单与指令配置无效'
+        for record in records:
+            if not isinstance(record, dict):
+                return '菜单与指令配置无效'
+            config = record.get(key) or {}
+            if not isinstance(config, dict):
+                return '菜单与指令配置无效'
+            items = config.get('items') or []
+            if not isinstance(items, list):
+                return '菜单与指令配置无效'
+            if len(items) > _PANEL_MENU_LIMIT:
+                return f'{label}最多支持 {_PANEL_MENU_LIMIT} 条'
+    return ''
 
 
 def _v2_cookie(ud):
@@ -185,8 +213,14 @@ async def handle_v2_proxy(request: web.Request):
     if not _v2_ready(ud):
         return h._err('新版开放平台未授权，请重新扫码登录', status=200)
     path = body.get('path', '')
-    if not any(path.startswith(p) for p in _V2_ALLOWED_PREFIXES):
+    if not isinstance(path, str) or (
+        path not in _V2_ALLOWED_PATHS and not any(path.startswith(p) for p in _V2_ALLOWED_PREFIXES)
+    ):
         return h._err('非法的接口路径')
+    if path == '/cgi-bin/v2/info/panel_menu/modify':
+        limit_error = _panel_menu_limit_error(body.get('payload'))
+        if limit_error:
+            return h._err(limit_error)
     method = body.get('method', 'POST')
     result = await api.v2_request(
         method,
@@ -237,6 +271,12 @@ async def handle_v2_webhook_suggest(request: web.Request):
 async def handle_v2_upload_avatar(request: web.Request):
     form = await request.post()
     user_id = str(form.get('user_id', 'web_user'))
+    try:
+        upload_type = int(str(form.get('type', 2)))
+    except ValueError:
+        return h._err('图片用途无效')
+    if upload_type not in (1, 2, 3):
+        return h._err('图片用途无效')
     file = form.get('file')
     if not isinstance(file, FileField) or not file.content_type.startswith('image/'):
         return h._err('请选择图片文件')
@@ -263,7 +303,7 @@ async def handle_v2_upload_avatar(request: web.Request):
         cookie=_v2_cookie(ud),
         skey=ud.get('skey', ''),
         data={
-            'type': 2,
+            'type': upload_type,
             'bot_appid': bot_appid,
         },
     )

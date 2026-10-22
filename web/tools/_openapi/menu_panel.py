@@ -259,8 +259,8 @@ def _menu_for_import(menu):
     if not isinstance(menu, dict):
         raise ValueError('menu 必须为 JSON 对象或 null')
     items = menu.get('items', [])
-    if not isinstance(items, list) or len(items) > 10:
-        raise ValueError('menu.items 必须为不超过 10 项的数组')
+    if not isinstance(items, list) or len(items) > 20:
+        raise ValueError('menu.items 必须为不超过 20 项的数组')
     return {'items': [_menu_item_for_import(item) for item in items]}
 
 

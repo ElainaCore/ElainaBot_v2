@@ -12,7 +12,7 @@ from pathlib import Path
 log = logging.getLogger('ElainaBot.web.message')
 _BATCH = 2000
 _TAIL = 2000
-_jobs = set()
+_jobs: set[str] = set()
 _jobs_lock = threading.Lock()
 
 
