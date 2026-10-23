@@ -874,3 +874,56 @@ async def handle_set_group_member_mute(request: web.Request):
         'message': f'已禁言 {minutes} 分钟',
         'data': {'mute_expire_at': expire_at},
     })
+
+
+def _get_user_groups_sync(user_id, appid):
+    manager = _shared._bot_manager
+    if not manager:
+        return []
+    groups = []
+    for bot_appid, bot in manager._bots.items():
+        if appid and appid != bot_appid:
+            continue
+        rows = bot.log_service.query_data(
+            'SELECT m.group_id AS chat_id, m.member_role, m.last_active, '
+            'g.group_name, g.group_member_num, g.in_group '
+            'FROM group_members m LEFT JOIN groups_users g ON g.group_id=m.group_id '
+            'WHERE m.user_id=? ORDER BY m.last_active DESC, m.group_id',
+            (user_id,),
+        )
+        groups.extend(dict(row, appid=bot_appid) for row in rows)
+    return groups
+
+
+async def handle_get_user_groups(request: web.Request):
+    """查询指定机器人已记录的用户群成员关系。"""
+    body = await request.json()
+    user_id = body.get('user_id')
+    appid = body.get('appid', '')
+    if not isinstance(user_id, str) or not user_id.strip():
+        return web.json_response({'success': False, 'message': '缺少 user_id'}, status=400)
+    if not isinstance(appid, str):
+        return web.json_response({'success': False, 'message': 'appid 必须为字符串'}, status=400)
+    groups = await asyncio.get_running_loop().run_in_executor(None, _get_user_groups_sync, user_id.strip(), appid)
+    return web.json_response({'success': True, 'data': {'groups': groups}})
+
+
+async def handle_get_group_members(request: web.Request):
+    """读取指定群的全部已记录成员，不返回成员扩展资料。"""
+    body = await request.json()
+    group_id = body.get('group_id')
+    appid = body.get('appid', '')
+    if not isinstance(group_id, str) or not group_id.strip() or not isinstance(appid, str):
+        return web.json_response({'success': False, 'message': '无效的 group_id/appid'}, status=400)
+    manager = _shared._bot_manager
+    bot = manager._bots.get(appid) if manager and appid else _get_bot()
+    if not bot:
+        return web.json_response({'success': False, 'message': '无可用机器人'}, status=400)
+    members = await asyncio.get_running_loop().run_in_executor(
+        None, bot.log_service.query_data,
+        'SELECT user_id FROM group_members WHERE group_id=? ORDER BY user_id',
+        (group_id.strip(),),
+    )
+    return web.json_response({'success': True, 'data': {
+        'members': [dict(member, appid=bot.appid) for member in members],
+    }})

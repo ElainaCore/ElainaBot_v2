@@ -110,6 +110,8 @@ def get_routes() -> list:
         web.post('/api/message/remarks/delete', _(message_handler.handle_delete_remark)),
         web.post('/api/message/group-info/refresh', _(message_handler.handle_refresh_group_info)),
         web.post('/api/message/group-roles', _(message_handler.handle_get_group_roles)),
+        web.post('/api/message/user-groups', _(message_handler.handle_get_user_groups)),
+        web.post('/api/message/group-members', _(message_handler.handle_get_group_members)),
         web.post('/api/message/group-member/mute', _(message_handler.handle_set_group_member_mute)),
         # ── 统计 ──
         web.get('/api/statistics', _(statistics_handler.handle_get_statistics)),
