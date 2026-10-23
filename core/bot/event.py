@@ -36,6 +36,7 @@ log = get_logger(FRAMEWORK, '事件处理')
 _USER_CACHE_TTL = 3600
 _DEDUP_TTL = 300
 _FULL_ACCESS_CACHE_TTL = 1800
+_FULL_ACCESS_CACHE_MAX = 10000
 _TRACK_WORKERS = 8  # 用户追踪后台 worker 数
 _TRACK_QUEUE_MAX = 5000  # 用户追踪队列上限, 满则转入合并缓冲 (不丢弃)
 _TRACK_DEDUP_TTL = 60  # 同键群消息追踪去重窗口(秒): 追踪任务对同键幂等, 短时重复直接跳过
@@ -416,6 +417,8 @@ class EventHandlerMixin:
         expire = self._full_access_cache.get(cache_key)
         if expire and now < expire:
             return
+        if cache_key not in self._full_access_cache and len(self._full_access_cache) >= _FULL_ACCESS_CACHE_MAX:
+            self._full_access_cache.pop(next(iter(self._full_access_cache)))
         self._full_access_cache[cache_key] = now + _FULL_ACCESS_CACHE_TTL
         bot.log_service.db_queue(
             'INSERT INTO groups_users (group_id, is_full_access, in_group) VALUES (?, 1, 1) '

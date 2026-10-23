@@ -265,9 +265,11 @@ def _execute_sql_sync(db_path, sql, is_read):
 
         cursor = conn.execute(sql)
         if is_read:
-            rows = cursor.fetchall()
+            rows = cursor.fetchmany(1001)
+            truncated = len(rows) > 1000
+            rows = rows[:1000]
             columns = [{'name': desc[0], 'type': ''} for desc in cursor.description] if cursor.description else []
-            return {'rows': [dict(r) for r in rows], 'columns': columns, 'total': len(rows)}, ''
+            return {'rows': [dict(r) for r in rows], 'columns': columns, 'total': len(rows), 'truncated': truncated}, ''
 
         affected = cursor.rowcount
         conn.commit()
@@ -426,9 +428,7 @@ async def handle_execute_sql(request: web.Request):
 
     is_read = _READ_PATTERN.match(sql)
 
-    # 读查询自动加 LIMIT 防止返回过多
-    if is_read and not re.search(r'\bLIMIT\b', sql, re.IGNORECASE):
-        sql = sql.rstrip(';') + ' LIMIT 1000'
+    # 在游标读取端限制结果，避免给 PRAGMA/EXPLAIN 拼接非法 LIMIT。
 
     try:
         data, message = await asyncio.to_thread(_execute_sql_sync, abs_path, sql, bool(is_read))

@@ -66,6 +66,8 @@ def hash_password(plain: str) -> str:
 
 def verify_password(plain: str, stored: str) -> bool:
     """恒定时间比较, 兼容明文旧密码"""
+    if not isinstance(plain, str) or not isinstance(stored, str):
+        return False
     if stored.startswith(_PWD_HASH_PREFIX):
         try:
             rest = stored[len(_PWD_HASH_PREFIX) :]
@@ -76,7 +78,7 @@ def verify_password(plain: str, stored: str) -> bool:
         except Exception:
             return False
     # 明文回退 (旧配置兼容), 仍用恒定时间比较
-    return hmac.compare_digest(plain, stored)
+    return hmac.compare_digest(plain.encode('utf-8'), stored.encode('utf-8'))
 
 
 def is_hashed(stored: str) -> bool:

@@ -24,7 +24,7 @@ def is_runtime_cache(path: str) -> bool:
 def _validate_member_name(member_name: str) -> None:
     """拒绝绝对路径和显式 .. 成员，避免压缩包路径穿越。"""
     normalized = member_name.replace('\\', '/')
-    if normalized.startswith('/') or os.path.isabs(normalized):
+    if ':' in normalized or normalized.startswith('/') or os.path.isabs(normalized):
         raise ValueError(f'非法压缩包成员路径 (绝对路径): {member_name!r}')
     if any(part == '..' for part in normalized.split('/')):
         raise ValueError(f'非法压缩包成员路径 (疑似路径穿越): {member_name!r}')
@@ -61,7 +61,10 @@ def remove_path(path: str | None, *, ignore_errors: bool = False) -> None:
 
 def safe_extractall(zf: zipfile.ZipFile, dest_dir: str) -> None:
     dest_dir = os.path.realpath(dest_dir)
-    for member in zf.infolist():
+    members = zf.infolist()
+    if len(members) > 50000 or sum(m.file_size for m in members) > 2 * 1024**3:
+        raise ValueError('压缩包展开大小或文件数量超限')
+    for member in members:
         member_name = member.filename.replace('\\', '/')
         _validate_member_name(member_name)
         # 字节码和运行时缓存属于本机环境，不应覆盖/删除，也可能在 Windows
@@ -76,7 +79,7 @@ def safe_extractall(zf: zipfile.ZipFile, dest_dir: str) -> None:
         else:
             os.makedirs(os.path.dirname(target) or dest_dir, exist_ok=True)
             with zf.open(member) as src, open(target, 'wb') as dst:
-                dst.write(src.read())
+                shutil.copyfileobj(src, dst, length=1024 * 1024)
 
 
 def replace_dir_from_zip(zf: zipfile.ZipFile, target_dir: str, top_dir: str = '') -> None:

@@ -121,10 +121,10 @@ class _DispatchMixin:
                 ab = h['_allowed_bots']
                 if ab is not None and appid not in ab:
                     continue
+                if h['_smask'] & ~scene:
+                    continue
                 m: re.Match[str] | None = h['compiled'].search(content)
                 if not m:
-                    continue
-                if h['_smask'] & ~scene:
                     continue
                 matched.append((h, m))
                 if h.get('block', False):  # 默认放行, block=True 时拦截后续
@@ -256,12 +256,11 @@ class _DispatchMixin:
             # 非AT群消息过滤
             if is_non_at and not h.get('ignore_at_check', False) and not non_at_ok:
                 continue
-            # 正则匹配
+            # 场景先过滤，避免为不适用的插件执行正则。
+            if h['_smask'] & ~scene:
+                continue
             m: re.Match[str] | None = h['compiled'].search(try_content)
             if not m:
-                continue
-            # 场景过滤 (位掩码): handler 要求的场景位 & 事件不具备的场景位 → 不匹配
-            if h['_smask'] & ~scene:
                 continue
             # 权限
             if h['owner_only'] and not self._is_owner(event):

@@ -30,15 +30,17 @@ class MediaCleanupService:
                 log.debug(f'媒体清理失败: {e}')
 
     def _do_cleanup(self, cutoff: float):
-        for name in os.listdir(self._media_dir):
-            fpath = os.path.join(self._media_dir, name)
-            try:
-                if os.path.isfile(fpath) and os.path.getmtime(fpath) < cutoff:
-                    os.remove(fpath)
-            except OSError:
-                pass
+        with os.scandir(self._media_dir) as entries:
+            for entry in entries:
+                try:
+                    if entry.is_file(follow_symlinks=False) and entry.stat(follow_symlinks=False).st_mtime < cutoff:
+                        os.remove(entry.path)
+                except OSError:
+                    pass
 
     def start(self):
+        if self._task is not None and not self._task.done():
+            return
         self._task = asyncio.create_task(self())
 
     def stop(self):

@@ -300,13 +300,13 @@ class _BaseLogService:
         with self._queue_lock:
             queue = self._db_queues[key]
             func, args, result = queue.popleft()
-        while True:
+        for index in range(64):
             try:
                 value, error = func(*args), None
             except BaseException as exc:
                 value, error = None, exc
             with self._queue_lock:
-                if not queue:
+                if not queue or index == 63:
                     return result, value, error
                 next_job = queue.popleft()
             loop.call_soon_threadsafe(self._write_finished, result, value, error)

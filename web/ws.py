@@ -15,6 +15,7 @@ from core.base.tasks import spawn
 log = logging.getLogger('ElainaBot.web.ws')
 
 _BROADCAST_QUEUE_MAX = 2048
+_WS_SEND_TIMEOUT = 5.0
 
 
 # ==================== WSBroadcast ====================
@@ -47,13 +48,18 @@ class WSBroadcast:
             return
         payload = json.dumps({'type': msg_type, 'data': data}, ensure_ascii=False, default=str)
         # WebSocket
-        dead = set()
-        for ws in list(self._clients):
+        async def send(ws):
             try:
-                await ws.send_str(payload)
+                async with asyncio.timeout(_WS_SEND_TIMEOUT):
+                    await ws.send_str(payload)
             except Exception:
-                dead.add(ws)
-        self._clients.difference_update(dead)
+                self._clients.discard(ws)
+                # 超时客户端不能继续占用广播队列；关闭也必须有时间上限。
+                with contextlib.suppress(Exception):
+                    async with asyncio.timeout(_WS_SEND_TIMEOUT):
+                        await ws.close()
+
+        await asyncio.gather(*(send(ws) for ws in tuple(self._clients)))
         # SSE
         for q in list(self._sse_queues):
             with contextlib.suppress(Exception):

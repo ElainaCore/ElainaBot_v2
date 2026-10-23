@@ -88,14 +88,12 @@ class AsyncHttpClient:
         return await self.request('POST', url, **kwargs)
 
     async def put(self, url, *, content=None, headers=None, timeout=None, **kwargs):
-        if self._is_httpx:
-            _t = httpx.Timeout(timeout) if isinstance(timeout, int | float) else timeout
-            resp = await self._client.put(url, content=content, headers=headers, timeout=_t, **kwargs)
-            return HttpResponse(resp.status_code, resp.content, resp.headers)
-        _t = aiohttp.ClientTimeout(total=timeout) if isinstance(timeout, int | float) else timeout
-        async with self._client.put(url, data=content, headers=headers, timeout=_t, **kwargs) as resp:
-            body = await resp.read()
-            return HttpResponse(resp.status, body, resp.headers)
+        # 保留 put 的既有语义：httpx 的 None 表示不限制超时。
+        kwargs['timeout'] = timeout
+        if headers is not None:
+            kwargs['headers'] = headers
+        kwargs['content' if self._is_httpx else 'data'] = content
+        return await self.request('PUT', url, **kwargs)
 
     async def aclose(self):
         if self._is_httpx:

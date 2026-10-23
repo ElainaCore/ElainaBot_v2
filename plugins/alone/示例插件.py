@@ -1,12 +1,15 @@
-"""示例功能：媒体、流式消息、卡片、按钮、群管理、主动消息和网页面板。"""
+"""功能示例；发送和管理测试仅主人可用，邀请查询、全量签到及事件演示对所有用户开放。"""
 
 import asyncio
 import json
+from copy import deepcopy
 from datetime import datetime, timedelta
+from itertools import islice
 from pathlib import Path
 
 from aiohttp import web
 
+from core.message.response import extract_message_id, extract_reference_id
 from core.plugin.decorators import handler, on_unload
 from core.plugin.web_pages import register_page, register_route, unregister_page
 
@@ -20,6 +23,9 @@ def mask_id(value: object, visible: int = 3, mask: str = '****') -> str:
 
 _PLUGIN_DIR = Path(__file__).resolve().parent
 IMG = 'https://i0.hdslb.com/bfs/openplatform/559162218f455ea859c783dceeda65cb1c724f4c.png'
+# 固定模板 ID；使用其他机器人时，直接在这里替换为该机器人自己的模板。
+SUBSCRIBE_TEMPLATE_ID = '102134274_1749040268'
+MARKDOWN_TEMPLATE_ID = '102134274_1749040268'  # 消息展示模板，需包含 text 参数
 
 # ==================== 媒体发送 ====================
 
@@ -31,7 +37,10 @@ async def send_image(event, match):
 
 @handler(r'^本地图片$', name='本地图片', desc='发送本地图片', owner_only=True)
 async def send_local_image(event, match):
-    image = await asyncio.to_thread((_PLUGIN_DIR / '1.png').read_bytes)
+    try:
+        image = await asyncio.to_thread((_PLUGIN_DIR / '1.png').read_bytes)
+    except OSError:
+        return await event.reply('❌ 请先在示例插件目录放置可读取的 1.png')
     await event.reply_image(image, '📸 本地图片')
 
 
@@ -47,6 +56,8 @@ async def send_video(event, match):
 
 @handler(r'^文件$', name='文件', desc='发送文件', owner_only=True)
 async def send_file(event, match):
+    if not (_PLUGIN_DIR / '1.txt').is_file():
+        return await event.reply('❌ 请先在示例插件目录放置 1.txt')
     await event.reply_file(str(_PLUGIN_DIR / '1.txt'), '📄 文件示例', file_name='test.txt')
 
 
@@ -113,9 +124,13 @@ async def proactive_stream_demo(event, match):
 @handler(r'^撤回测试$', name='撤回测试', desc='手动撤回与自动撤回', owner_only=True)
 async def test_recall(event, match):
     await event.reply('⏰ 5秒后自动撤回', auto_delete_time=5)
-    await event.reply('⏰ 3秒后手动撤回...')
+    data = await event.reply('⏰ 3秒后手动撤回...')
+    message_id = extract_message_id(data)
+    if not message_id:
+        return await event.reply('❌ 未取得机器人回复的消息 ID，无法手动撤回')
     await asyncio.sleep(3)
-    await event.recall()
+    if not await event.recall(message_id=message_id):
+        await event.reply('❌ 手动撤回失败')
 
 
 # ==================== 卡片 ====================
@@ -163,27 +178,28 @@ BUTTONS = [
         {'text': '赞👍', 'data': 'vote_up', 'type': 1, 'style': 1, 'group_id': 'vote'},
         {'text': '踩👎', 'data': 'vote_down', 'type': 1, 'style': 0, 'group_id': 'vote'},
     ],
-    # 订阅按钮需要随富文本消息发送
-    [
-        {
-            'text': '订阅',
-            'show': '已订阅',
-            'subscribe': '102134274_1749040268',  # 替换为机器人的富文本模板标识
-            'modal': {'content': '确认订阅？', 'confirm_text': '✔️确认', 'cancel_text': '❌取消'},
-            'tips': '请升级QQ版本',
-        }
-    ],
 ]
 
 
-@handler(r'^按钮$', name='按钮示例', desc='发送带按钮的消息 (含互斥、订阅按钮)', owner_only=True)
+@handler(r'^按钮$', name='按钮示例', desc='发送带互斥按钮的消息', owner_only=True)
 async def send_buttons(event, match):
-    await event.reply('📌 按钮功能演示', buttons=BUTTONS, msg_type=2)
+    await event.reply('📌 按钮功能演示', buttons=deepcopy(BUTTONS), msg_type=2)
 
 
 @handler(r'^小按钮$', name='小按钮示例', desc='键盘级 font_size=small', owner_only=True)
 async def send_small_buttons(event, match):
-    await event.reply('📌 小按钮演示', buttons={'rows': BUTTONS, 'font_size': 'small'}, msg_type=2)
+    await event.reply('📌 小按钮演示', buttons={'rows': deepcopy(BUTTONS), 'font_size': 'small'}, msg_type=2)
+
+
+@handler(r'^订阅按钮$', name='订阅按钮', desc='使用本机器人配置的模板发送订阅按钮', owner_only=True)
+async def send_subscribe_buttons(event, match):
+    subscribe_id, markdown_id = SUBSCRIBE_TEMPLATE_ID, MARKDOWN_TEMPLATE_ID
+    if not subscribe_id or not markdown_id:
+        return await event.reply('❌ 请在示例插件.py 中填写 SUBSCRIBE_TEMPLATE_ID 和 MARKDOWN_TEMPLATE_ID；消息模板需包含 text 参数')
+    await event.reply('🔔 订阅按钮演示', msg_type=2,
+                      markdown={'custom_template_id': markdown_id, 'params': [{'key': 'text', 'values': ['🔔 订阅按钮演示']}]},
+                      buttons=[[{'text': '订阅', 'show': '已订阅', 'subscribe': subscribe_id,
+                                 'modal': '确认订阅？', 'tips': '请升级QQ版本'}]])
 
 
 @handler(r'', name='订阅状态事件', desc='用户订阅/取消订阅时触发', event_types=['SUBSCRIBE_MESSAGE_STATUS'])
@@ -196,12 +212,14 @@ async def on_subscribe_status(event, match):
 @handler(r'^订阅消息\s+(\S+)$', name='订阅消息推送示例', desc='向指定群推送订阅消息', owner_only=True)
 async def send_subscribe_message(event, match):
     # 发送时携带订阅标识即为订阅消息，否则按普通主动消息处理
-    markdown_id = '102134274_1749040268'
+    markdown_id = SUBSCRIBE_TEMPLATE_ID
+    if not markdown_id:
+        return await event.reply('❌ 请在示例插件.py 中填写 SUBSCRIBE_TEMPLATE_ID')
     group_id = match.group(1)
     ls = _get_log_service(event)
     if not ls:
         return await event.reply('❌ 服务不可用')
-    subs = ls.subscribe_get_by_target(group_id)
+    subs = await asyncio.to_thread(ls.subscribe_get_by_target, group_id)
     t = next((x for x in subs if x['template_id'] == markdown_id), None)
     if not t:
         return await event.reply('📭 该群未订阅此模板')
@@ -252,7 +270,9 @@ async def reply_reference_current(event, match):
 @handler(r'^引用刚发送$', name='引用刚发送消息', desc='引用机器人刚发出的消息', owner_only=True)
 async def reply_reference_sent(event, match):
     data = await event.reply('第一条消息')
-    ref_id = (data or {}).get('ext_info', {}).get('ref_idx', '')
+    ref_id = extract_reference_id(data)
+    if not ref_id:
+        return await event.reply('❌ 第一条消息没有返回引用 ID，无法引用')
     await event.reply('这条引用了上面第一条', message_reference_id=ref_id)
 
 
@@ -272,7 +292,7 @@ async def get_share_link(event, match):
     await event.reply(f'🔗 你的专属邀请链接：\n{link}' if link else '❌ 生成邀请链接失败')
 
 
-@handler(r'^查询邀请数量$', name='查询邀请数量', desc='查看自己邀请了多少用户')
+@handler(r'^查询邀请数量(?:\s+(\d{1,9}))?$', name='查询邀请数量', desc='查看邀请记录，可附页码，每页10条')
 async def query_share_count(event, match):
     ls = _get_log_service(event)
     if not ls:
@@ -280,8 +300,16 @@ async def query_share_count(event, match):
     refs = await ls.share_get_referrals(event.user_id)
     if not refs:
         return await event.reply('📊 你还没有邀请任何用户')
-    lines = [f'📊 你已成功邀请 {len(refs)} 位用户：\n']
-    lines += [f'{i}. {mask_id(oid)}  来源：{ls.get_scene_name(scene)}' for i, (oid, scene) in enumerate(refs.items(), 1)]
+    pages = (len(refs) + 9) // 10
+    page = int(match.group(1) or 1)
+    if not 1 <= page <= pages:
+        return await event.reply(f'❌ 页码范围为 1–{pages}')
+    offset = (page - 1) * 10
+    lines = [f'📊 你已成功邀请 {len(refs)} 位用户，第 {page}/{pages} 页：\n']
+    lines += [f'{i}. {mask_id(oid)}  来源：{ls.get_scene_name(scene)}'
+              for i, (oid, scene) in enumerate(islice(refs.items(), offset, offset + 10), offset + 1)]
+    if page < pages:
+        lines.append(f'下一页：查询邀请数量 {page + 1}')
     await event.reply('\n'.join(lines))
 
 
@@ -415,15 +443,15 @@ async def unmute_group_member(event, match):
 @handler(r'^指定召回\s+(\S+)$', name='指定召回', desc='向指定用户发送召回消息', owner_only=True)
 async def wakeup_user(event, match):
     uid = match.group(1)
-    await event.send_wakeup(uid, '📢 召回消息测试')
-    await event.reply(f'✅ 已向 {mask_id(uid)} 发送召回')
+    ok, reason = await event.send_wakeup(uid, '📢 召回消息测试')
+    await event.reply(f'✅ 已向 {mask_id(uid)} 发送召回' if ok else f'❌ 召回失败：{reason}')
 
 
 @handler(r'^强制召回\s+(\S+)$', name='强制召回', desc='强制向指定用户发送召回消息', owner_only=True)
 async def force_wakeup_user(event, match):
     uid = match.group(1)
-    await event.sender.force_wakeup(uid, '📢 强制召回测试')
-    await event.reply(f'✅ 已强制召回 {mask_id(uid)}')
+    ok, reason = await event.sender.force_wakeup(uid, '📢 强制召回测试')
+    await event.reply(f'✅ 已强制召回 {mask_id(uid)}' if ok else f'❌ 强制召回失败：{reason}')
 
 
 # ==================== 主动消息 ====================
@@ -436,40 +464,58 @@ async def check_in(event, match):
 
 @handler(r'^主动测试$', name='主动测试', desc='3秒后发送主动消息', owner_only=True, ignore_at_check=True)
 async def test_active_message(event, match):
+    if not _supports_proactive(event):
+        return await event.reply('❌ 此示例仅支持群聊和 C2C 私聊，不支持频道场景')
     await event.reply('⏰ 3秒后将发送主动消息...')
     await asyncio.sleep(3)
     if event.is_group:
-        await event.send_to_group(event.group_id, '🎉 主动群消息')
+        result = await event.send_to_group(event.group_id, '🎉 主动群消息')
     else:
-        await event.send_to_user(event.user_id, '🎉 主动私聊消息')
+        result = await event.send_to_user(event.user_id, '🎉 主动私聊消息')
+    await _report_send(event, result)
 
 
 @handler(r'^主动私聊\s+(\S+)\s+(.+)$', name='主动私聊', desc='向指定用户发送主动消息', owner_only=True)
 async def test_send_to_user(event, match):
     uid, content = match.group(1), match.group(2)
-    await event.send_to_user(uid, content)
-    await event.reply(f'✅ 已发送给 {mask_id(uid)}')
+    await _report_send(event, await event.send_to_user(uid, content), f'已发送给 {mask_id(uid)}')
 
 
 @handler(r'^主动群发\s+(\S+)\s+(.+)$', name='主动群发', desc='向指定群发送主动消息', owner_only=True)
 async def test_send_to_group(event, match):
     gid, content = match.group(1), match.group(2)
-    await event.send_to_group(gid, content)
-    await event.reply(f'✅ 已发送到群 {mask_id(gid)}')
+    await _report_send(event, await event.send_to_group(gid, content), f'已发送到群 {mask_id(gid)}')
+
+
+def _supports_proactive(event):
+    return not event.is_channel and (event.is_group or event.is_direct)
+
+
+async def _report_send(event, result, success='发送成功'):
+    ok, data, _ = result
+    reason = data.get('message', str(data)) if isinstance(data, dict) else str(data)
+    await event.reply(f'✅ {success}' if ok else f'❌ 发送失败：{reason}')
+
+
+def _get_sender(appid):
+    from core.bot.manager import _bot_manager_ref
+    bot = _bot_manager_ref.get_bot(appid) if _bot_manager_ref else None
+    return bot.sender if bot else None
 
 
 @handler(r'^无event群发\s+(\S+)\s+(.+)$', name='无event主动群发', desc='不借助 event, 直接用 sender 推送', owner_only=True)
 async def send_without_event(event, match):
-    # 定时任务等没有事件对象的场景，可以直接取得消息发送器
-    from core.bot.manager import _bot_manager_ref
-
-    sender = next(iter(_bot_manager_ref._bots.values())).sender
-    await sender.send_to_group(match.group(1), match.group(2))
-    await event.reply('✅ 已通过 sender 发送')
+    # 定时任务没有 event 时，应保存任务所属机器人的 appid 再获取 sender。
+    sender = _get_sender(event.appid)
+    if sender is None:
+        return await event.reply('❌ 当前机器人不可用')
+    await _report_send(event, await sender.send_to_group(match.group(1), match.group(2)), '已通过 sender 发送')
 
 
 @handler(r'^主动图片$', name='主动图片', desc='向当前会话主动发送图片', owner_only=True)
 async def test_send_image_proactive(event, match):
+    if not _supports_proactive(event):
+        return await event.reply('❌ 此示例仅支持群聊和 C2C 私聊，不支持频道场景')
     kw = {'target_group_id': event.group_id} if event.is_group else {'target_user_id': event.user_id}
     await event.reply_image(IMG, '📸 主动图片', **kw)
 

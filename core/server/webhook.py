@@ -1,5 +1,6 @@
 """Webhook 请求处理 — 验证 / 转发 / 交互响应"""
 
+import asyncio
 import functools
 import json
 import logging
@@ -26,7 +27,7 @@ def _finish_interaction(event, task):
     """交互事件分发结束回调: 取出异常 + 若插件未设置 code 则用默认 code 返回。"""
     try:
         exc = task.exception()
-    except Exception:
+    except asyncio.CancelledError:
         exc = None
     if exc is not None:
         log.warning(f'[Webhook] 交互事件分发异常: {exc!r}')
@@ -34,7 +35,7 @@ def _finish_interaction(event, task):
 
 
 class WebhookHandler:
-    """处理 QQ Bot webhook 回调: 签名验证 → 事件构造 → 分发"""
+    """处理 QQ Bot webhook 回调: 注册应答 → 事件构造 → 分发"""
 
     def __init__(self, bot_registry, on_event, on_error=None, *, on_event_received=None):
         self._bot_registry = bot_registry
@@ -46,7 +47,7 @@ class WebhookHandler:
         raw_body = await request.read()
         headers = dict(request.headers)
 
-        appid = headers.get('X-Bot-Appid', headers.get('x-bot-appid', '')) or request.query.get('appid', '')
+        appid = request.headers.get('X-Bot-Appid', '') or request.query.get('appid', '')
         if not appid:
             return web.json_response({'error': 'missing appid'}, status=400)
 
@@ -56,8 +57,11 @@ class WebhookHandler:
 
         try:
             body = json.loads(raw_body)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, UnicodeDecodeError):
             return web.json_response({'error': 'invalid JSON'}, status=400)
+
+        if not isinstance(body, dict):
+            return web.json_response({'error': 'JSON object required'}, status=400)
 
         # 签名验证 (op=13)
         if body.get('op') == 13:
