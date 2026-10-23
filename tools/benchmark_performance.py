@@ -1,10 +1,10 @@
 """隔离临时数据库的吞吐和事件循环延迟基准，不连接机器人。"""
 import asyncio
 import statistics
+import sys
 import tempfile
 import time
 import tracemalloc
-import sys
 from pathlib import Path
 from types import SimpleNamespace
 
