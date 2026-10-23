@@ -68,18 +68,47 @@ class FrameworkUpdater:
     def _load_version(self):
         try:
             with open(self.version_file, encoding='utf-8') as f:
-                return json.load(f).get('version', 'unknown')
+                ver = json.load(f).get('version', 'unknown')
+                if ver and ver != 'unknown':
+                    return ver
         except Exception:
-            return 'unknown'
+            pass
 
-    def _save_version(self, version):
+        # 尝试自动从 git 读取当前 commit SHA 与时间
+        try:
+            import subprocess
+            res = subprocess.run(
+                ['git', 'rev-parse', '--short', 'HEAD'],
+                cwd=str(self.base_dir),
+                capture_output=True,
+                text=True,
+                timeout=3,
+            )
+            if res.returncode == 0 and res.stdout.strip():
+                ver = res.stdout.strip()
+                date_res = subprocess.run(
+                    ['git', 'log', '-1', '--format=%ci'],
+                    cwd=str(self.base_dir),
+                    capture_output=True,
+                    text=True,
+                    timeout=3,
+                )
+                date_str = date_res.stdout.strip()[:19] if date_res.returncode == 0 else ''
+                self._save_version(ver, date_str)
+                return ver
+        except Exception as e:
+            log.debug(f'从 git 读取版本失败: {e}')
+
+        return 'unknown'
+
+    def _save_version(self, version, update_time=None):
         version = _normalize_version(version)
         try:
             with open(self.version_file, 'w', encoding='utf-8') as f:
                 json.dump(
                     {
                         'version': version,
-                        'update_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                        'update_time': update_time or datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                     },
                     f,
                     indent=2,
@@ -110,8 +139,14 @@ class FrameworkUpdater:
 
     def get_version_info(self):
         try:
+            if not self.version_file.exists():
+                self._load_version()
             with open(self.version_file, encoding='utf-8') as f:
                 info = json.load(f)
+            if info.get('version') == 'unknown':
+                ver = self._load_version()
+                if ver != 'unknown':
+                    info['version'] = ver
             info['custom_mirror'] = self.custom_mirror
             return info
         except Exception:
@@ -220,42 +255,79 @@ class FrameworkUpdater:
     async def download_update(self, version):
         try:
             self._report('downloading', '正在选择最快镜像...', 5)
-            original = GITHUB_DOWNLOAD_URL
-            url = await self._pick_download_url(original)
-            self._report('downloading', '下载中...', 8)
+            # 支持特定 commit SHA 归档下载
+            if version and version != 'latest' and version != 'main' and len(str(version)) >= 7:
+                original = f'https://github.com/{GITHUB_REPO}/archive/{version}.zip'
+            else:
+                original = GITHUB_DOWNLOAD_URL
+
+            # 候选镜像（优先自定义镜像，其次测速镜像，其次官方推荐镜像）
+            candidate_mirrors = []
+            if self.custom_mirror:
+                candidate_mirrors.append(self.custom_mirror)
+            cached = _load_mirror_cache()
+            if cached:
+                for c in cached[:3]:
+                    m = c.get('mirror') if isinstance(c, dict) else c
+                    if m and m not in candidate_mirrors:
+                        candidate_mirrors.append(m)
+            for fallback in ['https://ghfast.top/', 'https://gh-proxy.com/', 'https://ghproxy.net/']:
+                if fallback not in candidate_mirrors:
+                    candidate_mirrors.append(fallback)
+            candidate_mirrors.append('')  # 直连兜底
 
             temp_dir = self.base_dir / 'data' / 'temp_update'
             temp_dir.mkdir(exist_ok=True)
             zip_file = temp_dir / f'{version}.zip'
 
-            timeout = _aiohttp.ClientTimeout(total=180)
+            timeout = _aiohttp.ClientTimeout(total=60, sock_read=30)
             headers = {'User-Agent': 'ElainaBot/1.0'}
-            async with (
-                _aiohttp.ClientSession() as session,
-                session.get(
-                    url,
-                    headers=headers,
-                    timeout=timeout,
-                    allow_redirects=True,
-                ) as resp,
-            ):
-                resp.raise_for_status()
-                total = int(resp.headers.get('content-length', 0))
-                downloaded = 0
-                with open(zip_file, 'wb') as f:
-                    async for chunk in resp.content.iter_chunked(8192):
-                        f.write(chunk)
-                        downloaded += len(chunk)
-                        if total > 0:
-                            pct = 10 + downloaded * 30 // total
-                            self._report(
-                                'downloading',
-                                f'下载中... {downloaded * 100 // total}%',
-                                pct,
-                            )
 
-            self._report('downloading', '下载完成', 40)
-            return str(zip_file)
+            last_err = None
+            for mirror in candidate_mirrors:
+                download_url = _build_mirror_url(original, mirror)
+                try:
+                    display_mirror = mirror or '直连'
+                    self._report('downloading', f'下载中 (线路: {display_mirror})...', 8)
+                    async with (
+                        _aiohttp.ClientSession() as session,
+                        session.get(
+                            download_url,
+                            headers=headers,
+                            timeout=timeout,
+                            allow_redirects=True,
+                        ) as resp,
+                    ):
+                        if resp.status != 200:
+                            log.warning(f'镜像 {mirror} 返回状态码 {resp.status}')
+                            continue
+                        total = int(resp.headers.get('content-length', 0))
+                        downloaded = 0
+                        with open(zip_file, 'wb') as f:
+                            async for chunk in resp.content.iter_chunked(32768):
+                                f.write(chunk)
+                                downloaded += len(chunk)
+                                if total > 0:
+                                    pct = 10 + downloaded * 30 // total
+                                    self._report(
+                                        'downloading',
+                                        f'下载中... {downloaded * 100 // total}%',
+                                        pct,
+                                    )
+                        if downloaded > 10000:
+                            self._report('downloading', '下载完成', 40)
+                            return str(zip_file)
+                except Exception as e:
+                    log.warning(f'通过镜像 {mirror} 下载失败: {e}')
+                    last_err = e
+                    if zip_file.exists():
+                        try:
+                            zip_file.unlink()
+                        except OSError:
+                            pass
+                    continue
+
+            raise RuntimeError(f'所有镜像下载均失败: {last_err}')
         except Exception as e:
             self._report('failed', f'下载失败: {e}', 0)
             return None
@@ -411,6 +483,24 @@ class FrameworkUpdater:
             shutil.rmtree(temp, ignore_errors=True)
             if os.path.exists(zip_file):
                 os.remove(zip_file)
+
+            # 更新后自动保证前端根路径可用（去 /web/ 前缀）
+            try:
+                index_path = self.base_dir / 'web' / 'dist' / 'index.html'
+                if index_path.exists():
+                    txt = index_path.read_text(encoding='utf-8')
+                    if '/web/' in txt:
+                        txt = txt.replace('/web/', '/')
+                        index_path.write_text(txt, encoding='utf-8')
+                assets_dir = self.base_dir / 'web' / 'dist' / 'assets'
+                if assets_dir.exists():
+                    for js_file in assets_dir.glob('index*.js'):
+                        js_txt = js_file.read_text(encoding='utf-8')
+                        if '("/web/")' in js_txt:
+                            js_txt = js_txt.replace('("/web/")', '("/")')
+                            js_file.write_text(js_txt, encoding='utf-8')
+            except Exception as e:
+                log.debug(f'更新后清理 web 前缀异常: {e}')
 
             result['success'] = True
             result['message'] = f'更新成功！更新 {result["updated"]} 个文件，跳过 {result["skipped"]} 个'
