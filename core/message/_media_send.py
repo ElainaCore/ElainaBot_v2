@@ -17,6 +17,7 @@ from core.message.media import _resolve_upload_ep, upload_media_bytes, upload_me
 from core.message.response import extract_message_id
 from core.message.silk import convert_to_silk
 from core.message.voice import split_voice
+from core.network.http_compat import ResponseTooLargeError
 
 log = get_logger(FRAMEWORK, '消息发送')
 _VOICE_TOO_LONG = '40093013'
@@ -41,19 +42,12 @@ class _MediaSendMixin:
     async def download_media(self, url: str, *, silent: bool = False):
         try:
             client = await self._ensure_client()
-            resp = await client.get(url)
-            cl = int(resp.headers.get('content-length', 0))
-            if cl > _MAX_MEDIA_DOWNLOAD:
-                if not silent:
-                    log.warning(f'[{self._appid}] 媒体过大 ({cl} bytes), 跳过下载')
-                return None
-            body = resp.content
-            if len(body) > _MAX_MEDIA_DOWNLOAD:
-                if not silent:
-                    log.warning(f'[{self._appid}] 媒体实际大小超限 ({len(body)} bytes), 丢弃')
-                del body
-                return None
-            return body
+            resp = await client.get(url, max_response_bytes=_MAX_MEDIA_DOWNLOAD)
+            return resp.content
+        except ResponseTooLargeError as e:
+            if not silent:
+                log.warning(f'[{self._appid}] 媒体过大, 已终止下载: {e}')
+            return None
         except Exception as e:
             if not silent:
                 log.warning(f'[{self._appid}] 下载媒体失败: {e}')
