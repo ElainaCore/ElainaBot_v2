@@ -13,6 +13,7 @@ GITHUB_SHA_URL = f'https://codeload.github.com/{GITHUB_REPO}/zip/{{version}}'
 
 # GitHub API 代理 (能代理 api.github.com 请求)
 GITHUB_API_MIRRORS = [
+    f'https://ghfast.top/https://api.github.com/repos/{GITHUB_REPO}',
     f'https://api.github.com/repos/{GITHUB_REPO}',  # 直连
     f'https://ghproxy.cc/https://api.github.com/repos/{GITHUB_REPO}',
     f'https://gh-proxy.com/https://api.github.com/repos/{GITHUB_REPO}',
@@ -23,6 +24,10 @@ GITHUB_API_MIRRORS = [
 
 
 GITHUB_FILE_MIRRORS = [
+    'https://ghfast.top/',
+    'https://gh-proxy.com/',
+    'https://ghproxy.net/',
+    'https://mirror.ghproxy.com/',
     'https://github.chenc.dev/',
     'https://ghproxy.cfd/',
     'https://github.tbedu.top/',
