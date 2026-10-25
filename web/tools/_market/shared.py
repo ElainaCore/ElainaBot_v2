@@ -14,7 +14,10 @@ log = logging.getLogger('ElainaBot.web.market')
 
 # ==================== GitHub 插件库配置 ====================
 PLUGIN_REPO = 'ElainaCore/Elaina-plugins'
-_PLUGIN_JSON_RAW = f'https://raw.githubusercontent.com/{PLUGIN_REPO}/main/plugins.json'
+MARKET_MANIFESTS = {
+    'plugins.json': ('complete', 'single'),
+    'modules.json': ('module',),
+}
 _FALLBACK_MIRROR_PREFIXES = [
     'https://ghproxy.cc/',
     'https://gh-proxy.com/',

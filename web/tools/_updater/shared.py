@@ -22,7 +22,11 @@ GITHUB_API_MIRRORS = [
 ]
 
 
+# 前三个也用于下载失败时的默认备用线路。
 GITHUB_FILE_MIRRORS = [
+    'https://ghfast.top/',
+    'https://gh-proxy.com/',
+    'https://ghproxy.net/',
     'https://github.chenc.dev/',
     'https://ghproxy.cfd/',
     'https://github.tbedu.top/',
@@ -37,7 +41,6 @@ GITHUB_FILE_MIRRORS = [
     'https://gitproxy.mrhjx.cn/',
     'https://gh.fhjhy.top/',
     'https://gp.zkitefly.eu.org/',
-    'https://gh-proxy.com/',
     'https://ghfile.geekertao.top/',
     'https://j.1lin.dpdns.org/',
     'https://ghproxy.imciel.com/',

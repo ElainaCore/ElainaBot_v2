@@ -45,12 +45,11 @@ ElainaBot_v2/
 ## 🔌 开发与扩展
 
 - **开发文档** — [插件开发文档](docs/plugin-development.md)包含插件结构、事件处理、消息 API、入群审批、群禁言和 Web 面板扩展。
-- **Markdown 图片素材** — [一键上传与素材管理](docs/plugin-development.md#511-markdown-图片素材)支持本地文件或图片字节，自动取得 `qqbot-media://` 引用；满 100 张时先删除最早上传的 1 张。
 - **图床模块** — 通过 `get_app().module_manager.get("image_hosting")` 获取；公开 API、配置和示例见 [Image Hosting 文档](docs/image-hosting.md)。
 
 ## 🛒 插件市场
 
-框架从 [Elaina-plugins](https://github.com/ElainaCore/Elaina-plugins) 获取插件列表，支持在 Web 面板中浏览、搜索、一键安装和镜像加速下载；插件开发者可向该仓库提交 PR，将插件加入市场。
+框架从 [Elaina-plugins](https://github.com/ElainaCore/Elaina-plugins) 分别读取插件清单 `plugins.json` 和模块清单 `modules.json`，支持在 Web 面板中浏览、搜索、一键安装和镜像加速下载；开发者可向该仓库提交 PR，将插件或模块加入对应清单。
 
 ## 🤝 反馈与贡献
 

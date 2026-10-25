@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import tempfile
 import zipfile
 from datetime import datetime
 from pathlib import Path
@@ -21,6 +22,8 @@ from web.tools._updater.shared import (
     DEFAULT_WHITELIST,
     GITHUB_API_MIRRORS,
     GITHUB_DOWNLOAD_URL,
+    GITHUB_FILE_MIRRORS,
+    GITHUB_REPO,
     _build_mirror_url,
     _load_mirror_cache,
     log,
@@ -145,14 +148,14 @@ class FrameworkUpdater:
     def set_custom_mirror(self, mirror):
         self._save_setting('custom_mirror', mirror or '')
 
-    async def _pick_download_url(self, original_url):
-        """从磁盘缓存的排名中选最快的镜像 URL"""
-        if self.custom_mirror:
-            return _build_mirror_url(original_url, self.custom_mirror)
-        cached = _load_mirror_cache()
-        if cached:
-            return _build_mirror_url(original_url, cached[0]['mirror'])
-        return original_url
+    def _download_mirrors(self):
+        """自定义源、缓存前三名、默认前三个镜像依次重试，最后直连。"""
+        mirrors = [self.custom_mirror]
+        for item in _load_mirror_cache()[:3]:
+            mirrors.append(item.get('mirror', '') if isinstance(item, dict) else item)
+        mirrors.extend(GITHUB_FILE_MIRRORS[:3])
+        # 统一尾斜杠后去重，直连只放在最后。
+        return list(dict.fromkeys(m.rstrip('/') + '/' for m in mirrors if isinstance(m, str) and m)) + ['']
 
     # ==================== 检查更新 ====================
 
@@ -218,47 +221,73 @@ class FrameworkUpdater:
     # ==================== 下载 ====================
 
     async def download_update(self, version):
+        zip_file = None
+        completed = False
         try:
             self._report('downloading', '正在选择最快镜像...', 5)
-            original = GITHUB_DOWNLOAD_URL
-            url = await self._pick_download_url(original)
-            self._report('downloading', '下载中...', 8)
+            version = str(version or 'latest').strip()
+            if version in ('latest', 'main'):
+                original = GITHUB_DOWNLOAD_URL
+            elif re.fullmatch(r'[0-9a-f]{7,40}', version, re.IGNORECASE):
+                original = f'https://github.com/{GITHUB_REPO}/archive/{version}.zip'
+            else:
+                raise ValueError('版本必须为 Commit SHA、main 或 latest')
 
             temp_dir = self.base_dir / 'data' / 'temp_update'
-            temp_dir.mkdir(exist_ok=True)
-            zip_file = temp_dir / f'{version}.zip'
+            temp_dir.mkdir(parents=True, exist_ok=True)
+            fd, filename = tempfile.mkstemp(prefix='update_', suffix='.zip', dir=temp_dir)
+            os.close(fd)
+            zip_file = Path(filename)
 
-            timeout = _aiohttp.ClientTimeout(total=180)
+            timeout = _aiohttp.ClientTimeout(total=180, connect=10, sock_read=30)
             headers = {'User-Agent': 'ElainaBot/1.0'}
-            async with (
-                _aiohttp.ClientSession() as session,
-                session.get(
-                    url,
-                    headers=headers,
-                    timeout=timeout,
-                    allow_redirects=True,
-                ) as resp,
-            ):
-                resp.raise_for_status()
-                total = int(resp.headers.get('content-length', 0))
-                downloaded = 0
-                with open(zip_file, 'wb') as f:
-                    async for chunk in resp.content.iter_chunked(8192):
-                        f.write(chunk)
-                        downloaded += len(chunk)
-                        if total > 0:
-                            pct = 10 + downloaded * 30 // total
-                            self._report(
-                                'downloading',
-                                f'下载中... {downloaded * 100 // total}%',
-                                pct,
-                            )
+            last_error = None
+            async with _aiohttp.ClientSession() as session:
+                for mirror in self._download_mirrors():
+                    url = _build_mirror_url(original, mirror)
+                    try:
+                        self._report('downloading', f'下载中 (线路: {mirror or "直连"})...', 8)
+                        async with session.get(url, headers=headers, timeout=timeout, allow_redirects=True) as resp:
+                            if resp.status != 200:
+                                raise RuntimeError(f'HTTP {resp.status}')
+                            total = int(resp.headers.get('content-length', 0))
+                            downloaded = 0
+                            with open(zip_file, 'wb') as f:
+                                async for chunk in resp.content.iter_chunked(32768):
+                                    f.write(chunk)
+                                    downloaded += len(chunk)
+                                    if total > 0:
+                                        percent = min(downloaded * 100 // total, 100)
+                                        self._report('downloading', f'下载中... {percent}%', 10 + percent * 30 // 100)
 
-            self._report('downloading', '下载完成', 40)
-            return str(zip_file)
+                        # 镜像可能返回 HTTP 200 的 HTML 错误页或损坏的归档。
+                        await asyncio.to_thread(self._validate_update_zip, zip_file)
+                        completed = True
+                        self._report('downloading', '下载完成', 40)
+                        return str(zip_file)
+                    except Exception as e:
+                        last_error = e
+                        log.warning(f'通过 {mirror or "直连"} 下载失败: {type(e).__name__}: {e}')
+                        zip_file.unlink(missing_ok=True)
+
+            raise RuntimeError(f'所有下载线路均失败: {last_error}')
         except Exception as e:
             self._report('failed', f'下载失败: {e}', 0)
             return None
+        finally:
+            if zip_file is not None and not completed:
+                with contextlib.suppress(OSError):
+                    zip_file.unlink(missing_ok=True)
+
+    @staticmethod
+    def _validate_update_zip(path):
+        """下载成功前验证 ZIP 目录和文件 CRC，不依赖文件大小猜测。"""
+        with zipfile.ZipFile(path) as archive:
+            if not archive.namelist():
+                raise ValueError('更新包为空')
+            bad_file = archive.testzip()
+            if bad_file:
+                raise ValueError(f'更新包校验失败: {bad_file}')
 
     # ==================== 备份 ====================
 

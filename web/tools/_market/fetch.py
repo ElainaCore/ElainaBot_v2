@@ -1,5 +1,6 @@
 """插件市场 — GitHub 下载, 镜像排名"""
 
+import asyncio
 import json
 import logging
 import time
@@ -7,6 +8,7 @@ import time
 import aiohttp as _aiohttp
 
 from web.tools._market.shared import (
+    MARKET_MANIFESTS,
     PLUGIN_REPO,
     _ranked_mirror_urls,
 )
@@ -36,23 +38,37 @@ async def _try_fetch_json(session, urls, headers, timeout):
 
 
 async def _fetch_plugin_json(force=False):
-    """从 GitHub 获取 plugins.json, 按镜像排名依次尝试"""
+    """分别读取插件和模块清单，合并供市场的类型筛选与安装使用。"""
     global _plugin_cache, _plugin_cache_ts
     now = time.time()
-    if not force and _plugin_cache and (now - _plugin_cache_ts) < _PLUGIN_CACHE_TTL:
+    if not force and _plugin_cache is not None and (now - _plugin_cache_ts) < _PLUGIN_CACHE_TTL:
         return _plugin_cache
 
-    raw_url = f'https://raw.githubusercontent.com/{PLUGIN_REPO}/main/plugins.json'
     headers = {'User-Agent': 'ElainaBot/1.0'}
     timeout = _aiohttp.ClientTimeout(total=10)
-    async with _aiohttp.ClientSession() as session:
+
+    async def fetch_manifest(session, manifest):
+        raw_url = f'https://raw.githubusercontent.com/{PLUGIN_REPO}/main/{manifest}'
         data = await _try_fetch_json(session, _ranked_mirror_urls(raw_url), headers, timeout)
-    if not data:
+        allowed_types = MARKET_MANIFESTS[manifest]
+        if not isinstance(data, list) or any(
+            not isinstance(entry, dict) or entry.get('type') not in allowed_types for entry in data
+        ):
+            return None
+        return data
+
+    async with _aiohttp.ClientSession() as session:
+        manifests = await asyncio.gather(*(fetch_manifest(session, name) for name in MARKET_MANIFESTS))
+    if any(data is None for data in manifests):
         await get_fast_mirrors(force=True)
         async with _aiohttp.ClientSession() as session:
-            data = await _try_fetch_json(session, _ranked_mirror_urls(raw_url), headers, timeout)
-    if data:
-        _plugin_cache, _plugin_cache_ts = data, now
+            for index, name in enumerate(MARKET_MANIFESTS):
+                if manifests[index] is None:
+                    manifests[index] = await fetch_manifest(session, name)
+    if any(data is None for data in manifests):
+        return None
+    data = [entry for manifest in manifests for entry in manifest]
+    _plugin_cache, _plugin_cache_ts = data, now
     return data
 
 

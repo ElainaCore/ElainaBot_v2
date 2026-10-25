@@ -5,6 +5,7 @@ import mimetypes
 import re
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
+from os.path import splitext
 
 from core.base.logger import EXTENSION, get_logger
 
@@ -45,7 +46,11 @@ def get_any_sender():
 
 def guess_content_type(filename):
     ct, _ = mimetypes.guess_type(filename)
-    return ct or 'application/octet-stream'
+    if ct:
+        return ct
+    # 部分 Python 版本或系统 MIME 表缺少 WebP / AVIF 映射。
+    ext = splitext(filename)[1].lower()
+    return {'.webp': 'image/webp', '.avif': 'image/avif'}.get(ext, 'application/octet-stream')
 
 
 def get_image_dimensions(file_bytes):
