@@ -1309,6 +1309,7 @@ class MessageSender(_HttpMixin, _MediaSendMixin, _MaterialMixin, _SenderLogMixin
         message_reference_id = kwargs.pop('message_reference_id', None) or kwargs.pop('reference_message_id', None)
         button_font_size = kwargs.pop('button_font_size', None)
         button_style = kwargs.pop('button_style', None)
+        card = kwargs.pop('card', None)
         use_md = cfg.get_bot_setting(self._appid, 'message.use_markdown', True)
         payload = {'msg_seq': _msg_seq()}
         for k in ('msg_id', 'event_id'):
@@ -1319,6 +1320,11 @@ class MessageSender(_HttpMixin, _MediaSendMixin, _MaterialMixin, _SenderLogMixin
         if media:
             payload['msg_type'] = MSG_TYPE_MEDIA
             payload['media'] = media
+            if content:
+                payload['content'] = content
+        elif card is not None:
+            payload['msg_type'] = MSG_TYPE_CARD
+            payload['card'] = card
             if content:
                 payload['content'] = content
         elif msg_type == MSG_TYPE_MARKDOWN or (use_md and msg_type != MSG_TYPE_TEXT):
