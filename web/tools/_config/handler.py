@@ -30,7 +30,7 @@ def set_context(base_dir: str):
 
 
 def _config_dir():
-    return os.path.join(_base_dir, 'config')
+    return os.path.join(_base_dir, 'data', 'config')
 
 
 def _settings_hosts(content: str) -> list[str]:

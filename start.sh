@@ -278,7 +278,6 @@ framework_is_complete() {
         main.py
         requirements.txt
         pyproject.toml
-        config/settings.example.yaml
         core/application.py
         core/base/config.py
         web/setup.py
@@ -341,7 +340,6 @@ required = (
     'main.py',
     'requirements.txt',
     'pyproject.toml',
-    'config/settings.example.yaml',
     'core/application.py',
     'core/base/config.py',
     'web/setup.py',
@@ -372,7 +370,6 @@ ensure_framework() {
         main.py \
         requirements.txt \
         pyproject.toml \
-        config/settings.example.yaml \
         core/application.py \
         core/base/config.py \
         web/setup.py; do
@@ -592,7 +589,7 @@ import sys
 
 from core.base.config import cfg
 
-config_dir = os.path.join(sys.argv[1], 'config')
+config_dir = os.path.join(sys.argv[1], 'data', 'config')
 cfg.init(config_dir)
 value = cfg.get('settings', 'server.port', 5200)
 try:

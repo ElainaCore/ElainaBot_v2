@@ -742,7 +742,6 @@ function Test-FrameworkComplete {
         'main.py',
         'requirements.txt',
         'pyproject.toml',
-        'config/settings.example.yaml',
         'core/application.py',
         'core/base/config.py',
         'web/setup.py'
@@ -1033,7 +1032,6 @@ required = (
     'main.py',
     'requirements.txt',
     'pyproject.toml',
-    'config/settings.example.yaml',
     'core/application.py',
     'core/base/config.py',
     'web/setup.py',
@@ -1079,7 +1077,6 @@ function Ensure-Framework {
         'main.py',
         'requirements.txt',
         'pyproject.toml',
-        'config/settings.example.yaml',
         'core/application.py',
         'core/base/config.py',
         'web/setup.py'
@@ -1273,7 +1270,7 @@ import sys
 
 from core.base.config import cfg
 
-config_dir = os.path.join(sys.argv[1], 'config')
+config_dir = os.path.join(sys.argv[1], 'data', 'config')
 cfg.init(config_dir)
 value = cfg.get('settings', 'server.port', 5200)
 try:

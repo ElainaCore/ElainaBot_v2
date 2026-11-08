@@ -201,8 +201,8 @@ class Application(EventHandlerMixin):
         except ImportError:
             pass
 
-        # 1) 初始化配置
-        cfg.init(self._path('config'))
+        # 1) 初始化配置 (用户配置存放于 data/config, 缺失时从 config/ 出厂示例自动重建)
+        cfg.init(self._path('data', 'config'))
 
         from core.plugin._blacklist import migrate_blacklist_config
 

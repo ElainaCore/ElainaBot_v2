@@ -151,6 +151,23 @@ class ConfigManager:
 
     # ------ 热加载 ------
 
+    # 内置出厂配置: config/ 出厂模板也被整体删除时的最终兜底, 保证面板可登录、框架可启动
+    _FACTORY_EXAMPLES = {
+        'settings': (
+            '# 框架基础配置 (内置出厂兜底, 完整可配置项见 config/settings.example.yaml)\n'
+            'web:\n'
+            '  admin_password: "admin"    # 管理员密码, 首次登录成功后自动加密存储\n'
+        ),
+        'bot': (
+            '# 机器人配置 (内置出厂兜底, 完整模板见 config/bot.example.yaml)\n'
+            'bots: []\n'
+        ),
+        'templates': (
+            '# 消息模板 (内置出厂兜底, 完整模板见 config/templates.example.yaml)\n'
+            '{}\n'
+        ),
+    }
+
     def _resolve_path(self, name):
         """解析配置文件名为绝对路径 (带缓存): .yaml > .yml > .example.yaml 自动复制 > 占位"""
         cached = self._path_cache.get(name)
@@ -169,6 +186,7 @@ class ConfigManager:
             import shutil
 
             target = base + '.yaml'
+            os.makedirs(os.path.dirname(target), exist_ok=True)
             shutil.copy2(example_p, target)
             logger.info(f'从示例文件创建配置: {os.path.basename(base)}.yaml <- {os.path.basename(example_p)}')
             self._path_cache[name] = target
@@ -179,8 +197,32 @@ class ConfigManager:
             import shutil
 
             target = base + '.yaml'
+            os.makedirs(os.path.dirname(target), exist_ok=True)
             shutil.copy2(fallback_p, target)
             logger.info(f'[Docker] 从备份创建配置: {os.path.basename(base)}.yaml <- config.defaults/{os.path.basename(fallback_p)}')
+            self._path_cache[name] = target
+            return target
+        # 2c) 配置目录被删除后的重建: 配置实际存放于 data/config, 框架自带 config/ 下的示例文件作为出厂模板
+        legacy_p = os.path.join(
+            os.path.dirname(os.path.dirname(self._config_dir)), 'config', os.path.basename(base) + '.example.yaml'
+        )
+        if os.path.isfile(legacy_p):
+            import shutil
+
+            target = base + '.yaml'
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            shutil.copy2(legacy_p, target)
+            logger.info(f'配置已重建: {os.path.basename(base)}.yaml <- config/{os.path.basename(legacy_p)}')
+            self._path_cache[name] = target
+            return target
+        # 2d) 终极兜底: 连 config/ 出厂模板都被删除时, 用内置出厂配置重建
+        embedded = self._FACTORY_EXAMPLES.get(name)
+        if embedded is not None:
+            target = base + '.yaml'
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            with open(target, 'w', encoding='utf-8') as f:
+                f.write(embedded)
+            logger.info(f'配置已重建(内置出厂): {os.path.basename(base)}.yaml')
             self._path_cache[name] = target
             return target
         # 3) 都不存在, 返回默认路径 (后续写入时创建)
