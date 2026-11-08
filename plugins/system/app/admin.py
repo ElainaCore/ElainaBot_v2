@@ -173,7 +173,10 @@ async def update_framework(event, match):
     check = await updater.check_for_updates()
     if check.get('error'):
         return await reply(event, f'❌ 检查更新失败: {check["error"]}')
-    if not check.get('has_update'):
+    # unknown/自定义版本名不算"已是最新", 继续走更新流程以引导写入 version.json
+    cur = str(updater.current_version or '').strip()
+    version_known = cur not in ('', 'unknown') and bool(re.fullmatch(r'[0-9a-f]{8,40}', cur, re.IGNORECASE))
+    if not check.get('has_update') and version_known:
         return await reply(event, f'✅ 已是最新版本 ({updater.current_version})')
 
     commits = await updater.fetch_changelog() or check.get('changelog') or []
@@ -190,7 +193,7 @@ async def update_framework(event, match):
     lines += ['', '⬇️ 开始下载更新...']
     await reply(event, '\n'.join(lines))
 
-    result = await updater.update_to_version(check['latest_version'])
+    result = await updater.update_to_version(check['latest_version'], repo=check.get('source'))
     if not result.get('success'):
         return await reply(event, f'❌ 更新失败: {result.get("message", "未知错误")}')
 

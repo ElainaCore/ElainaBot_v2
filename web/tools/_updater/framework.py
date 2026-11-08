@@ -20,12 +20,11 @@ from web.tools._updater.mirror import detect_environment
 from web.tools._updater.shared import (
     DEFAULT_SKIP,
     DEFAULT_WHITELIST,
-    GITHUB_API_MIRRORS,
-    GITHUB_DOWNLOAD_URL,
     GITHUB_FILE_MIRRORS,
     GITHUB_REPO,
     _build_mirror_url,
     _load_mirror_cache,
+    github_api_mirrors,
     log,
 )
 from web.tools._zipsafe import safe_extractall
@@ -43,11 +42,15 @@ class FrameworkUpdater:
     def __init__(self, base_dir: str):
         self.base_dir = Path(base_dir)
         self.version_file = self.base_dir / 'data' / 'version.json'
+        self._version_bootstrapped = False
         self.settings_file = self.base_dir / 'data' / 'update_settings.json'
         (self.base_dir / 'data').mkdir(exist_ok=True)
 
         self.skip_files = self._load_skip_files()
         self.whitelist = self._load_setting('update_whitelist', None) or list(DEFAULT_WHITELIST)
+        # 更新源列表: 第一个为优先源 (官方上游), 后面依次作为补充/回退 (如自己的 fork)
+        sources = self._load_setting('update_sources', None) or []
+        self.update_sources = list(dict.fromkeys(str(s).strip() for s in sources if str(s).strip())) or [GITHUB_REPO]
         self.current_version = self._load_version()
         self.progress = {
             'stage': 'idle',
@@ -77,17 +80,23 @@ class FrameworkUpdater:
 
     def _save_version(self, version):
         version = _normalize_version(version)
+        if not version:
+            log.warning('跳过写入空版本号')
+            return
         try:
+            # 保留 name 等自定义字段 (软件版本号), 框架更新自动进行时不丢
+            extra = {}
+            try:
+                with open(self.version_file, encoding='utf-8') as f:
+                    old = json.load(f)
+                if isinstance(old, dict):
+                    extra = {k: v for k, v in old.items() if k not in ('version', 'update_time')}
+            except Exception:
+                pass
+            data = {'version': version, 'update_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+            data.update(extra)
             with open(self.version_file, 'w', encoding='utf-8') as f:
-                json.dump(
-                    {
-                        'version': version,
-                        'update_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                    },
-                    f,
-                    indent=2,
-                    ensure_ascii=False,
-                )
+                json.dump(data, f, indent=2, ensure_ascii=False)
             self.current_version = version
         except (OSError, TypeError, ValueError):
             pass
@@ -159,14 +168,14 @@ class FrameworkUpdater:
 
     # ==================== 检查更新 ====================
 
-    async def _fetch_api(self, path=''):
-        """通过多个 API 代理访问 GitHub API"""
+    async def _fetch_api(self, path='', repo=None):
+        """通过多个 API 代理访问 GitHub API (默认主仓库)"""
         headers = {
             'User-Agent': 'Mozilla/5.0 ElainaBot/1.0',
             'Accept': 'application/vnd.github+json',
         }
         timeout = _aiohttp.ClientTimeout(total=15)
-        urls = [base + path for base in GITHUB_API_MIRRORS]
+        urls = [base + path for base in github_api_mirrors(repo or GITHUB_REPO)]
         async with _aiohttp.ClientSession() as session:
             for u in urls:
                 try:
@@ -191,23 +200,55 @@ class FrameworkUpdater:
         return None
 
     async def check_for_updates(self):
+        """多更新源检测: 逐个源获取最新 commit, 上游优先; 主源检测不到版本号时用后续源代替"""
         try:
             self._report('checking', '正在检查更新...', 0)
-            commits = await self._fetch_api('/commits?per_page=10')
-            if not commits or not isinstance(commits, list):
+            current = str(self.current_version or '').strip()
+            results = []
+            candidate = None
+            fallback = None
+            for repo in self.update_sources:
+                commits = await self._fetch_api('/commits?per_page=10', repo=repo)
+                if not commits or not isinstance(commits, list):
+                    log.warning(f'更新源 {repo} 未获取到版本信息, 尝试下一个源')
+                    continue
+                latest = str(commits[0].get('sha') or '')[:8]
+                if not latest:
+                    continue
+
+                # 仅当本地是官方 commit SHA 时才比较; unknown/自定义版本名不做自动判断, 需要时用"强制更新"
+                version_known = current not in ('', 'unknown') and bool(_SHA_RE.fullmatch(current))
+
+                # 版本号缺失自愈: 本地无 git 只能用第一个可达源的 commit 补记, 每个进程周期只补一次
+                if current in ('', 'unknown') and not self._version_bootstrapped:
+                    self._version_bootstrapped = True
+                    self._save_version(latest)
+                    current = str(self.current_version or '').strip()
+                    version_known = bool(_SHA_RE.fullmatch(current))
+                    log.info(f'版本号缺失, 已按 {repo} 最新 commit 补记: {latest} (若本地代码远落后请用强制更新对齐)')
+
+                has_update = version_known and current[:8] != latest
+                item = {'repo': repo, 'latest_version': latest, 'has_update': has_update, 'changelog': commits[:10]}
+                results.append(item)
+                if fallback is None:
+                    fallback = item
+                if has_update and candidate is None:
+                    candidate = item
+                    break  # 优先源已有更新, 不再看后续源
+
+            if not results:
                 self._report('idle', '', 0)
                 return {'has_update': False, 'error': '无法获取更新信息'}
 
-            latest = commits[0].get('sha', '')[:8]
-            current = self.current_version[:8] if len(self.current_version) >= 8 else self.current_version
-            has_update = (current != latest and self.current_version != 'unknown') or self.current_version == 'unknown'
-
+            chosen = candidate or fallback
             self._report('idle', '', 0)
             return {
-                'has_update': has_update,
-                'latest_version': latest,
+                'has_update': bool(candidate),
+                'latest_version': chosen['latest_version'],
                 'current_version': self.current_version,
-                'changelog': commits[:10],
+                'source': chosen['repo'],
+                'sources': [{k: v for k, v in r.items() if k != 'changelog'} for r in results],
+                'changelog': chosen.get('changelog', []),
                 'error': None,
             }
         except Exception as e:
@@ -220,16 +261,19 @@ class FrameworkUpdater:
 
     # ==================== 下载 ====================
 
-    async def download_update(self, version):
+    async def download_update(self, version, repo=None):
         zip_file = None
         completed = False
         try:
             self._report('downloading', '正在选择最快镜像...', 5)
-            version = str(version or 'latest').strip()
+            repo = str(repo or GITHUB_REPO).strip()
+            version = str(version or '').strip()
+            if not version:
+                raise ValueError('版本号不能为空')
             if version in ('latest', 'main'):
-                original = GITHUB_DOWNLOAD_URL
+                original = f'https://github.com/{repo}/archive/main.zip'
             elif re.fullmatch(r'[0-9a-f]{7,40}', version, re.IGNORECASE):
-                original = f'https://github.com/{GITHUB_REPO}/archive/{version}.zip'
+                original = f'https://github.com/{repo}/archive/{version}.zip'
             else:
                 raise ValueError('版本必须为 Commit SHA、main 或 latest')
 
@@ -298,9 +342,12 @@ class FrameworkUpdater:
             ts = datetime.now().strftime('%Y%m%d_%H%M%S')
             backup_file = backup_dir / f'backup_{self.current_version}_{ts}.zip'
 
-            # 读取日志目录名 (默认 'log')
+            # 读取日志目录名 (默认 'log'; 配置在 data/config, 兼容旧版 config/ 位置)
             try:
-                with open(self.base_dir / 'config' / 'settings.yaml', encoding='utf-8') as f:
+                settings_path = self.base_dir / 'data' / 'config' / 'settings.yaml'
+                if not settings_path.is_file():
+                    settings_path = self.base_dir / 'config' / 'settings.yaml'
+                with open(settings_path, encoding='utf-8') as f:
                     _s = yaml.safe_load(f) or {}
                 log_dir_name = (_s.get('logging') or {}).get('dir', 'log')
             except Exception:
@@ -451,7 +498,11 @@ class FrameworkUpdater:
 
     # ==================== 更新流程 ====================
 
-    async def update_to_version(self, version, skip_backup=False, auto_restart=False):
+    async def update_to_version(self, version, skip_backup=False, auto_restart=False, repo=None):
+        version = str(version or '').strip()
+        if not version:
+            self._report('failed', '版本号不能为空', 0)
+            return {'success': False, 'message': '版本号不能为空'}
         # 更新前环境检查
         env = detect_environment()
         if not env['writable']:
@@ -459,7 +510,7 @@ class FrameworkUpdater:
             return {'success': False, 'message': '项目目录不可写, 无法更新'}
 
         self._report('preparing', f'准备更新到 {version}...', 0)
-        zip_file = await self.download_update(version)
+        zip_file = await self.download_update(version, repo=repo)
         if not zip_file:
             return {'success': False, 'message': '下载失败'}
         # apply_update 为同步阻塞操作 (备份/解压/复制), 放线程执行避免阻塞事件循环导致进度接口无响应
@@ -476,8 +527,10 @@ class FrameworkUpdater:
         if check.get('error'):
             return {'success': False, 'message': f'检查失败: {check["error"]}'}
         if not check['has_update']:
-            return {'success': False, 'message': '已是最新版本'}
-        return await self.update_to_version(check['latest_version'], skip_backup=skip_backup, auto_restart=auto_restart)
+            return {'success': True, 'message': '已是最新版本'}
+        return await self.update_to_version(
+            check['latest_version'], skip_backup=skip_backup, auto_restart=auto_restart, repo=check.get('source')
+        )
 
     async def force_update(self, skip_backup=False, auto_restart=False):
         try:
@@ -485,7 +538,9 @@ class FrameworkUpdater:
             commits = await self._fetch_api('/commits?per_page=1')
             if not commits or not isinstance(commits, list):
                 return {'success': False, 'message': '无法获取版本信息'}
-            latest = commits[0].get('sha', '')[:8]
+            latest = str(commits[0].get('sha') or '')[:8]
+            if not latest:
+                return {'success': False, 'message': '未获取到最新版本号'}
             return await self.update_to_version(latest, skip_backup=skip_backup, auto_restart=auto_restart)
         except Exception as e:
             self._report('failed', f'获取版本失败: {e}', 0)

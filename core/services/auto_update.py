@@ -93,7 +93,7 @@ class AutoUpdateService:
                 if ((item.get('commit') or {}).get('message') or '').strip()
             ) or '暂无提交说明'
             await self._notify(f'发现框架更新：{check.get("current_version", "未知")} → {latest}\n更新内容：\n{changes}\n正在备份并更新。')
-            result = await updater.update_to_version(latest, skip_backup=False, auto_restart=False)
+            result = await updater.update_to_version(latest, skip_backup=False, auto_restart=False, repo=check.get('source'))
             if not result.get('success'):
                 await self._notify(f'框架自动更新失败：{result.get("message", "未知错误")}')
                 return

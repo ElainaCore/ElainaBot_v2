@@ -11,15 +11,25 @@ GITHUB_API_URL = f'https://api.github.com/repos/{GITHUB_REPO}'
 GITHUB_DOWNLOAD_URL = f'https://github.com/{GITHUB_REPO}/archive/main.zip'
 GITHUB_SHA_URL = f'https://codeload.github.com/{GITHUB_REPO}/zip/{{version}}'
 
-# GitHub API 代理 (能代理 api.github.com 请求)
-GITHUB_API_MIRRORS = [
-    f'https://api.github.com/repos/{GITHUB_REPO}',  # 直连
-    f'https://ghproxy.cc/https://api.github.com/repos/{GITHUB_REPO}',
-    f'https://gh-proxy.com/https://api.github.com/repos/{GITHUB_REPO}',
-    f'https://ghproxy.net/https://api.github.com/repos/{GITHUB_REPO}',
-    f'https://mirror.ghproxy.com/https://api.github.com/repos/{GITHUB_REPO}',
-    f'https://gh.api.99988866.xyz/https://api.github.com/repos/{GITHUB_REPO}',
+# GitHub API 代理前缀 (能代理 api.github.com 请求)
+_API_PROXY_PREFIXES = [
+    '',  # 直连
+    'https://ghproxy.cc/',
+    'https://gh-proxy.com/',
+    'https://ghproxy.net/',
+    'https://mirror.ghproxy.com/',
+    'https://gh.api.99988866.xyz/',
 ]
+
+
+def github_api_mirrors(repo: str):
+    """为指定仓库构建 API 镜像列表 (直连 + 代理前缀)"""
+    base = f'https://api.github.com/repos/{repo}'
+    return [prefix + base for prefix in _API_PROXY_PREFIXES]
+
+
+# GitHub API 代理 (能代理 api.github.com 请求), 主仓库
+GITHUB_API_MIRRORS = github_api_mirrors(GITHUB_REPO)
 
 
 # 前三个也用于下载失败时的默认备用线路。

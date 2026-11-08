@@ -272,12 +272,14 @@ async def handle_login(request: web.Request):
             return error('IP 已被封禁，12小时后解除', status=403)
         return error(f'密码错误，还剩 {remaining} 次机会', status=401, data={'remaining': remaining})
 
-    if not auth.is_hashed(admin_pwd):
+    # 默认密码不做哈希，保证“是否已修改密码”可被可靠判断。
+    if not auth.is_hashed(admin_pwd) and password != auth.DEFAULT_PASSWORD:
         cfg.set_value('settings', 'web.admin_password', auth.hash_password(password))
+    auth.record_password_changed(password)
 
     auth.record_ip_access(ip, 'success')
     token = auth.create_session(request)
-    is_weak = password in _WEAK_PASSWORDS
+    is_weak = password == auth.DEFAULT_PASSWORD
     response = ok({'is_weak': is_weak})
     auth.set_session_cookie(response, request, token)
     return response
@@ -294,13 +296,10 @@ async def handle_auth_check(request: web.Request):
     return ok()
 
 
-_WEAK_PASSWORDS = frozenset({'admin', '123456', 'password', 'admin123', '12345678'})
-
-
 async def handle_password_status(request: web.Request):
     pwd = cfg.get('settings', 'web.admin_password', '')
-    is_default = not pwd or (not auth.is_hashed(pwd) and pwd in _WEAK_PASSWORDS)
-    return ok({'is_default': is_default})
+    is_default = auth.password_is_default(pwd)
+    return ok({'is_default': is_default, 'allow_remote': not is_default})
 
 
 async def handle_get_bots(request: web.Request):

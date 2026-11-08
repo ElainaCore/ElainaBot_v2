@@ -54,11 +54,18 @@ async def handle_get_robot_info(request: web.Request):
 
     webhook_url = ''
     if is_webhook:
-        host = cfg.get('settings', 'server.host', '0.0.0.0')
+        host = cfg.get('settings', 'server.host', '127.0.0.1')
         port = cfg.get('settings', 'server.port', 5200)
         req_host = request.host or ''
         # 从请求 Host 头提取地址 (兼容 IPv6 方括号格式 [::1]:port)
         display_host = req_host.rsplit(']', 1)[0] + ']' if req_host.startswith('[') else req_host.split(':')[0] or (host if isinstance(host, str) else host[0])
+        try:
+            from web.auth import password_is_default
+
+            if password_is_default():
+                display_host = '127.0.0.1'
+        except Exception:
+            pass
         webhook_url = f'http://{display_host}:{port}/?appid={appid}'
     base = {
         'appid': appid,

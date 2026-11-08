@@ -150,8 +150,16 @@ $PythonInstallMirror = if (-not [string]::IsNullOrWhiteSpace($env:ELAINABOT_PYTH
 } else {
     $DefaultPythonInstallMirror
 }
-$PipMirror = 'https://pypi.tuna.tsinghua.edu.cn/simple'
+$PipMirrors = @(
+    'https://mirrors.aliyun.com/pypi/simple'
+    'https://mirrors.cloud.tencent.com/pypi/simple'
+    'https://mirrors.ustc.edu.cn/pypi/simple'
+    'https://repo.huaweicloud.com/repository/pypi/simple'
+    'https://pypi.tuna.tsinghua.edu.cn/simple'
+    'https://pypi.org/simple'
+)
 $OfficialPipSource = 'https://pypi.org/simple'
+$script:SelectedPipMirror = $null
 $FrameworkArchiveUrl = 'https://github.com/ElainaCore/ElainaBot_v2/archive/refs/heads/main.zip'
 $FrameworkManualDownloadUrl = 'https://codeload.github.com/ElainaCore/ElainaBot_v2/zip/refs/heads/main'
 $FrameworkMirrors = @(
@@ -279,37 +287,122 @@ function Invoke-VisibleProcess {
     }
 }
 
+function Get-PipMirrorName {
+    param([string]$Mirror)
+    switch -Wildcard ([string]$Mirror) {
+        '*aliyun*' { return '阿里云 PyPI 镜像' }
+        '*tencent*' { return '腾讯云 PyPI 镜像' }
+        '*ustc*' { return '中科大 PyPI 镜像' }
+        '*huaweicloud*' { return '华为云 PyPI 镜像' }
+        '*tuna*' { return '清华 PyPI 镜像' }
+        '*pypi.org*' { return '官方 PyPI' }
+        default { return $Mirror }
+    }
+}
+
+function Measure-PipMirrorSpeed {
+    param([string]$Mirror)
+
+    # 读取索引页前 64KB，用耗时作为综合速度指标；403/超时/连接失败均视为不可用。
+    $probeUrl = $Mirror.TrimEnd('/') + '/pip/'
+    $watch = [Diagnostics.Stopwatch]::StartNew()
+    $response = $null
+    $stream = $null
+    try {
+        $request = [Net.HttpWebRequest]::Create($probeUrl)
+        $request.Method = 'GET'
+        $request.Timeout = 2500
+        $request.ReadWriteTimeout = 2500
+        $request.UserAgent = 'ElainaBot-Startup-Mirror-Test'
+        $request.AutomaticDecompression = [Net.DecompressionMethods]::GZip -bor [Net.DecompressionMethods]::Deflate
+        $response = $request.GetResponse()
+        $stream = $response.GetResponseStream()
+        $buffer = New-Object byte[] 65536
+        $received = 0
+        while ($received -lt $buffer.Length) {
+            $read = $stream.Read($buffer, 0, $buffer.Length - $received)
+            if ($read -le 0) { break }
+            $received += $read
+        }
+        $watch.Stop()
+        if ($received -le 0) {
+            return $null
+        }
+        return [pscustomobject]@{
+            Mirror = $Mirror
+            Milliseconds = [int]$watch.ElapsedMilliseconds
+        }
+    } catch {
+        $watch.Stop()
+        return $null
+    } finally {
+        if ($stream) { try { $stream.Dispose() } catch { } }
+        if ($response) { try { $response.Dispose() } catch { } }
+    }
+}
+
+function Select-FastestPipMirror {
+    $best = $null
+    foreach ($mirror in $PipMirrors) {
+        $result = Measure-PipMirrorSpeed -Mirror $mirror
+        if ($result) {
+            Write-Step ("PyPI 镜像测速：{0}  {1} ms" -f (Get-PipMirrorName $mirror), $result.Milliseconds)
+            if (-not $best -or $result.Milliseconds -lt $best.Milliseconds) {
+                $best = $result
+            }
+        } else {
+            Write-Step ("PyPI 镜像测速：{0}  不可用，已跳过" -f (Get-PipMirrorName $mirror))
+        }
+    }
+    if (-not $best) {
+        Write-Step '所有 PyPI 镜像测速失败，直接使用官方 PyPI。'
+        return $OfficialPipSource
+    }
+    Write-Step ("已选择最快的 PyPI 镜像：{0}（{1} ms）" -f (Get-PipMirrorName $best.Mirror), $best.Milliseconds)
+    return $best.Mirror
+}
+
+function Get-PipMirrorCandidates {
+    if (-not $script:SelectedPipMirror) {
+        $script:SelectedPipMirror = Select-FastestPipMirror
+    }
+    $candidates = @($script:SelectedPipMirror)
+    foreach ($mirror in $PipMirrors) {
+        if ($candidates -notcontains $mirror) {
+            $candidates += $mirror
+        }
+    }
+    if ($candidates -notcontains $OfficialPipSource) {
+        $candidates += $OfficialPipSource
+    }
+    return $candidates
+}
+
 function Invoke-PipInstall {
     param([Parameter(Mandatory = $true)][string[]]$Arguments)
 
-    $richDisplayArguments = @('--progress-bar', 'on')
     $compatibleDisplayArguments = @('--progress-bar', 'off', '--no-color')
-    Write-Step '正在优先使用清华 PyPI 镜像安装依赖...'
     Write-Step 'pip 正在解析、下载并安装依赖，请稍候；过程中会持续显示包名。'
 
-    if ($UseRichConsoleOutput) {
-        $pipArguments = @('-u', '-m', 'pip', 'install', '--disable-pip-version-check') + $richDisplayArguments + @('--index-url', $PipMirror) + $Arguments
+    # 先测速选最快的镜像；若安装失败，按测速顺序继续尝试其余镜像和官方 PyPI。
+    $candidates = @(Get-PipMirrorCandidates)
+    $pipExitCode = 1
+    foreach ($mirror in $candidates) {
+        $sourceName = Get-PipMirrorName $mirror
+        Write-Step "正在通过${sourceName}安装依赖..."
+        # 直接调用子进程并读取 $LASTEXITCODE，避免 Start-Process 重定向时
+        # 虚拟环境启动器返回 0 而导致失败被误判为成功。
+        $pipArguments = @('-u', '-m', 'pip', 'install', '--disable-pip-version-check') + $compatibleDisplayArguments + @('--index-url', $mirror) + $Arguments
         & $VenvPython @pipArguments
         $pipExitCode = $LASTEXITCODE
-        if ($pipExitCode -ne 0) {
-            Write-Step '动态进度模式执行失败，正在使用纯文本兼容模式重试当前镜像...'
-            $pipArguments = @('-u', '-m', 'pip', 'install', '--disable-pip-version-check') + $compatibleDisplayArguments + @('--index-url', $PipMirror) + $Arguments
-            $pipExitCode = Invoke-VisibleProcess -FilePath $VenvPython -Arguments $pipArguments -HeartbeatMessage 'pip 仍在以兼容模式处理依赖，请耐心等待...'
+        if ($pipExitCode -eq 0) {
+            $script:SelectedPipMirror = $mirror
+            return
         }
-    } else {
-        $pipArguments = @('-u', '-m', 'pip', 'install', '--disable-pip-version-check') + $compatibleDisplayArguments + @('--index-url', $PipMirror) + $Arguments
-        $pipExitCode = Invoke-VisibleProcess -FilePath $VenvPython -Arguments $pipArguments -HeartbeatMessage 'pip 仍在处理依赖，请耐心等待...'
-    }
-    if ($pipExitCode -eq 0) {
-        return
+        Write-Step "${sourceName}安装失败（退出代码 $pipExitCode），正在尝试下一个镜像..."
     }
 
-    Write-Step '镜像源安装失败，正在切换到官方 PyPI...'
-    $fallbackArguments = @('-u', '-m', 'pip', 'install', '--disable-pip-version-check') + $compatibleDisplayArguments + @('--index-url', $OfficialPipSource) + $Arguments
-    $fallbackExitCode = Invoke-VisibleProcess -FilePath $VenvPython -Arguments $fallbackArguments -HeartbeatMessage '官方 PyPI 仍在以兼容模式处理依赖，请耐心等待...'
-    if ($fallbackExitCode -ne 0) {
-        throw "命令执行失败，退出代码 ${fallbackExitCode}：$VenvPython $($fallbackArguments -join ' ')"
-    }
+    throw "所有 PyPI 镜像均安装失败，最后一个退出代码 ${pipExitCode}：$VenvPython $($Arguments -join ' ')"
 }
 
 function Get-CommandPath {
@@ -522,6 +615,54 @@ function Install-PythonFromMirror {
         throw 'Python 安装程序已结束，但没有找到可用的 Python 3.11+。'
     }
     return $python
+}
+
+function Stop-ElainaBotInstances {
+    # 结束所有属于本项目的 python / pythonw 进程（含子进程）。
+    # 这些进程可能由 Web 面板“重启”以隐藏窗口方式拉起，关闭窗口并不会结束它们。
+    $processes = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+        $_.Name -in @('python.exe', 'pythonw.exe') -and [int]$_.ProcessId -ne $PID
+    })
+    if ($processes.Count -eq 0) {
+        return 0
+    }
+
+    $targets = New-Object 'System.Collections.Generic.HashSet[int]'
+    foreach ($process in $processes) {
+        $executablePath = [string]$process.ExecutablePath
+        $commandLine = [string]$process.CommandLine
+        if (($executablePath -and $executablePath.StartsWith($RootDir, [StringComparison]::OrdinalIgnoreCase)) -or
+            ($commandLine -and $commandLine.IndexOf($RootDir, [StringComparison]::OrdinalIgnoreCase) -ge 0)) {
+            [void]$targets.Add([int]$process.ProcessId)
+        }
+    }
+    if ($targets.Count -eq 0) {
+        return 0
+    }
+
+    # 把目标的子进程一起算进来，避免只杀掉启动器而留下真正运行框架的进程。
+    $added = $true
+    while ($added) {
+        $added = $false
+        foreach ($process in $processes) {
+            if ($targets.Contains([int]$process.ParentProcessId) -and -not $targets.Contains([int]$process.ProcessId)) {
+                [void]$targets.Add([int]$process.ProcessId)
+                $added = $true
+            }
+        }
+    }
+
+    $stopped = 0
+    foreach ($processId in @($targets)) {
+        try {
+            Stop-Process -Id $processId -Force -ErrorAction Stop
+            $stopped++
+        } catch { }
+    }
+    if ($stopped -gt 0) {
+        Start-Sleep -Milliseconds 500
+    }
+    return $stopped
 }
 
 function Backup-InvalidVenv {
@@ -1464,6 +1605,10 @@ try {
     Write-Step '正在准备运行环境...'
     if (-not $UseLegacyWindowsPath -and -not $UseRichConsoleOutput) {
         Write-Step '当前控制台无法可靠显示动态进度，已自动切换到纯文本兼容模式。'
+    }
+    $stoppedInstances = Stop-ElainaBotInstances
+    if ($stoppedInstances -gt 0) {
+        Write-Step "已结束 $stoppedInstances 个残留的 ElainaBot 进程，虚拟环境等文件现在可以正常删除或重建。"
     }
     Ensure-VirtualEnvironment
     Ensure-Framework

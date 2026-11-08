@@ -159,6 +159,8 @@ def setup_web(app: web.Application, bot_manager, base_dir: str):
 
     # /web → 重定向到 /web/
     app.router.add_get('/web', _redirect_to_web)
+    # 根路径的 POST 留给 QQ webhook，浏览器用 GET 访问时直接跳到面板
+    app.router.add_get('/', _redirect_to_web)
 
     if os.path.isdir(dist_dir):
         app.router.add_get('/web/{path:.*}', _make_spa_handler(dist_dir))

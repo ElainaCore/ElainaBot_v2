@@ -20,6 +20,35 @@ def _is_address_in_use(error: OSError) -> bool:
     return error.errno == errno.EADDRINUSE or getattr(error, 'winerror', None) == 10048
 
 
+def _password_allows_remote() -> bool:
+    """管理员密码仍为默认值时，不允许监听非回环地址。"""
+    try:
+        from web.auth import password_is_default
+
+        return not password_is_default()
+    except Exception:
+        return False
+
+
+def _is_loopback_host(host: str) -> bool:
+    value = str(host or '').strip().strip('[]').lower()
+    return not value or value in ('127.0.0.1', 'localhost', '::1') or value.startswith('127.')
+
+
+def _lock_hosts_until_password_changed(hosts: list[str]) -> list[str]:
+    if _password_allows_remote():
+        return hosts
+    loopbacks = [host for host in hosts if _is_loopback_host(host)]
+    if not loopbacks:
+        loopbacks = ['127.0.0.1']
+    if loopbacks != hosts:
+        log.warning(
+            '管理员密码仍为默认值，HTTP 监听地址已锁定为 %s；请先修改管理员密码，再配置 0.0.0.0 或其他地址。',
+            ', '.join(loopbacks),
+        )
+    return loopbacks
+
+
 def _kill_port_listeners(port: int):
     """一次性杀掉监听指定端口的全部其他进程。"""
     listeners = []
@@ -83,13 +112,14 @@ class HttpServer:
 
         端口被占用时在 bind_timeout 内重试, 覆盖重启时旧进程/子进程尚未释放端口的窗口。
         """
-        host = cfg.get('settings', 'server.host', '0.0.0.0')
+        host = cfg.get('settings', 'server.host', '127.0.0.1')
         port = cfg.get('settings', 'server.port', 5200)
 
         self._runner = AppRunner(self.app)
         await self._runner.setup()
 
-        hosts = host if isinstance(host, list) else [host]
+        hosts = [str(item) for item in host] if isinstance(host, list) else [str(host)]
+        hosts = _lock_hosts_until_password_changed(hosts)
         deadline = asyncio.get_running_loop().time() + bind_timeout
         pending = list(hosts)
         restart_recovery = os.environ.pop(RESTART_RECOVERY_ENV, '') == '1'

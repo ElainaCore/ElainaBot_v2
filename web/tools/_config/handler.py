@@ -15,6 +15,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from core.base.config import cfg
 from core.network.access import DEFAULT_API_VERSION, TokenManager
+from web import auth
 from web.response import error, ok
 from web.tools._bot.api import get_bot_api
 
@@ -30,6 +31,49 @@ def set_context(base_dir: str):
 
 def _config_dir():
     return os.path.join(_base_dir, 'config')
+
+
+def _settings_hosts(content: str) -> list[str]:
+    """读取 settings.yaml 中的 server.host，统一返回字符串列表。"""
+    data = yaml.safe_load(content)
+    if not isinstance(data, dict):
+        return []
+    server = data.get('server')
+    if not isinstance(server, dict):
+        return []
+    host = server.get('host', '')
+    if isinstance(host, list):
+        return [str(item).strip() for item in host if str(item).strip()]
+    return [item.strip() for item in str(host).split(',') if item.strip()]
+
+
+def _settings_password(content: str):
+    """读取 settings.yaml 中的管理员密码；未写该字段时返回 None。"""
+    data = yaml.safe_load(content)
+    if isinstance(data, dict):
+        web_cfg = data.get('web')
+        if isinstance(web_cfg, dict) and 'admin_password' in web_cfg:
+            return str(web_cfg.get('admin_password') or '')
+    return None
+
+
+def _replace_server_host(text: str, host: str = '127.0.0.1') -> str:
+    """仅替换 server 段内的 host 值，保留注释、缩进和其他配置。"""
+    lines = text.splitlines()
+    in_server = False
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped or stripped.startswith('#'):
+            continue
+        if not line[:1].isspace():
+            in_server = stripped.startswith('server:')
+            continue
+        if in_server:
+            match = re.match(r'^(\s*host\s*:\s*)([^#]*?)(\s*(?:#.*)?)$', line)
+            if match:
+                lines[index] = match.group(1) + host + match.group(3)
+                break
+    return '\n'.join(lines) + ('\n' if text.endswith('\n') else '')
 
 
 # ===== YAML 序列化工具 =====
@@ -213,7 +257,11 @@ async def handle_get_config(request: web.Request):
             with open(path, encoding='utf-8') as f:
                 raw_text = f.read()
             # 解析 ${VAR_NAME:default} 环境变量占位符，避免前端显示原始占位符
-            result[name] = cfg._resolve_env_vars(raw_text)
+            resolved = cfg._resolve_env_vars(raw_text)
+            # 默认密码未修改前，面板里的监听地址固定显示为 127.0.0.1
+            if name == 'settings' and auth.password_is_default():
+                resolved = _replace_server_host(resolved)
+            result[name] = resolved
         else:
             result[name] = ''
     return ok(result)
@@ -228,6 +276,27 @@ async def handle_save_config(request: web.Request):
             return error('无效的配置文件名', status=400)
         if not content:
             return error('内容不能为空', status=400)
+
+        allow_remote = None
+        if file_name == 'settings':
+            try:
+                hosts = _settings_hosts(content)
+                new_password = _settings_password(content)
+            except yaml.YAMLError as exc:
+                return error(f'YAML 格式错误：{exc}', status=400)
+            if new_password is None:
+                new_password = cfg.get('settings', 'web.admin_password', '')
+            current_password = str(cfg.get('settings', 'web.admin_password', '') or '')
+            # 设置新明文密码时强制强度校验；哈希值与未改动字段跳过
+            if new_password and new_password != current_password and not auth.is_hashed(new_password):
+                pwd_error = auth.validate_new_password(new_password)
+                if pwd_error:
+                    return error(pwd_error, status=400)
+            if new_password and new_password != current_password:
+                auth.record_password_changed(new_password)
+            if auth.hosts_require_password(hosts) and auth.password_is_default(new_password):
+                return error('管理员密码仍为默认值，监听地址只能使用 127.0.0.1；请先修改管理员密码。', status=400)
+            allow_remote = not auth.password_is_default(new_password)
 
         cdir = _config_dir()
         path = os.path.join(cdir, f'{file_name}.yaml')
@@ -257,7 +326,7 @@ async def handle_save_config(request: web.Request):
             mtime = os.path.getmtime(path)
             cfg._do_reload('bot', path, mtime)
 
-        return ok(message='配置已保存')
+        return ok({'allow_remote': allow_remote}, message='配置已保存')
     except Exception as e:
         return error(str(e), status=500)
 

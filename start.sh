@@ -23,8 +23,22 @@ PYTHON_VERSION='3.13'
 DEFAULT_PYTHON_INSTALL_MIRROR='https://registry.npmmirror.com/-/binary/python-build-standalone'
 PYTHON_INSTALL_MIRROR="${ELAINABOT_PYTHON_MIRROR:-$DEFAULT_PYTHON_INSTALL_MIRROR}"
 PYTHON_INSTALL_MIRROR="${PYTHON_INSTALL_MIRROR%/}"
-PIP_MIRROR="${ELAINABOT_PIP_MIRROR:-https://pypi.tuna.tsinghua.edu.cn/simple}"
+PIP_MIRRORS=(
+    "https://mirrors.aliyun.com/pypi/simple"
+    "https://mirrors.cloud.tencent.com/pypi/simple"
+    "https://mirrors.ustc.edu.cn/pypi/simple"
+    "https://repo.huaweicloud.com/repository/pypi/simple"
+    "https://pypi.tuna.tsinghua.edu.cn/simple"
+    "https://pypi.org/simple"
+)
+PIP_MIRROR_CANDIDATES=()
+SELECTED_PIP_MIRROR=''
 OFFICIAL_PIP_SOURCE="${ELAINABOT_OFFICIAL_PIP_SOURCE:-https://pypi.org/simple}"
+# 显式指定 ELAINABOT_PIP_MIRROR 时优先使用它，不再测速（其余镜像仍作为回退）。
+if [[ -n "${ELAINABOT_PIP_MIRROR:-}" ]]; then
+    PIP_MIRRORS=("$ELAINABOT_PIP_MIRROR" "${PIP_MIRRORS[@]}")
+    SELECTED_PIP_MIRROR="$ELAINABOT_PIP_MIRROR"
+fi
 FRAMEWORK_DOWNLOAD_URL="https://github.com/ElainaCore/ElainaBot_v2/archive/main.zip"
 FRAMEWORK_MIRRORS=(
     "https://github.chenc.dev"
@@ -438,14 +452,106 @@ core_dependencies_work() {
     "$VENV_PYTHON" -c 'import aiohttp, cryptography, dotenv, httpx, psutil, qcloud_cos, websockets, yaml' >/dev/null 2>&1
 }
 
-pip_install() {
-    step '正在优先使用清华 PyPI 镜像安装依赖...'
-    if "$VENV_PYTHON" -m pip install --disable-pip-version-check --index-url "$PIP_MIRROR" "$@"; then
-        return
+pip_mirror_name() {
+    case "$1" in
+        *aliyun*) printf '阿里云 PyPI 镜像' ;;
+        *tencent*) printf '腾讯云 PyPI 镜像' ;;
+        *ustc*) printf '中科大 PyPI 镜像' ;;
+        *huaweicloud*) printf '华为云 PyPI 镜像' ;;
+        *tuna*) printf '清华 PyPI 镜像' ;;
+        *pypi.org*) printf '官方 PyPI' ;;
+        *) printf '%s' "$1" ;;
+    esac
+}
+
+measure_pip_mirror() {
+    # 读取索引页前 64KB，用耗时作为综合速度指标；403/超时/连接失败均视为不可用。
+    local mirror="$1" url="${1%/}/pip/" elapsed='' whole='' fraction=''
+
+    if command -v curl >/dev/null 2>&1; then
+        elapsed="$(curl --fail --silent --location --max-time 3 --range 0-65535 --output /dev/null --write-out '%{time_total}' "$url" 2>/dev/null)" || return 1
+        whole="${elapsed%%.*}"
+        fraction="${elapsed#*.}"
+        [[ "$fraction" == "$elapsed" ]] && fraction='0'
+        [[ -z "$fraction" ]] && fraction='0'
+        fraction="${fraction}000"
+        printf '%s' "$(( whole * 1000 + 10#${fraction:0:3} ))"
+        return 0
     fi
 
-    step '镜像源安装失败，正在切换到官方 PyPI...'
-    "$VENV_PYTHON" -m pip install --disable-pip-version-check --index-url "$OFFICIAL_PIP_SOURCE" "$@"
+    if command -v wget >/dev/null 2>&1; then
+        local start_time end_time
+        start_time="$(date +%s%N 2>/dev/null)" || return 1
+        [[ "$start_time" =~ ^[0-9]+$ ]] || return 1
+        wget --quiet --timeout=3 --tries=1 --output-document=/dev/null "$url" >/dev/null 2>&1 || return 1
+        end_time="$(date +%s%N 2>/dev/null)" || return 1
+        [[ "$end_time" =~ ^[0-9]+$ ]] || return 1
+        printf '%s' "$(( (end_time - start_time) / 1000000 ))"
+        return 0
+    fi
+
+    return 1
+}
+
+select_fastest_pip_mirror() {
+    local mirror milliseconds best_mirror='' best_milliseconds=''
+    for mirror in "${PIP_MIRRORS[@]}"; do
+        if milliseconds="$(measure_pip_mirror "$mirror")"; then
+            step "PyPI 镜像测速：$(pip_mirror_name "$mirror")  ${milliseconds} ms"
+            if [[ -z "$best_milliseconds" || "$milliseconds" -lt "$best_milliseconds" ]]; then
+                best_milliseconds="$milliseconds"
+                best_mirror="$mirror"
+            fi
+        else
+            step "PyPI 镜像测速：$(pip_mirror_name "$mirror")  不可用，已跳过"
+        fi
+    done
+    if [[ -z "$best_mirror" ]]; then
+        step '所有 PyPI 镜像测速失败，直接使用官方 PyPI。'
+        SELECTED_PIP_MIRROR="$OFFICIAL_PIP_SOURCE"
+    else
+        step "已选择最快的 PyPI 镜像：$(pip_mirror_name "$best_mirror")（${best_milliseconds} ms）"
+        SELECTED_PIP_MIRROR="$best_mirror"
+    fi
+}
+
+build_pip_mirror_candidates() {
+    local mirror has_official=0
+    PIP_MIRROR_CANDIDATES=()
+    if [[ -n "$SELECTED_PIP_MIRROR" ]]; then
+        PIP_MIRROR_CANDIDATES+=("$SELECTED_PIP_MIRROR")
+    fi
+    for mirror in "${PIP_MIRRORS[@]}"; do
+        [[ "$mirror" == "$SELECTED_PIP_MIRROR" ]] && continue
+        PIP_MIRROR_CANDIDATES+=("$mirror")
+    done
+    for mirror in "${PIP_MIRROR_CANDIDATES[@]}"; do
+        if [[ "$mirror" == "$OFFICIAL_PIP_SOURCE" ]]; then
+            has_official=1
+        fi
+    done
+    if (( has_official == 0 )); then
+        PIP_MIRROR_CANDIDATES+=("$OFFICIAL_PIP_SOURCE")
+    fi
+    return 0
+}
+
+pip_install() {
+    local mirror mirror_name
+    if [[ -z "$SELECTED_PIP_MIRROR" ]]; then
+        select_fastest_pip_mirror
+    fi
+    build_pip_mirror_candidates
+    for mirror in "${PIP_MIRROR_CANDIDATES[@]}"; do
+        mirror_name="$(pip_mirror_name "$mirror")"
+        step "正在通过${mirror_name}安装依赖..."
+        if "$VENV_PYTHON" -m pip install --disable-pip-version-check --progress-bar off --no-color --index-url "$mirror" "$@"; then
+            SELECTED_PIP_MIRROR="$mirror"
+            return 0
+        fi
+        step "${mirror_name}安装失败，正在尝试下一个镜像..."
+    done
+    fail '所有 PyPI 镜像均安装失败，请检查网络后重试。'
 }
 
 ensure_dependencies() {

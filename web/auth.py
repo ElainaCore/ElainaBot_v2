@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import threading
 import time
 import uuid
@@ -37,16 +38,18 @@ _data_dir = ''
 _ip_file = ''
 _session_file = ''
 _instance_file = ''
+_password_changed_file = ''
 _io_lock = threading.Lock()  # 串行化文件写入, 避免内容交错损坏
 
 
 def init(base_dir: str):
-    global _data_dir, _ip_file, _session_file, _instance_file, SESSION_COOKIE
+    global _data_dir, _ip_file, _session_file, _instance_file, _password_changed_file, SESSION_COOKIE
     _data_dir = os.path.join(base_dir, 'data', 'web')
     os.makedirs(_data_dir, exist_ok=True)
     _ip_file = os.path.join(_data_dir, 'ip.json')
     _session_file = os.path.join(_data_dir, 'sessions.json')
     _instance_file = os.path.join(_data_dir, 'instance_id')
+    _password_changed_file = os.path.join(_data_dir, 'password_changed')
     SESSION_COOKIE = f'{_SESSION_COOKIE_PREFIX}_{_load_or_create_instance_id()}'
     _load_ip_data()
     _load_session_data()
@@ -83,6 +86,91 @@ def verify_password(plain: str, stored: str) -> bool:
 
 def is_hashed(stored: str) -> bool:
     return stored.startswith(_PWD_HASH_PREFIX)
+
+
+# 初始默认密码：只要密码不是这个值且已设置，就视为已修改，不再做弱密码判定。
+DEFAULT_PASSWORD = 'admin'
+_LOOPBACK_HOSTS = frozenset({'127.0.0.1', 'localhost', '::1'})
+
+
+def _password_changed_marker() -> bool:
+    try:
+        return os.path.isfile(_password_changed_file)
+    except OSError:
+        return False
+
+
+def set_password_changed(changed: bool) -> None:
+    """记录密码是否已脱离默认/弱密码；旧版自动哈希无法判断，需要此标记。"""
+    try:
+        if changed:
+            os.makedirs(os.path.dirname(_password_changed_file), exist_ok=True)
+            with open(_password_changed_file, 'w', encoding='ascii') as f:
+                f.write('1')
+        elif os.path.exists(_password_changed_file):
+            os.remove(_password_changed_file)
+    except OSError:
+        pass
+
+
+def record_password_changed(plain: str) -> None:
+    """登录成功或保存密码时调用：只要不是初始默认密码，就视为已修改。"""
+    value = str(plain or '')
+    set_password_changed(bool(value) and value != DEFAULT_PASSWORD)
+
+
+def password_is_default(stored: str | None = None) -> bool:
+    """判断管理员密码是否仍为初始默认密码。
+
+    明文：与 DEFAULT_PASSWORD 比较（允许随意设置其他密码）；
+    哈希：无法反推，依据修改标记判断（旧版自动哈希的默认密码会保持锁定）。
+    """
+    if stored is None:
+        try:
+            stored = cfg.get('settings', 'web.admin_password', '')
+        except Exception:
+            return True
+    if not isinstance(stored, str) or not stored:
+        return True
+    if is_hashed(stored):
+        return not _password_changed_marker()
+    return stored == DEFAULT_PASSWORD
+
+
+def is_loopback_host(host: str) -> bool:
+    value = str(host or '').strip().strip('[]').lower()
+    if not value:
+        return True
+    return value in _LOOPBACK_HOSTS or value.startswith('127.')
+
+
+# 新密码强度规则：至少 6 位，必须同时包含数字和字母，且只允许字母和数字。
+_PASSWORD_CHARSET = re.compile(r'^[A-Za-z0-9]+$')
+
+
+def validate_new_password(plain: str) -> str | None:
+    """校验新设置的明文密码；返回错误提示，通过则返回 None。
+
+    仅用于"设置新密码"入口；默认密码 admin 与已存在的旧密码不受影响。
+    """
+    value = str(plain or '')
+    if not _PASSWORD_CHARSET.fullmatch(value):
+        return '密码只能由数字和字母组成'
+    if len(value) < 6:
+        return '密码长度至少 6 位'
+    if not (any(c.isdigit() for c in value) and any(c.isalpha() for c in value)):
+        return '密码必须同时包含数字和字母'
+    return None
+
+
+def hosts_require_password(hosts) -> bool:
+    """监听地址中是否存在必须先修改管理员密码才能使用的非回环地址。"""
+    if isinstance(hosts, str):
+        hosts = [hosts]
+    for host in hosts or []:
+        if not is_loopback_host(host):
+            return True
+    return False
 
 
 # ==================== JSON 文件读写 ====================
