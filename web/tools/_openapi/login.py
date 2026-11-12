@@ -1,4 +1,4 @@
-"""QQ 开放平台 — 扫码登录 / 登录状态处理器"""
+"""QQ 开放平台登录与状态处理器。"""
 
 import time
 
@@ -61,28 +61,40 @@ async def handle_check_login(request: web.Request):
 
 
 async def handle_v2_start_login(request: web.Request):
-    """新版面板登录: q.qq.com 官方 ptlogin 扫码流程"""
+    """创建新版面板的扫码或手机 QQ 授权会话。"""
     api = h._get_bot_api()
     if not api:
         return h._err('bot_api 模块未加载')
     body = await request.json()
     user_id = body.get('user_id', 'web_user')
-    login = QQScanLogin(auto_select=False)
-    res = await login.start()
-    if res['status'] == 'failed' or not res.get('qr_image'):
-        return h._err(f'获取二维码失败: {res.get("error") or "未知错误"}')
+    method = body.get('method', 'qr')
+    if method not in ('qr', 'mobile'):
+        return h._err('不支持的登录方式')
+    mobile = method == 'mobile'
+    login = QQScanLogin(auto_select=False, mobile=mobile)
     h._openapi_v2_login_tasks[user_id] = login
-    return h._ok(qr_image=res['qr_image'], message='请扫描二维码登录')
+    res = await login.start()
+    if h._openapi_v2_login_tasks.get(user_id) is not login:
+        return h._err('登录任务已失效')
+    key = 'login_url' if mobile else 'qr_image'
+    if res['status'] == 'failed' or not res.get(key):
+        h._openapi_v2_login_tasks.pop(user_id, None)
+        return h._err(res.get('error') or ('获取手机 QQ 授权链接失败' if mobile else '获取二维码失败'))
+    message = '请在手机 QQ 中确认授权' if mobile else '请扫描二维码登录'
+    return h._ok(login_id=login.login_id, message=message, **{key: res[key]})
 
 
 async def handle_v2_check_login(request: web.Request):
     body = await request.json()
     user_id = body.get('user_id', 'web_user')
     login = h._openapi_v2_login_tasks.get(user_id)
-    if login is None:
+    login_id = body.get('login_id')
+    if login is None or ((login_id is not None or login.mobile) and login_id != login.login_id):
         return web.json_response({'success': False, 'status': 'not_started', 'message': '未找到登录任务'})
     developer_id = str(body.get('developer_id') or '')
     res = await login.select_developer(developer_id) if developer_id else await login.poll()
+    if h._openapi_v2_login_tasks.get(user_id) is not login:
+        return web.json_response({'success': False, 'status': 'not_started', 'message': '登录任务已失效'})
     status = res['status']
     if status == 'logged_in':
         h._apply_login(user_id, res['creds'] or {})
@@ -98,6 +110,8 @@ async def handle_v2_check_login(request: web.Request):
     if status == 'failed':
         h._openapi_v2_login_tasks.pop(user_id, None)
         return web.json_response({'success': False, 'status': 'failed', 'message': res.get('error') or '登录失败'})
+    if status in ('expired', 'rejected'):
+        h._openapi_v2_login_tasks.pop(user_id, None)
     payload = {'success': True, 'status': status}
     if status == 'waiting' and res.get('qr_image'):
         payload['qr_image'] = res['qr_image']

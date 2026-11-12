@@ -7,6 +7,7 @@ from aiohttp.web_request import FileField
 
 import web.tools._openapi.handler as h
 from web.tools._bot.api import extract_login_creds, parse_login_developers
+from web.tools._bot.qq_http import dashboard_credentials_ready
 
 _V2_ALLOWED_PREFIXES = (
     '/cgi-bin/v2/',
@@ -68,8 +69,7 @@ def _v2_cookie(ud):
 
 
 def _v2_ready(ud):
-    required = ('b_token', 'qticket_lite', 'developer_id_lite', 'uin', 'skey')
-    return bool(ud and all(ud.get(key) for key in required))
+    return dashboard_credentials_ready(ud)
 
 
 def _v2_relogin_message(result):

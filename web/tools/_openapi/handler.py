@@ -3,6 +3,8 @@
 import json
 import logging
 import os
+import tempfile
+from contextlib import suppress
 
 from aiohttp import web
 
@@ -33,6 +35,14 @@ def set_context(base_dir: str, bot_manager=None):
     _load_v2()
 
 
+def ensure_legacy_data(base_dir: str):
+    """供 Web 面板挂载前收到消息的系统插件加载共享凭证。"""
+    global _data_file
+    if not _data_file:
+        _data_file = os.path.join(base_dir, 'web', 'open', 'openapi.json')
+        _load_data()
+
+
 def _load_data():
     loaded = {}
     try:
@@ -47,12 +57,33 @@ def _load_data():
 
 
 def _save_data():
+    temporary = None
     try:
-        os.makedirs(os.path.dirname(_data_file), exist_ok=True)
-        with open(_data_file, 'w', encoding='utf-8') as f:
+        directory = os.path.dirname(_data_file)
+        os.makedirs(directory, exist_ok=True)
+        with tempfile.NamedTemporaryFile('w', dir=directory, encoding='utf-8', delete=False) as f:
+            temporary = f.name
             json.dump(_openapi_user_data, f, indent=2, ensure_ascii=False)
+        os.replace(temporary, _data_file)
+        return True
     except (OSError, TypeError, ValueError):
-        pass
+        return False
+    finally:
+        if temporary:
+            with suppress(OSError):
+                os.unlink(temporary)
+
+
+def save_legacy_user(user_id: str, data: dict) -> bool:
+    previous = _openapi_user_data.get(user_id)
+    _openapi_user_data[user_id] = data
+    if _save_data():
+        return True
+    if previous is None:
+        _openapi_user_data.pop(user_id, None)
+    else:
+        _openapi_user_data[user_id] = previous
+    return False
 
 
 def _load_v2():
@@ -166,12 +197,13 @@ def _apply_login(user_id, creds):
     _save_v2(user_id)
     # 旧平台存储 (保留已选 appId)
     old = _openapi_user_data.get(user_id) or {}
+    same_subject = str(old.get('uin')) == str(uin) and str(old.get('developerId')) == str(quid)
     old.update(
         {
             'type': 'ok',
             'uin': uin,
             'developerId': quid,
-            'ticket': creds.get('qticket') or old.get('ticket', ''),
+            'ticket': creds.get('qticket') or (old.get('ticket', '') if same_subject else ''),
         }
     )
     _openapi_user_data[user_id] = old

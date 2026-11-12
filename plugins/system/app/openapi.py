@@ -1,4 +1,4 @@
-"""开放平台扫码登录、通知、机器人列表和数据查询。"""
+"""开放平台授权登录、通知、机器人列表和数据查询。"""
 
 import asyncio
 import contextlib
@@ -7,22 +7,16 @@ from pathlib import Path
 from core.base.config import cfg
 from core.base.logger import PLUGIN, get_logger
 from core.plugin.decorators import handler, on_load, on_unload
+from web.tools._bot.scan_login import QQScanLogin
+from web.tools._openapi import handler as openapi_store
 
 from ._reply import reply, sender_reply
-from ._shared import load_json, save_json
 
 log = get_logger(PLUGIN, '开放平台')
 
 # ==================== 数据管理 ====================
 
-_PLUGIN_DIR = Path(__file__).resolve().parent.parent
-_BASE_DIR = _PLUGIN_DIR.parent.parent
-# 继续读取旧版网页面板使用的开放平台凭证文件
-_DATA_FILE = _BASE_DIR / 'web' / 'open' / 'openapi.json'
-
-_user_data: dict[str, dict] = {}
-_data_loaded = False
-_save_lock = asyncio.Lock()
+_BASE_DIR = Path(__file__).resolve().parents[3]
 _login_tasks: dict[str, tuple[float, asyncio.Task | None]] = {}
 _last_login_time: dict[str, float] = {}
 
@@ -41,29 +35,9 @@ def _get_api():
     return _api
 
 
-def _load_data():
-    global _data_loaded, _user_data
-    data = load_json(_DATA_FILE, {})
-    _user_data = data if isinstance(data, dict) else {}
-    _data_loaded = True
-
-
-async def _save_data():
-    async with _save_lock:
-        snapshot = dict(_user_data)
-        await asyncio.to_thread(save_json, _DATA_FILE, snapshot)
-
-
 def _get_ud(user_id):
     """获取用户登录数据，不存在时返回空值。"""
-    if not _data_loaded:
-        _load_data()
-    return _user_data.get(user_id)
-
-
-async def _save_ud(user_id, data):
-    _user_data[user_id] = data
-    await _save_data()
+    return openapi_store._get_user_data(user_id)
 
 
 def _use_md(event):
@@ -95,13 +69,13 @@ async def _reply_login_required(event, message):
 
 @on_load
 def _init():
-    _load_data()
+    openapi_store.ensure_legacy_data(str(_BASE_DIR))
     log.info('开放平台查询插件已加载')
 
 
 @on_unload
 async def _shutdown():
-    """取消尚未结束的扫码登录轮询任务。"""
+    """取消尚未结束的授权登录轮询任务。"""
     tasks = [task for _started_at, task in _login_tasks.values() if task and not task.done()]
     for task in tasks:
         task.cancel()
@@ -114,11 +88,16 @@ async def _shutdown():
 # ==================== 管理登录 ====================
 
 
-@handler(r'^管理登录$', name='管理登录', desc='扫码登录QQ开放平台')
+@handler(r'^管理登录$', name='管理登录', desc='在手机 QQ 中授权登录开放平台')
 async def login(event, match):
     api = _get_api()
     if not api:
         await reply(event, 'bot_api 模块未加载，无法登录')
+        return
+
+    use_md = _use_md(event)
+    if not use_md and not event.is_direct:
+        await reply(event, '请私聊机器人发送「管理登录」，获取专用授权链接。')
         return
 
     user_id = event.user_id
@@ -128,7 +107,7 @@ async def login(event, match):
         if now - timestamp >= 20:
             _last_login_time.pop(uid, None)
 
-    # 防止短时间内重复创建二维码和轮询任务
+    # 防止短时间内重复创建授权会话和轮询任务
     if user_id in _last_login_time:
         return
     active_login = _login_tasks.get(user_id)
@@ -139,18 +118,18 @@ async def login(event, match):
     _login_tasks[user_id] = (now, None)
     task = None
     try:
-        data = await api.create_login_qr()
-        url = data.get('url')
-        qr = data.get('qr')
-        if not url or not qr:
-            await reply(event, '获取登录二维码失败，请稍后重试')
+        session = QQScanLogin(mobile=True)
+        result = await session.start()
+        url = result.get('login_url')
+        if result['status'] == 'failed' or not url:
+            await reply(event, result.get('error') or '获取手机 QQ 授权链接失败，请稍后重试')
             return
 
-        content = f'<@{user_id}>\n[QQ开发平台管理端登录]\n登录具有时效性，请尽快登录\n\n>当你选择登录，代表你已经同意将数据托管给伊蕾娜Bot。'
+        content = f'<@{user_id}>\n请在手机 QQ 中打开授权链接，选择开发者主体并确认。\n\n>当你选择登录，代表你已经同意将数据托管给伊蕾娜Bot。'
 
-        if _use_md(event):
-            login_btn = {'text': '点击登录', 'data': url, 'type': 0, 'style': 4}
-            if event.is_group:
+        if use_md:
+            login_btn = {'text': '在手机 QQ 中授权', 'data': url, 'type': 0, 'style': 4}
+            if not event.is_direct:
                 login_btn['list'] = [user_id]
             await reply(event, content, buttons=[[login_btn]])
         else:
@@ -167,36 +146,58 @@ async def login(event, match):
 
         # 处理器返回后事件发送器会被清空，因此提前保留发送器引用
         sender = event._sender
-        use_md = _use_md(event)
-        task = asyncio.create_task(_poll_login(event, sender, user_id, qr, use_md))
+        task = asyncio.create_task(_poll_login(event, sender, user_id, session, use_md))
         _login_tasks[user_id] = (now, task)
     finally:
         if task is None:
             _login_tasks.pop(user_id, None)
 
 
-async def _poll_login(event, sender, user_id, qr, use_md):
+async def _poll_login(event, sender, user_id, session, use_md):
     api = _get_api()
     loop = asyncio.get_running_loop()
-    deadline = loop.time() + 60
+    deadline = loop.time() + session.TTL
+    message = '授权链接已失效，请重新发送「管理登录」。'
     try:
         while loop.time() < deadline:
             await asyncio.sleep(3)
-            try:
-                res = await api.get_qr_login_info(qrcode=qr)
-            except Exception as exc:
-                log.debug(f'轮询登录态异常: {exc}')
+            result = await session.poll()
+            status = result['status']
+            if status in ('waiting', 'scanned'):
                 continue
-            if res.get('code') != 0:
-                continue
+            if status == 'rejected':
+                message = '已取消手机 QQ 授权。'
+                break
+            if status != 'logged_in':
+                message = result.get('error') or message
+                break
 
-            login_data = res.get('data', {}).get('data', {})
-            login_data['type'] = 'ok'
-            await _save_ud(user_id, login_data)
+            creds = result['creds']
+            uin = creds['uin']
+            developer_id = creds['developer_id_lite']
+            ticket = creds.get('qticket')
+            if not ticket:
+                message = 'QQ 已确认授权，但未返回系统插件查询所需的票据，请重新授权。'
+                break
+            apps_result = await api.get_bot_list(uin=uin, quid=developer_id, ticket=ticket)
+            if apps_result.get('code') != 0:
+                message = 'QQ 已确认授权，但无法读取机器人列表，请重新授权。'
+                break
 
-            app_type = login_data.get('appType')
-            app_type_str = '小程序' if app_type == '0' else '机器人' if app_type == '2' else '未知'
-            content = f'[{login_data.get("uin")}]登录成功\n\n>登录类型：{app_type_str}\nAppId：{login_data.get("appId")}\n切换+appid可以切换机器人'
+            apps = (apps_result.get('data') or {}).get('apps') or []
+            app_ids = [str(app['app_id']) for app in apps if app.get('app_id')]
+            previous = str((_get_ud(user_id) or {}).get('appId') or '')
+            app_id = previous if previous in app_ids else next(iter(app_ids), '')
+            login_data = {'type': 'ok', 'uin': uin, 'developerId': developer_id, 'ticket': ticket, 'appId': app_id}
+            if not openapi_store.save_legacy_user(user_id, login_data):
+                message = '保存授权凭证失败，请稍后重试。'
+                break
+
+            content = f'[{uin}]登录成功'
+            if app_id:
+                content += f'\n\nAppID：{app_id}\n发送「切换appid 目标ID」可切换机器人。'
+            else:
+                content += '\n\n该主体下暂无机器人。'
             buttons = _nav_buttons() if use_md else None
             try:
                 await sender_reply(sender, event, content, buttons=buttons)
@@ -206,9 +207,8 @@ async def _poll_login(event, sender, user_id, qr, use_md):
             _last_login_time[user_id] = loop.time()
             return
 
-        # 登录二维码超时后发送失效提示
         with contextlib.suppress(Exception):
-            await sender_reply(sender, event, f'<@{user_id}>登录失效，请重新尝试')
+            await sender_reply(sender, event, f'<@{user_id}>{message}')
     finally:
         _login_tasks.pop(user_id, None)
 
@@ -417,9 +417,13 @@ async def switch_appid(event, match):
         await reply(event, f'提供的AppID无效，请从以下可用AppID中选择：\n\n```python\n{chr(10).join(lines)}\n```\n')
         return
 
+    if _get_ud(event.user_id) is not ud:
+        await reply(event, '登录信息已更新，请重新切换 AppID。')
+        return
     old_appid = ud.get('appId')
-    ud['appId'] = new_appid
-    await _save_ud(event.user_id, ud)
+    if not openapi_store.save_legacy_user(event.user_id, {**ud, 'appId': new_appid}):
+        await reply(event, '保存 AppID 失败，请稍后重试。')
+        return
 
     content = f'AppID已切换成功\n\n```python\n原AppID: {old_appid}\n新AppID: {new_appid}\n机器人: {app_name}\n```\n'
 

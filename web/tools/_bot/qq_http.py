@@ -35,3 +35,8 @@ def qq_bkn(skey: str) -> int:
     for ch in skey or '':
         value += (value << 5) + ord(ch)
     return value & 2147483647
+
+
+def dashboard_credentials_ready(creds: dict | None) -> bool:
+    """Lite 手机授权通过平台票据登录，QQ 可能不下发 skey 或 p_skey。"""
+    return bool(creds and all(creds.get(key) for key in ('b_token', 'qticket_lite', 'developer_id_lite', 'uin')))

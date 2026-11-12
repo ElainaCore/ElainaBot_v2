@@ -1,4 +1,4 @@
-"""新版开放平台扫码登录 (q.qq.com 官方登录流程)"""
+"""新版开放平台扫码与手机 QQ 授权登录。"""
 
 import asyncio
 import base64
@@ -15,7 +15,7 @@ from urllib.parse import quote
 import aiohttp
 from yarl import URL
 
-from web.tools._bot.qq_http import _TIMEOUT, decode_body
+from web.tools._bot.qq_http import _TIMEOUT, dashboard_credentials_ready, decode_body
 
 _PT_APPID = '1600001541'
 _PT_DAID = '750'
@@ -155,14 +155,16 @@ class _UnquotedCookieJar(aiohttp.CookieJar):
 
 
 class QQScanLogin:
-    """一次性 q.qq.com 扫码登录会话 (create_session→扫码→check_sig→绑定→poll→callback 下发凭证), 跨请求共享 CookieJar, 状态: waiting/scanned/confirming/selecting/expired/rejected/failed/logged_in"""
+    """一次性 Lite 登录会话，支持 ptlogin 扫码和手机 QQ 授权。"""
 
     APPID = _PT_APPID
     DAID = _PT_DAID
     TTL = 300
 
-    def __init__(self, auto_select=True):
+    def __init__(self, auto_select=True, *, mobile=False):
         self.jar = None
+        self.login_id = secrets.token_urlsafe(16)
+        self.mobile = mobile
         self.session_id = ''
         self.login_sig = ''
         self.ptqrtoken = 0
@@ -219,8 +221,7 @@ class QQScanLogin:
         cookie['developer_id_lite']['path'] = '/'
         self.jar.update_cookies(cookie, response_url=URL(_LITE_BASE))
 
-    async def _create_qr(self, s: aiohttp.ClientSession):
-        """在给定会话内新建 /lite 会话并生成 ptlogin 二维码"""
+    async def _create_lite_session(self, s: aiohttp.ClientSession) -> bool:
         async with s.get(
             f'{_LITE_BASE}/lite/create_session',
             headers={'Referer': 'https://q.qq.com/'},
@@ -230,10 +231,16 @@ class QQScanLogin:
         if not self.session_id:
             self.status = 'failed'
             self.error = '创建登录会话失败'
+            return False
+        self.callback = str(URL(_PT_CALLBACK).with_query(session_id=self.session_id, _wv=16777218))
+        self.created = time.time()
+        return True
+
+    async def _create_qr(self, s: aiohttp.ClientSession):
+        """在给定会话内新建 /lite 会话并生成 ptlogin 二维码"""
+        if not await self._create_lite_session(s):
             return
-        callback = f'{_PT_CALLBACK}?session_id={self.session_id}&_wv=16777218'
-        self.callback = callback
-        self.u1 = quote(callback, safe='')
+        self.u1 = quote(self.callback, safe='')
         xurl = (
             f'{_PT_XUI}/cgi-bin/xlogin?appid={self.APPID}&daid={self.DAID}&target=self&style=22'
             f'&hide_title_bar=1&hide_border=1&hide_title=1&theme=10&s_url={self.u1}'
@@ -254,18 +261,21 @@ class QQScanLogin:
         self.created = time.time()
 
     async def start(self) -> dict:
-        """开始登录: 生成二维码, 返回状态字典"""
+        """创建会话并返回对应的登录入口。"""
         try:
             async with self._client() as s:
-                await self._create_qr(s)
-        except Exception as e:
+                if self.mobile:
+                    await self._create_lite_session(s)
+                else:
+                    await self._create_qr(s)
+        except Exception:
             self.status = 'failed'
-            self.error = f'初始化失败: {e}'
+            self.error = '初始化登录会话失败，请稍后重试'
         return self.result()
 
     async def poll(self) -> dict:
         """轮询一次登录状态。串行化以避免并发轮询在确认阶段互相破坏会话。"""
-        if self.status in ('logged_in', 'failed', 'selecting') or self._finishing:
+        if not self.session_id or self.status in ('logged_in', 'failed', 'selecting', 'expired', 'rejected') or self._finishing:
             return self.result()
         lock = self._get_lock()
         if lock.locked():
@@ -273,7 +283,43 @@ class QQScanLogin:
         async with lock:
             if self.status in ('logged_in', 'failed') or self._finishing:
                 return self.result()
+            if self.mobile:
+                return await self._poll_mobile()
             return await self._poll_once()
+
+    async def _poll_lite(self, s: aiohttp.ClientSession) -> dict:
+        async with s.get(
+            f'{_LITE_BASE}/lite/poll',
+            params={'session_id': self.session_id},
+            headers={'Referer': f'{_LITE_BASE}/'},
+        ) as r:
+            return json.loads(decode_body(await r.read()))
+
+    async def _poll_mobile(self) -> dict:
+        if time.time() - self.created >= self.TTL:
+            self.status = 'expired'
+            return self.result()
+        try:
+            async with self._client() as s:
+                result = await self._poll_lite(s)
+                data = result.get('data') or {}
+                code = data.get('code')
+                if result.get('retcode') == 0 and code == 0:
+                    await self._finish_lite(s, data.get('redirect'), data.get('developer_id'))
+                elif code in (2, 4):
+                    self.status = 'expired' if code == 2 else 'rejected'
+                elif result.get('retcode') == 0 and code in (1, 3):
+                    self.status = 'waiting' if code == 1 else 'scanned'
+                else:
+                    self.status = 'failed'
+                    self.error = '获取手机 QQ 授权状态失败，请重试'
+        except (aiohttp.ClientError, TimeoutError):
+            # 保留会话，下次轮询重试上游的临时网络故障。
+            pass
+        except Exception:
+            self.status = 'failed'
+            self.error = '完成手机 QQ 授权失败，请重试'
+        return self.result()
 
     async def _poll_once(self) -> dict:
         try:
@@ -407,12 +453,7 @@ class QQScanLogin:
             redirect = ''
             dev = developer_id
             for _ in range(20):
-                async with s.get(
-                    f'{_LITE_BASE}/lite/poll',
-                    params={'session_id': self.session_id},
-                    headers={'Referer': 'https://q.qq.com/'},
-                ) as r:
-                    pj = json.loads(decode_body(await r.read()))
+                pj = await self._poll_lite(s)
                 d = pj.get('data') or {}
                 if pj.get('retcode') == 0 and d.get('code') == 0:
                     redirect = d.get('redirect', '')
@@ -423,31 +464,40 @@ class QQScanLogin:
                     self.error = d.get('message') or '登录失败'
                     return False
                 await asyncio.sleep(1)
-            if redirect:
-                self._set_dashboard_developer(dev)
-                async with s.get(redirect, headers={'Referer': 'https://q.qq.com/'}) as r:
-                    await r.read()
-            creds = extract_login_creds(self._jar_cookies())
-            if dev:
-                creds.setdefault('developer_id_lite', dev)
-                creds.setdefault('developerId', dev)
-            required = ('b_token', 'qticket_lite', 'developer_id_lite', 'uin', 'skey')
-            if all(creds.get(key) for key in required):
-                self.creds = creds
-                self.status = 'logged_in'
-                return True
-            self.status = 'failed'
-            self.error = self.error or '登录凭证不完整，请重新扫码登录'
-            return False
+            return await self._finish_lite(s, redirect, dev)
         except Exception as e:
             self.status = 'failed'
             self.error = f'完成登录失败: {e}'
             return False
 
+    async def _finish_lite(self, s: aiohttp.ClientSession, redirect: str | None, developer_id: str | None) -> bool:
+        if redirect:
+            target = URL(_LITE_BASE).join(URL(redirect))
+            if self.mobile and (target.origin() != URL(_LITE_BASE) and target.origin() != URL('https://bot.q.qq.com')):
+                self.status = 'failed'
+                self.error = 'QQ 返回了无效的授权回调地址'
+                return False
+            if developer_id:
+                self._set_dashboard_developer(developer_id)
+            async with s.get(target, headers={'Referer': f'{_LITE_BASE}/'}) as r:
+                await r.read()
+        creds = extract_login_creds(self._jar_cookies())
+        if developer_id:
+            creds.setdefault('developer_id_lite', developer_id)
+            creds.setdefault('developerId', developer_id)
+        if dashboard_credentials_ready(creds):
+            self.creds = creds
+            self.status = 'logged_in'
+            return True
+        self.status = 'failed'
+        self.error = '登录凭证不完整，请重新授权' if self.mobile else '登录凭证不完整，请重新扫码登录'
+        return False
+
     def result(self) -> dict:
         return {
             'status': self.status,
             'qr_image': self.qr_image,
+            'login_url': self.callback if self.mobile else '',
             'creds': self.creds,
             'error': self.error,
             'developers': self.developers,

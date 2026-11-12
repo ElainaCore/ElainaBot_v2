@@ -115,10 +115,8 @@ class QQBotAPI:
         host = 'bot.q.qq.com' if path.startswith('/cgi-bin/') else 'q.qq.com'
         url = f'https://{host}{path}'
         query = dict(params or {})
-        if skey:
-            query.setdefault('bkn', qq_bkn(skey))
-        if query:
-            url += ('&' if '?' in url else '?') + urlencode(query)
+        query.setdefault('bkn', qq_bkn(skey))
+        url += ('&' if '?' in url else '?') + urlencode(query)
         extra = dict(_BOT_HEADERS if host == 'bot.q.qq.com' else _QQ_HEADERS)
         extra['Referer'] = 'https://q.qq.com/qqbot/dashboard/'
         try:
@@ -145,9 +143,7 @@ class QQBotAPI:
             return {'retcode': 500, 'msg': f'请求失败: {e}'}
 
     async def v2_switch_developer(self, developer_id, cookie='', skey=''):
-        url = 'https://q.qq.com/api/v3/login/switch_developer'
-        if skey:
-            url += '?' + urlencode({'bkn': qq_bkn(skey)})
+        url = 'https://q.qq.com/api/v3/login/switch_developer?' + urlencode({'bkn': qq_bkn(skey)})
         headers = _BASE_HEADERS.copy()
         headers.update(_QQ_HEADERS)
         headers.update({
