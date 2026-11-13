@@ -480,7 +480,7 @@ class QQScanLogin:
                 return False
             if developer_id:
                 self._set_dashboard_developer(developer_id)
-            async with s.get(target, headers={'Referer': f'{_LITE_BASE}/'}) as r:
+            async with s.get(str(target), headers={'Referer': f'{_LITE_BASE}/'}) as r:
                 await r.read()
         creds = extract_login_creds(self._jar_cookies())
         if developer_id:
@@ -495,11 +495,13 @@ class QQScanLogin:
         return False
 
     def result(self) -> dict:
-        return {
+        data = {
             'status': self.status,
             'qr_image': self.qr_image,
-            'login_url': self.callback if self.mobile else '',
             'creds': self.creds,
             'error': self.error,
             'developers': self.developers,
         }
+        if self.mobile:
+            data['login_url'] = self.callback
+        return data
