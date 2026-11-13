@@ -365,8 +365,10 @@ async def on_join_request(event, match):
 | `event.user_id` | `str` | 按身份配置转换后的用户 ID |
 | `event.raw_user_id` | `str` | 平台原始用户 OpenID |
 | `event.union_openid` | `str 或 None` | 跨机器人统一用户 ID，可能为空 |
-| `event.username` | `str 或 None` | 用户昵称，可能为空 |
+| `event.username` | `str` | 用户昵称，未提供时为空字符串 |
+| `event.member_nickname` | `str` | 群内的用户昵称，未提供时为空字符串 |
 | `event.group_id` | `str 或 None` | 群 OpenID |
+| `event.union_group_openid` | `str` | 跨机器人统一群 ID，来自 `d.union_group_openid`；未提供时为空字符串 |
 | `event.guild_id` | `str 或 None` | 频道服务器 ID |
 | `event.channel_id` | `str 或 None` | 频道 ID |
 | `event.content` | `str` | 供处理器匹配的文本 |
@@ -382,6 +384,12 @@ async def on_join_request(event, match):
 | `event.subscribe_results` | `list` | 订阅状态变化结果 |
 | `event.raw` | `dict 或 None` | 原始事件载荷；处理链结束后可能被释放 |
 | `event.error` | `dict 或 None` | 上一次媒体上传失败响应 |
+
+`event.username` 表示用户昵称，`event.member_nickname` 表示群内的用户昵称。
+两个字段分别读取对应的原始值，未提供时均为空字符串。
+
+跨机器人关联同一群时使用 `event.union_group_openid`；各机器人自己的群 OpenID 保留在 `event.group_id`，用于回复、撤回、媒体上传和群管理接口。
+该字段也会从群交互和群生命周期载荷中提取；旧载荷缺少此字段时保持为空，不用原始群 ID 补充统一群 ID。
 
 群 @ 消息、群消息和单聊消息的 Ark 类型来自平台的 `ark_data.ark_type`。
 `event.ark_type` 可直接识别 `picture`（图片），完整内容保留在 `event.ark_data`：

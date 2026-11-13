@@ -58,7 +58,8 @@ class GroupJoinRequestParser(LifecycleParser):
 
     def parse(self, event, d):
         self._parse_base(event, d, 'member_openid')
-        event.username = d.get('username', '')
+        username = d.get('username')
+        event.username = username if isinstance(username, str) else ''
         event.join_request_id = d.get('join_request_id', '')
         event.apply_at = d.get('apply_at', '')
         event.apply_source = d.get('apply_source', '')

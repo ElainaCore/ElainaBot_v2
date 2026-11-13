@@ -146,7 +146,7 @@ def compact_reference(raw):
         element = element or (elements[0] if elements and isinstance(elements[0], dict) else {})
         if reference or element:
             author = element.get('author') or {}
-            return {'id': reference or element.get('msg_idx', ''), 'author': author.get('username') or author.get('id') or ('Bot' if author.get('bot') else '引用消息'), 'text': ' '.join(str(element.get('content') or '').split())}
+            return {'id': reference or element.get('msg_idx', ''), 'author': author.get('member_nickname') or author.get('username') or author.get('id') or ('Bot' if author.get('bot') else '引用消息'), 'text': ' '.join(str(element.get('content') or '').split())}
         ref = (payload.get('message_reference') or {}).get('message_id') or payload.get('message_reference_id') or payload.get('reference_message_id')
         return {'id': str(ref), 'author': '', 'text': ''} if ref else None
     except (ValueError, TypeError, AttributeError):

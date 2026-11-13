@@ -204,10 +204,12 @@ class Event:
         'user_id',
         'raw_user_id',
         'username',
+        'member_nickname',
         'member_role',
         'union_openid',
         'is_bot',
         'group_id',
+        'union_group_openid',
         'guild_id',
         'channel_id',
         'message_scene',
@@ -268,11 +270,13 @@ class Event:
         self.timestamp = None
         self.user_id = None
         self.raw_user_id = None
-        self.username = None
+        self.username = ''  # 用户昵称
+        self.member_nickname = ''  # 群内的用户昵称
         self.member_role = ''
         self.union_openid = None
         self.is_bot = None
         self.group_id = None
+        self.union_group_openid = ''
         self.guild_id = None
         self.channel_id = None
         self.message_scene = {}
@@ -356,6 +360,9 @@ class Event:
             d = payload
         if not d or not isinstance(d, dict):
             return
+
+        union_group_openid = d.get('union_group_openid')
+        self.union_group_openid = union_group_openid if isinstance(union_group_openid, str) else ''
 
         et = self.event_type
         self.is_group = et in GROUP_TYPES

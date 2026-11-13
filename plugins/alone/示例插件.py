@@ -330,7 +330,12 @@ async def query_group_member(event, match):
     member = await event.sender.get_group_member(event.group_id, match.group(1))
     if not member:
         return await event.reply('❌ 查询失败或成员不存在')
-    await event.reply(f'👤 群昵称: {member.get("username", "")}\n🎖️ 身份: {member.get("member_role", "")}\n📅 入群时间: {member.get("joined_at", "")}')
+    await event.reply(
+        f'👤 用户昵称: {member.get("username") or ""}\n'
+        f'🏷️ 群内的用户昵称: {member.get("member_nickname") or ""}\n'
+        f'🎖️ 身份: {member.get("member_role", "")}\n'
+        f'📅 入群时间: {member.get("joined_at", "")}'
+    )
 
 
 @handler(r'^机器人信息$', name='机器人群内信息', desc='查询机器人自身群内信息', owner_only=True, group_only=True)
@@ -339,7 +344,12 @@ async def query_bot_member(event, match):
     if not member:
         return await event.reply('❌ 查询失败')
     role = member.get('member_role', '')
-    await event.reply(f'🤖 群昵称: {member.get("username", "")}\n🎖️ 身份: {role}\n👮 是否管理员: {"是" if role in ("admin", "owner") else "否"}')
+    await event.reply(
+        f'🤖 用户昵称: {member.get("username") or ""}\n'
+        f'🏷️ 群内的用户昵称: {member.get("member_nickname") or ""}\n'
+        f'🎖️ 身份: {role}\n'
+        f'👮 是否管理员: {"是" if role in ("admin", "owner") else "否"}'
+    )
 
 
 @handler(r'^本地群信息$', name='本地群信息', desc='从数据库读取当前群完整信息', owner_only=True, group_only=True)
@@ -401,7 +411,7 @@ async def query_group_mute(event, match):
 
     mode = {'none': '未开启', 'always': '始终禁言', 'schedule': '定时禁言'}
     muted = setting.get('members') or []
-    names = '、'.join(item.get('username') or '未知用户' for item in muted) or '无'
+    names = '、'.join(item.get('member_nickname') or item.get('username') or '未知用户' for item in muted) or '无'
     await event.reply(f'全员禁言：{mode.get(setting["global_rule"]["mode"], "未知")}\n被禁言成员：{names}')
 
 

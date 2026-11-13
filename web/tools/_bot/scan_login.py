@@ -10,6 +10,7 @@ import socket
 import time
 from collections.abc import Sequence
 from http.cookies import BaseCookie, CookieError, Morsel, SimpleCookie
+from typing import Any, cast
 from urllib.parse import quote
 
 import aiohttp
@@ -293,7 +294,7 @@ class QQScanLogin:
             params={'session_id': self.session_id},
             headers={'Referer': f'{_LITE_BASE}/'},
         ) as r:
-            return json.loads(decode_body(await r.read()))
+            return cast(dict[Any, Any], json.loads(decode_body(await r.read())))
 
     async def _poll_mobile(self) -> dict:
         if time.time() - self.created >= self.TTL:
