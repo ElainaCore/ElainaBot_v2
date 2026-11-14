@@ -204,6 +204,7 @@ class Event:
         'user_id',
         'raw_user_id',
         'username',
+        'avatar',
         'member_nickname',
         'member_role',
         'union_openid',
@@ -271,6 +272,7 @@ class Event:
         self.user_id = None
         self.raw_user_id = None
         self.username = ''  # 用户昵称
+        self.avatar = ''
         self.member_nickname = ''  # 群内的用户昵称
         self.member_role = ''
         self.union_openid = None

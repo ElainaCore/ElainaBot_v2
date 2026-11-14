@@ -366,6 +366,7 @@ async def on_join_request(event, match):
 | `event.raw_user_id` | `str` | 平台原始用户 OpenID |
 | `event.union_openid` | `str 或 None` | 跨机器人统一用户 ID，可能为空 |
 | `event.username` | `str` | 用户昵称，未提供时为空字符串 |
+| `event.avatar` | `str` | 发送者头像 URL，来自 `d.author.avatar`，缺失或类型无效时为空字符串 |
 | `event.member_nickname` | `str` | 群内的用户昵称，未提供时为空字符串 |
 | `event.group_id` | `str 或 None` | 群 OpenID |
 | `event.union_group_openid` | `str` | 跨机器人统一群 ID，来自 `d.union_group_openid`；未提供时为空字符串 |

@@ -111,6 +111,8 @@ def _parse_common_fields(event, d):
     event.member_nickname = member_nickname if isinstance(member_nickname, str) else ''
     username = author.get('username')
     event.username = username if isinstance(username, str) else ''
+    avatar = author.get('avatar')
+    event.avatar = avatar if isinstance(avatar, str) else ''
     event.member_role = author.get('member_role', '')
     event.union_openid = author.get('union_openid', '')
     event.is_bot = author.get('bot', False)
