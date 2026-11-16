@@ -116,8 +116,44 @@ class TestEventParsing:
         result = Event.from_websocket('123456', payload)
         assert result.event_type == C2C_MESSAGE_CREATE
         assert result.user_id == 'user_def'
+        assert result.user_openid == 'user_def'
         assert result.is_direct is True
         assert result.is_group is False
+
+    def test_c2c_sender_prefers_explicit_user_openid(self):
+        result = Event.from_websocket('123456', {
+            't': 'C2C_MESSAGE_CREATE',
+            'd': {'author': {'id': 'legacy', 'user_openid': 'user-openid'}},
+        })
+
+        assert result.user_id == result.raw_user_id == result.user_openid == 'user-openid'
+        assert result.reply_endpoint == '/v2/users/user-openid/messages'
+
+    async def test_group_member_removal_keeps_both_openids_in_module_subscription(self):
+        from core.module.group_lifecycle import GroupLifecycleManager
+
+        parsed = Event.from_websocket('123456', {
+            't': 'GROUP_MEMBER_REMOVE',
+            'd': {
+                'group_openid': 'group',
+                'union_group_openid': 'union-group',
+                'member_openid': 'member',
+                'user_openid': 'user',
+            },
+        })
+        received = []
+
+        async def on_change(change):
+            received.append(change)
+
+        lifecycle = GroupLifecycleManager()
+        lifecycle.subscribe(on_change)
+        lifecycle.prepare(parsed)
+        await lifecycle.wait(parsed)
+
+        assert parsed.user_id == parsed.raw_user_id == received[0].member_openid == 'member'
+        assert parsed.user_openid == received[0].user_openid == 'user'
+        assert parsed.union_group_openid == received[0].union_group_openid == 'union-group'
 
     def test_parse_flat_group_join_request(self):
         from core.message.event import GROUP_JOIN_REQUEST

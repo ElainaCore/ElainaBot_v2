@@ -1,8 +1,11 @@
 """_EventDedup 去重逻辑单元测试"""
 
 import time
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
-from core.bot.event import _EventDedup
+from core.bot.event import EventHandlerMixin, _EventDedup
+from core.message.event import Event
 
 
 class TestEventDedup:
@@ -94,3 +97,29 @@ class TestDedupTTL:
         # 下次调用会因 len > 5000 触发清理
         assert dedup.is_dup('new_msg') is False
         assert len(dedup._seen) == 1  # 只剩 new_msg
+
+
+async def test_c2c_message_index_dedup_is_scoped_to_sender(monkeypatch):
+    monkeypatch.setattr('core.bot.event.cfg', SimpleNamespace(get_bot_setting=lambda *_: True))
+    pipeline = AsyncMock(return_value=None)
+    handler = EventHandlerMixin()
+    handler.get_bot = lambda _: object()
+    handler._hook_manager = SimpleNamespace(
+        group_lifecycle=SimpleNamespace(prepare=lambda *_, **__: None, wait=AsyncMock()),
+        has=lambda _: True,
+        pipeline=pipeline,
+    )
+    handler._init_event_state()
+
+    for index, sender in enumerate(('user-1', 'user-1', 'user-2')):
+        await handler._on_event(Event.from_websocket('app', {
+            'id': f'event-{index}',
+            't': 'C2C_MESSAGE_CREATE',
+            'd': {
+                'id': f'msg-{index}',
+                'author': {'user_openid': sender},
+                'message_scene': {'ext': ['msg_idx=REFIDX_same']},
+            },
+        }))
+
+    assert [call.args[1].raw_user_id for call in pipeline.await_args_list] == ['user-1', 'user-2']
