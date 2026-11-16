@@ -2386,6 +2386,27 @@ onUnmounted(() => {
                   <dt>群成员人数</dt>
                   <dd>{{ currentGroupMembers }}</dd>
                 </div>
+                <div v-if="apiChatType === 'group' && current.union_group_openid">
+                  <dt>
+                    跨应用群 OpenID
+                    <button class="icon-button" aria-label="复制跨应用群 OpenID" @click="copyValue(current.union_group_openid)">
+                      <SvgIcon name="copy" :size="13" />
+                    </button>
+                  </dt>
+                  <dd>{{ current.union_group_openid }}</dd>
+                </div>
+                <div v-if="apiChatType === 'group' && current.group_finger_memo">
+                  <dt>群简介</dt>
+                  <dd>{{ current.group_finger_memo }}</dd>
+                </div>
+                <div v-if="apiChatType === 'group' && current.group_class_text">
+                  <dt>群分类</dt>
+                  <dd>{{ current.group_class_text }}</dd>
+                </div>
+                <div v-if="apiChatType === 'group' && current.group_tags?.length">
+                  <dt>群标签</dt>
+                  <dd>{{ current.group_tags.join('、') }}</dd>
+                </div>
                 <div v-if="apiChatType === 'group'">
                   <dt>主动消息</dt>
                   <dd>{{ current.allow_proactive_msg ? '已开启' : '未开启' }}</dd>
