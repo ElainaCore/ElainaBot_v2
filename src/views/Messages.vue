@@ -1089,8 +1089,11 @@ function syncCurrentChat() {
 
 async function refreshGroup(chat) {
   let removed = false
+  let groupInfo
+  const selection = _selectId
   try {
-    await requestGroupRefresh(chat)
+    const response = await requestGroupRefresh(chat)
+    groupInfo = response.data?.data?.group_info
   } catch (error) {
     if (!isHandledGroupError(error)) throw error
     removed = true
@@ -1099,6 +1102,11 @@ async function refreshGroup(chat) {
   if (removed && current.value?.chat_id === chat.chat_id && current.value?.appid === chat.appid) {
     resetConversation()
     mobileView.value = 'list'
+  } else if (
+    groupInfo && selection === _selectId &&
+    current.value?.chat_id === chat.chat_id && current.value?.appid === chat.appid
+  ) {
+    current.value.union_group_openid = groupInfo.union_group_openid || ''
   }
 }
 
