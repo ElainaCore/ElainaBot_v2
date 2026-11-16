@@ -13,6 +13,7 @@ from core.base.config import cfg
 from core.base.logger import FRAMEWORK, get_logger, report_error
 from core.base.tasks import spawn
 from core.message.event import (
+    C2C_MESSAGE_CREATE,
     FRIEND_ADD,
     FRIEND_DEL,
     GROUP_ADD_ROBOT,
@@ -302,7 +303,10 @@ class EventHandlerMixin:
         # 去重
         if cfg.get_bot_setting(appid, 'dedup.enabled', False):
             dedup = self._dedup.setdefault(appid, _EventDedup())
-            if dedup.is_dup(event.message_id, event.event_id):
+            msg_idx = None
+            if event.event_type == C2C_MESSAGE_CREATE and event.user_openid and event.message_reference_id:
+                msg_idx = ('c2c_msg_idx', event.user_openid, event.message_reference_id)
+            if dedup.is_dup(event.message_id, event.event_id, msg_idx):
                 return
 
         # union_id 交换

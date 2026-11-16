@@ -132,22 +132,16 @@ def _get_group_metadata(appid_filter=''):
         try:
             rows = inst.log_service.query_data(
                 'SELECT group_id, group_name, group_member_num, in_group, '
-                'is_full_access, allow_proactive_msg FROM groups_users'
+                'is_full_access, allow_proactive_msg, '
+                'group_finger_memo, group_class_text, group_tags FROM groups_users'
             )
         except Exception as e:
             log.debug(f'查询群资料失败 {appid}: {e}')
             continue
         for row in rows:
             gid = str(row.get('group_id') or '')
-            if not gid:
-                continue
-            result[(appid, gid)] = {
-                'group_name': str(row.get('group_name') or ''),
-                'group_member_num': int(row.get('group_member_num') or 0),
-                'in_group': bool(row.get('in_group', 1)),
-                'is_full_access': bool(row.get('is_full_access')),
-                'allow_proactive_msg': bool(row.get('allow_proactive_msg')),
-            }
+            if gid:
+                result[(appid, gid)] = row
     return result
 
 

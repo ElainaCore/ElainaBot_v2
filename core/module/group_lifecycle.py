@@ -44,6 +44,8 @@ class GroupLifecycleEvent:
     session_id: str | None
     received_at: float
     connection_context: ConnectionContext | None = None
+    union_group_openid: str | None = None
+    user_openid: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -227,6 +229,8 @@ class GroupLifecycleManager:
             _native_id(session_id),
             time.monotonic(),
             event.connection_context,
+            union_group_openid=_native_id(data.get('union_group_openid')),
+            user_openid=_native_id(data.get('user_openid')),
         )
         subscribers = tuple(s for s in self._subscriptions.values() if s.appid is None or s.appid == appid)
         completion = asyncio.get_running_loop().create_future()

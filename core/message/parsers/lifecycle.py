@@ -50,6 +50,8 @@ class GroupMemberRemoveParser(LifecycleParser):
 
     def parse(self, event, d):
         self._parse_base(event, d, 'member_openid')
+        user_openid = d.get('user_openid')
+        event.user_openid = user_openid if isinstance(user_openid, str) else ''
         event.content = f'用户 {event.user_id} 退出群聊 {event.group_id}'
 
 

@@ -17,6 +17,7 @@ from aiohttp import BodyPartReader, web
 
 import web.tools._message.shared as _shared
 from core.base.tasks import spawn
+from core.storage.group_profile import group_profile_fields
 from web.tools._message.history import compact_reference, query_page, query_raw, query_reply_id
 from web.tools._message.log_utils import (
     _build_display,
@@ -99,12 +100,13 @@ def _enrich_group_chat(chat, remarks, metadata, full_access_ids):
     meta = metadata.get((chat.get('appid', ''), gid), chat)
     remark_value = remarks.get(gid)
     remark = _remark_name(remark_value)
-    group_name = meta.get('group_name', '')
+    group_name = str(meta.get('group_name') or '')
     chat.update({
         'nickname': remark or group_name or gid,
         'group_name': group_name,
-        'group_member_num': meta.get('group_member_num', 0),
-        'in_group': meta.get('in_group', True),
+        'group_member_num': int(meta.get('group_member_num') or 0),
+        **group_profile_fields(meta),
+        'in_group': bool(meta.get('in_group', True)),
         'remark': remark,
         'group_qq': _remark_qq(remark_value),
         'is_full_access': bool(meta.get('is_full_access', chat.get('is_full_access', gid in full_access_ids))),
@@ -120,8 +122,8 @@ def _build_chat_list_sync(chat_type, appid_filter):
         bots = _shared._bot_manager._bots if _shared._bot_manager else {}
         remarks = _load_remarks()
         fa_ids = _get_full_access_group_ids()
+        metadata = _get_group_metadata(appid_filter)
         if chat_type == 'remark':
-            metadata = _get_group_metadata(appid_filter)
             appid_default = next(iter(bots), '')
             result = []
             for gid in remarks:
@@ -153,7 +155,7 @@ def _build_chat_list_sync(chat_type, appid_filter):
                 'in_group': r.get('in_group', True),
                 'is_full_access': True,
                 'allow_proactive_msg': bool(r.get('allow_proactive_msg')),
-            }, remarks, {}, fa_ids))
+            }, remarks, metadata, fa_ids))
         return result
     chats = _aggregate_chats_sync(chat_type, appid_filter)
     if chat_type != 'user':

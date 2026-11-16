@@ -55,18 +55,31 @@ DAU_TABLE_SQL = """
 """
 
 # 群元数据表: 自 2.1.0 起不再持有成员列表, 成员见 group_members
+_GROUP_PROFILE_DEFAULTS = {
+    'group_finger_memo': "''",
+    'group_class_text': "''",
+    'group_tags': "'[]'",
+}
+_GROUP_PROFILE_COLUMNS = {
+    name: f'TEXT DEFAULT {default}' for name, default in _GROUP_PROFILE_DEFAULTS.items()
+}
 _GROUPS_USERS_COLUMNS = (
     'group_id', 'group_name', 'group_member_num',
     'is_admin', 'is_full_access', 'allow_proactive_msg', 'in_group',
+    *_GROUP_PROFILE_COLUMNS,
 )
-_GROUPS_USERS_DEFINITION = """(
+_GROUP_PROFILE_DEFINITION = ',\n            '.join(
+    f'{name} {definition}' for name, definition in _GROUP_PROFILE_COLUMNS.items()
+)
+_GROUPS_USERS_DEFINITION = f"""(
             group_id TEXT PRIMARY KEY,
             group_name TEXT DEFAULT '',
             group_member_num INTEGER DEFAULT 0,
             is_admin INTEGER DEFAULT 0,
             is_full_access INTEGER DEFAULT 0,
             allow_proactive_msg INTEGER DEFAULT 0,
-            in_group INTEGER DEFAULT 1
+            in_group INTEGER DEFAULT 1,
+            {_GROUP_PROFILE_DEFINITION}
         )"""
 
 # 群成员: 一用户一行, 是成员数据的唯一权威存储。
@@ -246,6 +259,7 @@ _INDEXES = {
 
 _DATA_MIGRATIONS = [
     ('users', 'state', 'INTEGER DEFAULT 0'),
+    *(('groups_users', name, definition) for name, definition in _GROUP_PROFILE_COLUMNS.items()),
 ]
 
 # SQLite PRAGMA user_version 只能保存整数，因此 2.1.0 编码为 20002。
@@ -284,6 +298,7 @@ def _rebuild_groups_users(conn):
         'is_full_access': '0',
         'allow_proactive_msg': '0',
         'in_group': '1',
+        **_GROUP_PROFILE_DEFAULTS,
     }
     values = {
         name: f'COALESCE({name}, {default})' if name in columns else default
@@ -320,14 +335,8 @@ def _rebuild_groups_users(conn):
     for sql in (
         'DROP TABLE IF EXISTS groups_users_new',
         f'CREATE TABLE groups_users_new {_GROUPS_USERS_DEFINITION}',
-        f"""INSERT INTO groups_users_new (
-            group_id, group_name, group_member_num,
-            is_admin, is_full_access, allow_proactive_msg, in_group
-        )
-        SELECT
-            group_id, {values['group_name']}, {values['group_member_num']},
-            {values['is_admin']}, {values['is_full_access']},
-            {values['allow_proactive_msg']}, {values['in_group']}
+        f"""INSERT INTO groups_users_new ({', '.join(_GROUPS_USERS_COLUMNS)})
+        SELECT group_id, {', '.join(values[col] for col in _GROUPS_USERS_COLUMNS[1:])}
         FROM groups_users""",
         'DROP TABLE groups_users',
         'ALTER TABLE groups_users_new RENAME TO groups_users',

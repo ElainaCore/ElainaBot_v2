@@ -36,6 +36,8 @@ async def setup(ctx):
 | `delivery_id` | 每次本地接收的 UUID；仅在本进程关联事件/结果，不能作平台去重键 |
 | `appid`、`event_type` | Bot 应用原始标识、四种 QQ 事件类型之一 |
 | `group_openid`、`member_openid`、`op_member_openid` | 原载荷 `d` 中的原生身份；缺失/无效为 `None` |
+| `union_group_openid` | 跨应用群 OpenID，来自 `d.union_group_openid`，缺失/无效为 `None` |
+| `user_openid` | 退出成员的可选用户 OpenID，来自 `d.user_openid`，缺失/无效为 `None` |
 | `event_id` | 实际顶层 `id` 或 `event_id`；缺失为 `None`，不借用消息 ID |
 | `timestamp` | 原始 `d.timestamp` 字符串/数字，缺失/无效为 `None`，不补当前时间 |
 | `sequence` | 实际顶层整数 `s`，缺失/无效为 `None` |

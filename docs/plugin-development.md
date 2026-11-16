@@ -1,8 +1,6 @@
 ﻿# ElainaBot v2 插件开发文档
 
-本文档说明插件结构、配置、事件处理、消息 API、群管理 API、Web 面板扩展和模块接入。
-
-> 开发插件前，请先完成项目根目录 [README.md](../README.md) 中的运行配置，并确认机器人已正常连接。
+> 开发前，请按 [README.md](../README.md) 完成配置并确认机器人已连接。
 
 ## 目录
 
@@ -363,7 +361,8 @@ async def on_join_request(event, match):
 | `event.ark_data` | `dict` | 平台 Ark 消息数据，包含 `ark_type`、`ark_name`、`fields` 等；缺省为 `{}` |
 | `event.ark_type` | `str` | `ark_data.ark_type`，如图片为 `picture`；缺省为空字符串 |
 | `event.user_id` | `str` | 按身份配置转换后的用户 ID |
-| `event.raw_user_id` | `str` | 平台原始用户 OpenID |
+| `event.raw_user_id` | `str` | 当前场景的原始标识。群消息中通常为群成员 OpenID |
+| `event.user_openid` | `str` | 单聊发送者的用户 OpenID，或退群事件提供的用户 OpenID |
 | `event.union_openid` | `str 或 None` | 跨机器人统一用户 ID，可能为空 |
 | `event.username` | `str` | 用户昵称，未提供时为空字符串 |
 | `event.avatar` | `str` | 发送者头像 URL，来自 `d.author.avatar`，缺失或类型无效时为空字符串 |
@@ -375,7 +374,7 @@ async def on_join_request(event, match):
 | `event.content` | `str` | 供处理器匹配的文本 |
 | `event.raw_content` | `str` | 原始消息文本 |
 | `event.attachments` | `list` | 消息顶层附件列表 |
-| `event.image_url` | `str 或 None` | 消息中的首个图片地址 |
+| `event.image_url` | `str 或 None` | 顶层 `attachments` 中的首个图片地址 |
 | `event.msg_elements` | `list` | 平台原始消息元素 |
 | `event.parallel_message` | `dict` | 复合消息数据，子消息位于 `msg_nodes`；无数据时为空字典 |
 | `event.member_role` | `str` | 发送者群身份，如 `admin`、`owner` |
@@ -386,14 +385,13 @@ async def on_join_request(event, match):
 | `event.raw` | `dict 或 None` | 原始事件载荷；处理链结束后可能被释放 |
 | `event.error` | `dict 或 None` | 上一次媒体上传失败响应 |
 
-`event.username` 表示用户昵称，`event.member_nickname` 表示群内的用户昵称。
-两个字段分别读取对应的原始值，未提供时均为空字符串。
+单聊中，`event.user_openid` 优先取 `author.user_openid`，缺失时取 `author.id`。启用 `dedup.enabled` 后，单聊还会按发送者和 `message_scene.ext` 中的 `msg_idx` 去重。
 
-跨机器人关联同一群时使用 `event.union_group_openid`；各机器人自己的群 OpenID 保留在 `event.group_id`，用于回复、撤回、媒体上传和群管理接口。
-该字段也会从群交互和群生命周期载荷中提取；旧载荷缺少此字段时保持为空，不用原始群 ID 补充统一群 ID。
+`GROUP_MEMBER_REMOVE` 的 `event.raw_user_id` 优先读取 `member_openid`，供群成员管理使用。平台另有提供 `user_openid` 时，可通过 `event.user_openid` 获取，缺失时为空字符串。
 
-群 @ 消息、群消息和单聊消息的 Ark 类型来自平台的 `ark_data.ark_type`。
-`event.ark_type` 可直接识别 `picture`（图片），完整内容保留在 `event.ark_data`：
+群消息、群交互和群生命周期事件可用 `event.union_group_openid` 跨机器人关联同一群。回复、撤回、媒体上传和群管理使用当前机器人的 `event.group_id`。
+
+群 @ 消息、群全量消息和单聊消息支持通过 `event.ark_type` 识别 Ark 图片。
 
 ~~~python
 if event.ark_type == 'picture':
@@ -401,9 +399,7 @@ if event.ark_type == 'picture':
     print(picture_fields)
 ~~~
 
-没有 Ark 数据时，`event.ark_data` 为 `{}`，`event.ark_type` 为空字符串。
-复合消息中各元素的 `ark_data` 保留在 `event.msg_elements` 内，需要逐个读取。
-`event.image_url` 从顶层 `attachments` 提取，与 Ark 图片数据分别读取。
+复合消息的 Ark 数据需从 `event.msg_elements` 逐项读取。
 
 入群申请事件额外提供：
 
@@ -430,7 +426,7 @@ if event.ark_type == 'picture':
 | `event.is_at_other_bot` | 是否 @ 其他机器人 |
 | `event.is_at_other_user` | 是否 @ 其他用户 |
 | `event.is_at_all` | 是否 @ 全体成员 |
-| `event.mentions` | 原始 mentions 列表 |
+| `event.mentions` | 原始 mentions 列表，群场景可读取平台提供的 `member_openid` 和 `member_nickname` |
 
 派生属性和工具：
 
@@ -643,7 +639,7 @@ buttons = [
 await event.reply('请选择操作', buttons=buttons)
 ~~~
 
-互斥按钮只需设置相同的 `group_id`，框架会自动将其写入最终按钮根级：
+将按钮的 `group_id` 设为相同值即可启用互斥。
 
 ~~~python
 buttons = [[
@@ -865,10 +861,21 @@ ok, result = await event.send_wakeup(user_id, '召回提示')
 ok, result = await event.sender.force_wakeup(user_id, '强制召回')
 ~~~
 
-`get_share_link` 的 `callback_data` 必填，最多 32 个字符。框架按平台最新协议
-向 `/v2/generate_url_link` 发送 `{'callback_data': 'source_plugin'}`，
-从成功响应的 `data.url` 取出分享链接。返回值为链接字符串；参数缺失、超过长度限制
-或平台请求失败时返回 `None`。对应平台 2026-09-16 的字段说明更新。
+`get_share_link()` 需要 1–32 个字符的 `callback_data`。成功返回分享链接，参数无效或请求失败时返回 `None`。
+
+`get_user_info()` 按用户 OpenID 查询资料。示例插件中的主人指令为 `用户资料 <openid>`。
+
+~~~python
+profile, error = await event.sender.get_user_info(user_openid, return_error=True)
+if profile is not None:
+    print(profile.get('username'), profile.get('avatar'), profile.get('allow_proactive_msg'))
+else:
+    print(error)
+~~~
+
+成功返回昵称、头像原图地址和主动消息接收状态。用户绑定第三方应用时，平台也会返回 `union_openid`。查询失败默认返回 `None`，传 `return_error=True` 可获取错误详情。
+
+未建立好友关系时返回 `40184001`，接口限频为 10 QPS。[QQ 用户基本信息接口](https://bot.q.qq.com/wiki/develop/api-v2/autogen/api/v2_users_user_openid_info.get.html)
 
 ### 5.10 自定义菜单与指令面板
 
@@ -971,9 +978,7 @@ ok, response = await event.sender.update_panel_targets(
 
 ### 5.11 Markdown 图片素材
 
-平台 2026-10-21 新增图片素材管理。插件调用 `event.sender.upload_media_image()`，
-框架自动完成图片校验、计算 MD5/SHA1、申请上传地址、直传图片和确认素材，返回可直接放入
-Markdown 正文的 `qqbot-media://` 引用。
+`event.sender.upload_media_image()` 将图片上传为 QQ 素材，返回 Markdown 正文可用的 `qqbot-media://` 引用，无需配置图床。
 
 **一键上传并回复**
 
@@ -988,11 +993,10 @@ if image:
 - `image`：本地文件路径（`str` 或 `pathlib.Path`），或图片字节（`bytes`、`bytearray`、`memoryview`）。
 - `file_name=None`：路径上传默认使用原文件名；字节上传默认根据图片格式生成名称，如 `image.png`。
 - `content_type=None`：默认根据图片格式识别；显式指定时必须与图片格式、文件扩展名一致。
-- `return_error=False`：默认返回素材字典或 `None`；设为 `True` 时返回 `(image, error)`。
+- `return_error=False`：默认成功返回素材字典，失败返回 `None`。设为 `True` 时返回 `(image, None)` 或 `(None, error)`。
 
-支持 PNG、JPEG、GIF、WebP，文件大小为 1 字节至 10 MB。无需额外配置图床。
-相对路径基于框架进程的工作目录；使用插件自带图片时，可以传入
-`Path(__file__).resolve().parent / 'assets' / 'chart.png'`（先 `from pathlib import Path`）。
+支持 1 字节至 10 MB 的 PNG、JPEG、GIF、WebP 图片。相对路径以框架的工作目录为准。
+要读取插件自带的图片，可传入 `Path(__file__).resolve().parent / 'assets' / 'chart.png'`（先 `from pathlib import Path`）。
 
 传入图片字节并处理失败：
 
@@ -1008,25 +1012,20 @@ else:
     await event.reply(f"![统计图]({image['url']})", msg_type=2)
 ~~~
 
-成功时 `error` 为 `None`，素材字典包含：
+成功返回的素材字典包含以下字段。
 
 - `image_id`：素材 ID，用于删除素材。
 - `url`：`qqbot-media://image/v1/...` 引用，用于 Markdown 图片语法。
 - `ttl`：平台返回的有效期秒数。
 - `preview_url`：临时预览地址。
 
-失败时 `image` 为 `None`。直接调用 Sender 的素材方法通过 `return_error=True`
-取得错误详情；该方法不会写入 `event.error`。
+此方法的错误详情通过 `return_error=True` 读取，`event.error` 不记录素材上传错误。
 
 **100 张额度与自动清理**
 
-每个机器人最多保存 100 张有效素材。上传前若已满 100 张，框架会遍历素材分页，
-按 `created_at` 删除最早上传的 **1 张**，再上传新图。例如当前有 99 张时直接上传；
-当前有 100 张时先删 1 张再上传，成功后仍为 100 张。清理依据是上传时间。
+每个机器人最多保存 100 张有效素材。上传前若已满额，框架按 `created_at` 删除最早上传的一张，再上传新图。
 
-同一 `MessageSender` 实例的一键上传串行执行，插件之间共享该实例的上传锁。
-格式、大小和文件读取检查在删除旧素材前完成；查询或删除失败会停止本次上传。
-旧素材一旦删除，后续申请、直传或确认失败也不会恢复它，调用方应检查上传结果。
+同一 `MessageSender` 实例串行处理一键上传，先校验图片，再清理旧素材。查询或删除失败会中止上传。旧素材删除后，上传失败也无法恢复。
 
 **分页查询与手动删除**
 
@@ -1060,9 +1059,7 @@ if not ok:
     print(response)
 ~~~
 
-`preview_url` 是临时预览地址，应刷新获取；消息中使用 `url`。素材引用仅限所属
-机器人使用，最后一次成功用于发送消息后有效期续为 90 天。删除素材后，后续消息
-不能再使用该引用，已经发送的消息不受影响。复用素材时保存 `image_id` 和 `url`。
+预览地址过期后需重新查询。复用素材时保存 `image_id` 和 `url`，仅所属机器人可用。每次成功发送该素材后，有效期续为 90 天。删除只影响后续发送。
 
 **底层上传接口**
 
@@ -1074,7 +1071,7 @@ if not ok:
 - `complete_media_image(upload_id, md5)`：确认直传完成，成功响应为素材字典。
 
 两个底层方法均返回 `(ok, response)`，调用方负责向 `presigned_url` 发送二进制
-`PUT`，并使用与申请一致的 `Content-Type`。一键上传方法同时负责额度清理和串行控制。
+`PUT`，并使用与申请一致的 `Content-Type`。
 接口字段以[官方素材管理文档](https://bot.q.qq.com/wiki/develop/api-v2/server-inter/message/material-management.html)为准。
 
 ---
@@ -1088,7 +1085,7 @@ if not ok:
 | 方法 | 用途 | 返回值 |
 | --- | --- | --- |
 | `get_group_record(group_id)` | 读取本地完整群记录，不调用平台接口 | 字典或 `None` |
-| `get_group_info(group_id, return_error=False)` | 获取群名称和人数并保存 | 数据、`None` 或错误元组 |
+| `get_group_info(group_id, return_error=False)` | 查询群基本信息并保存群名称、人数、简介、分类和标签 | 数据、`None` 或错误元组 |
 | `get_group_bot_state(group_id, return_error=False)` | 获取机器人群身份与消息权限并保存 | 数据、`None` 或错误元组 |
 | `refresh_group_info(group_id)` | 并发刷新群资料和机器人状态 | 汇总字典 |
 | `get_group_members(group_id, cursor='', return_error=False)` | 分页获取群成员列表（每页最多 30 条） | 分页数据、`None` 或错误元组 |
@@ -1119,15 +1116,14 @@ if group:
 | --- | --- |
 | `group_id` / `group_name` | 群 OpenID 和群名称 |
 | `users` / `group_member_num` | 已保存的成员列表和群人数 |
+| `group_finger_memo` / `group_class_text` | 已保存的群简介和群分类，缺失时为空字符串 |
+| `group_tags` | 已保存的群标签列表，缺失时为空列表 |
 | `is_admin` | 机器人是否为群主或管理员 |
 | `is_full_access` | 是否接收群全量消息 |
 | `allow_proactive_msg` | 是否允许主动推送 |
 | `in_group` | 机器人是否仍在群内 |
 
-> `groups_users.users` 已废弃并在迁移后删除；成员改存
-> `group_members`（一用户一行），机器人账号统一存放在 `bots`。
-> `get_group_record()` 的返回结构保持兼容，但成员条目不再包含历史字段 `value`；
-> 直接读取 `groups_users.users` 的插件请改用下面的接口。
+旧插件若直接读取 `groups_users.users`，请改用下方群成员接口。`get_group_record()` 仍返回 `users` 列表，成员条目已移除旧的 `value` 字段。
 
 #### 群成员读取接口（推荐，插件不必知道表结构）
 
@@ -1149,8 +1145,8 @@ admins = ls.group_admin_ids_sync(event.group_id)
 roles = ls.group_member_roles_sync(event.group_id)
 ~~~
 
-带 `_sync` 的方法用于工作线程；不带后缀的方法用于事件处理器中的 `await`。
-确需直接读库时查询 `group_members`，不要再读取 `groups_users.users`；`extra` 保存非标准成员字段。
+在工作线程使用 `_sync` 方法，在异步处理器里 `await` 对应的无后缀方法。
+直接读库时，成员查 `group_members`（每人一行，`extra` 存额外字段），机器人账号查 `bots`。
 
 刷新平台数据：
 
@@ -1160,6 +1156,8 @@ print(result['group_info'], result['bot_state'], result['errors'])
 ~~~
 
 接口识别到群无效或机器人已退群时，会同步修正本地群记录。
+
+跨应用群 OpenID 可从 `result['group_info']`、`get_group_info()` 的响应或 `event.union_group_openid` 读取。群资料表只保存当前应用的群 OpenID 和其他群资料字段。
 
 ### 6.3 入群申请事件
 
@@ -1243,7 +1241,7 @@ if page:
 member = await event.sender.get_group_member(event.group_id, member_openid)
 ~~~
 
-批量移除成员，可选同时加入群黑名单：
+批量移除接口的请求体只包含 `member_openids`。传入 `add_to_member_blacklist=True` 后，框架会在移除成功后另行拉黑。
 
 ~~~python
 ok, response = await event.sender.batch_remove_group_members(
@@ -1252,6 +1250,10 @@ ok, response = await event.sender.batch_remove_group_members(
     add_to_member_blacklist=True,
 )
 ~~~
+
+拉黑失败时 `ok` 为 `False`，`response['remove_members_result']` 仍记录移除结果。若平台返回失败名单，可从 `response['fail_openids']` 读取。
+
+`40103012` 需要群主开启群内移除权限。`40103011` 需要在 QQ 机器人管理端开启权限。[QQ 批量移除群成员接口](https://bot.q.qq.com/wiki/develop/api-v2/autogen/api/v2_groups_group_openid_batch_remove_members.post.html)
 
 查询群黑名单：
 
@@ -1368,7 +1370,7 @@ def cleanup_page():
     unregister_page('my-plugin')
 ~~~
 
-`key` 必须全局唯一。页面不会按插件所有者自动清理，因此必须在 `on_unload` 中调用 `unregister_page()`。
+`key` 必须全局唯一。在 `on_unload` 中调用 `unregister_page()` 注销页面。
 
 插件 HTTP 路由必须以 `/api/ext/` 开头：
 
@@ -1415,7 +1417,7 @@ else:
     url = None  # 模块未启用或加载失败
 ~~~
 
-模块未启用或初始化失败时，`get()` 返回 `None`。单个图床还可能因依赖、凭据、必要参数或网络不可用，上传前可检查状态：
+模块加载后，可用 `status()` 检查各图床是否可用。
 
 ~~~python
 status = hosting.status()
@@ -1429,7 +1431,7 @@ else:
     result = await hosting.upload_any(image_bytes, 'report.png')
 ~~~
 
-统一入口 `upload_any()` 会按优先级尝试可用图床：每个图床优先调用 `upload_url()`（若实现），否则调用 `upload()`，只接受第一个以 `http` 开头的字符串，全部失败时返回 `None`。指定图床的返回结构可能不同（URL、结果字典或 `(False, reason)`），需要按对应图床 API 判断。
+`upload_any()` 按优先级尝试可用图床，有 `upload_url()` 时优先使用，否则用 `upload()`。返回首个以 `http` 开头的字符串，全部失败时返回 `None`。指定图床上传时，按对应 API 处理 URL、结果字典或 `(False, reason)`。
 
 配置、图床列表、动态方法和扩展规范见 [Image Hosting 模块接入文档](image-hosting.md)。模块实例由框架管理生命周期。
 
@@ -1464,7 +1466,7 @@ except Exception as error:
 
 处理器总执行时间上限为 300 秒。网络请求、渲染和外部命令应设置更短的业务超时。
 
-同步 handler 在线程池中运行，不能直接使用 `await`。`async def` 中调用同步 IO 会阻塞事件循环，可通过 `asyncio.to_thread()` 或 executor 执行。由 `on_load` 创建的后台任务和客户端，应在 `on_unload` 中关闭。
+同步 handler 在线程池中运行。需要 `await` 时用 `async def` 定义 handler，并用 `asyncio.to_thread()` 或 executor 执行同步 I/O，避免阻塞事件循环。后台任务和客户端的清理见[生命周期钩子](#33-生命周期钩子)。
 
 ---
 
@@ -1472,7 +1474,7 @@ except Exception as error:
 
 | 路径 | 内容 |
 | --- | --- |
-| [plugins/alone/示例插件.py](../plugins/alone/示例插件.py) | 媒体、卡片、按钮、交互、群资料、入群审批、禁言、引用、主动消息和 Web 扩展示例 |
+| [plugins/alone/示例插件.py](../plugins/alone/示例插件.py) | 媒体、卡片、按钮、交互、用户和群资料、入群审批、禁言、引用、主动消息和 Web 扩展示例 |
 | [plugins/system/main.py](../plugins/system/main.py) | 内置系统插件的组织方式和管理命令 |
 | [docs/image-hosting.md](image-hosting.md) | 统一图床完整 API 与配置 |
 
@@ -1483,6 +1485,7 @@ except Exception as error:
 
 模块可通过 `ModuleContext.subscribe_group_lifecycle()` 观察成员加入/退出及 Bot 加入/移出群，
 独立于插件匹配和过滤，并获取可关联的处理结果。原有插件 `event_types` 保持现有行为。
+通知中的 `union_group_openid` 和退群成员的 `user_openid` 来自平台原始载荷，缺失时为 `None`。
 接口版本、原生身份、前置调度顺序、取消/卸载与完成语义见
 [模块群生命周期订阅](module-group-lifecycle.md)。
 

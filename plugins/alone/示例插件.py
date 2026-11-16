@@ -322,7 +322,24 @@ async def query_my_sharer(event, match):
     await event.reply(f'📌 分享者：{mask_id(sid)}' if sid else '📌 你不是通过邀请链接添加的')
 
 
-# ==================== 群成员查询 ====================
+# ==================== 用户资料与群成员查询 ====================
+
+
+@handler(r'^用户资料\s+(\S+)$', name='用户资料', desc='按用户 OpenID 查询基本资料', owner_only=True)
+async def query_user_profile(event, match):
+    profile, error = await event.sender.get_user_info(match.group(1), return_error=True)
+    if error is not None:
+        if any(str(error.get(key)) == '40184001' for key in ('code', 'err_code')):
+            return await event.reply('查询失败：该用户与机器人没有好友关系')
+        return await event.reply('查询用户资料失败')
+    allow_proactive = profile.get('allow_proactive_msg')
+    proactive_label = '未提供'
+    if isinstance(allow_proactive, bool):
+        proactive_label = '是' if allow_proactive else '否'
+    await event.reply(
+        f'昵称：{profile.get("username") or "未提供"}\n'
+        f'接收主动消息：{proactive_label}'
+    )
 
 
 @handler(r'^成员信息\s+(\S+)$', name='成员信息', desc='查询指定群成员详情', owner_only=True, group_only=True)

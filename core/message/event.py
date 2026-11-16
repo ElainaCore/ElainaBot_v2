@@ -203,6 +203,7 @@ class Event:
         'timestamp',
         'user_id',
         'raw_user_id',
+        'user_openid',
         'username',
         'avatar',
         'member_nickname',
@@ -271,6 +272,7 @@ class Event:
         self.timestamp = None
         self.user_id = None
         self.raw_user_id = None
+        self.user_openid = ''
         self.username = ''  # 用户昵称
         self.avatar = ''
         self.member_nickname = ''  # 群内的用户昵称

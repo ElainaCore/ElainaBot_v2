@@ -6,6 +6,7 @@ import json
 import os
 import re
 import time
+from urllib.parse import quote
 
 from core.base.config import cfg
 from core.base.logger import FRAMEWORK, report_error_raw
@@ -36,6 +37,7 @@ from core.message.keyboard import (
 from core.message.media import get_image_size as _get_image_size
 from core.message.media import upload_media_bytes, upload_media_via_url
 from core.message.template import tpl
+from core.storage.group_profile import group_profile_fields
 from core.storage.members import build_member_entry, member_extra_json
 
 _ESCAPE_MAP = {'n': '\n', 't': '\t', 'r': '\r', '\\': '\\', '0': '\0', 'a': '\a', 'b': '\b', 'f': '\f', 'v': '\v'}
@@ -595,6 +597,23 @@ class MessageSender(_HttpMixin, _MediaSendMixin, _MaterialMixin, _SenderLogMixin
 
     # ==================== 工具 ====================
 
+    async def get_user_info(self, user_openid, *, return_error=False):
+        """按指定的用户 OpenID 查询基本信息。"""
+        user_openid = user_openid.strip() if isinstance(user_openid, str) else ''
+        if not user_openid or user_openid in ('.', '..'):
+            error = self._api_error('无效的 user_openid')
+            return (None, error) if return_error else None
+
+        try:
+            success, data = await self.get_json(f'/v2/users/{quote(user_openid, safe="")}/info')
+        except Exception as error:
+            success, data = False, self._api_error(str(error))
+        if not isinstance(data, dict):
+            success, data = False, self._api_error('用户资料接口响应格式无效')
+        if not success:
+            return (None, data) if return_error else None
+        return (data, None) if return_error else data
+
     async def get_share_link(self, callback_data=None):
         """生成添加机器人好友的分享链接，callback_data 最长 32 字符。"""
         callback_data = '' if callback_data is None else str(callback_data)
@@ -954,14 +973,26 @@ class MessageSender(_HttpMixin, _MediaSendMixin, _MaterialMixin, _SenderLogMixin
         member_openids, error = self._normalize_group_member_openids(member_openids)
         if error:
             return False, error
-        payload = {'member_openids': member_openids}
-        if add_to_member_blacklist:
-            payload['add_to_member_blacklist'] = True
-        return await self._request_group(
+        success, data = await self._request_group(
             group_id,
             'batch_remove_members',
-            payload=payload,
+            payload={'member_openids': member_openids},
         )
+        if not success or not add_to_member_blacklist:
+            return success, data
+
+        blacklist_ok, blacklist = await self.operate_group_member_blacklist(group_id, 'add', member_openids)
+        removal_result = data.get('remove_members_result', 'success')
+        if not blacklist_ok:
+            return False, {**blacklist, 'remove_members_result': removal_result}
+        failed_openids = blacklist.get('fail_openids')
+        if failed_openids:
+            return False, {
+                **self._api_error('群成员已移除，部分成员加入黑名单失败'),
+                'remove_members_result': removal_result,
+                'fail_openids': failed_openids,
+            }
+        return True, data
 
     remove_group_members = batch_remove_group_members
 
@@ -1038,7 +1069,8 @@ class MessageSender(_HttpMixin, _MediaSendMixin, _MaterialMixin, _SenderLogMixin
         counter('group_record_cache_miss')
         row = await self._log_service.db_fetch_one(
             'SELECT group_id, group_name, group_member_num, is_admin, '
-            'is_full_access, allow_proactive_msg, in_group '
+            'is_full_access, allow_proactive_msg, in_group, '
+            'group_finger_memo, group_class_text, group_tags '
             'FROM groups_users WHERE group_id=?',
             (group_id,),
         )
@@ -1053,6 +1085,7 @@ class MessageSender(_HttpMixin, _MediaSendMixin, _MaterialMixin, _SenderLogMixin
             'is_full_access': bool(row.get('is_full_access')),
             'allow_proactive_msg': bool(row.get('allow_proactive_msg')),
             'in_group': bool(row.get('in_group')),
+            **group_profile_fields(row),
         }
         self._remember_group_record(group_id, now, record)
         return record
@@ -1118,16 +1151,27 @@ class MessageSender(_HttpMixin, _MediaSendMixin, _MaterialMixin, _SenderLogMixin
         except (TypeError, ValueError):
             member_num = 0
         if self._log_service is not None:
+            profile = group_profile_fields(data)
             await self._log_service.db_execute(
                 """
-                INSERT INTO groups_users (group_name, group_id, group_member_num, in_group)
-                VALUES (?, ?, ?, 1)
+                INSERT INTO groups_users (
+                    group_name, group_id, group_member_num, in_group,
+                    group_finger_memo, group_class_text, group_tags
+                )
+                VALUES (?, ?, ?, 1, ?, ?, ?)
                 ON CONFLICT(group_id) DO UPDATE SET
                     group_name=excluded.group_name,
                     group_member_num=excluded.group_member_num,
-                    in_group=1
+                    in_group=1,
+                    group_finger_memo=excluded.group_finger_memo,
+                    group_class_text=excluded.group_class_text,
+                    group_tags=excluded.group_tags
                 """,
-                (group_name, str(group_id), member_num),
+                (
+                    group_name, str(group_id), member_num,
+                    profile['group_finger_memo'],
+                    profile['group_class_text'], json.dumps(profile['group_tags'], ensure_ascii=False),
+                ),
             )
         self._forget_group_record(group_id)
         return (data, None) if return_error else data
