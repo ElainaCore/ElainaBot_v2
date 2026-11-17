@@ -45,7 +45,12 @@ async def ping(event, match):
     api_text = f'{api_ms}ms' if api_ms >= 0 else '超时'
     ts = _parse_ts(event.timestamp)
     msg_ms = round((time() - ts) * 1000) if ts else '未知'
-    await reply(event, f'pong 🏓\nAPI延迟: {api_text}\n消息延迟: {msg_ms}ms' if msg_ms != '未知' else f'pong 🏓\nAPI延迟: {api_text}')
+    await reply(
+        event,
+        f'<@{event.user_id}>\npong 🏓\nAPI延迟: {api_text}\n消息延迟: {msg_ms}ms'
+        if msg_ms != '未知'
+        else f'<@{event.user_id}>\npong 🏓\nAPI延迟: {api_text}',
+    )
 
 
 # ==================== 我的标识 ====================
@@ -149,4 +154,4 @@ async def get_raw_data(event, match):
             raw_str = raw
     else:
         raw_str = '(无)'
-    await reply(event, f'原始事件:\n```json\n{raw_str}\n```')
+    await reply(event, f'<@{event.user_id}>\n原始事件:\n```json\n{raw_str}\n```')

@@ -34,7 +34,7 @@ async def send_dm(event, match):
     m = re.match(r'^dm(.+)$', event.raw_content or '', re.S)
     content = (m.group(1) if m else match.group(1)).strip()
     if not content:
-        await reply(event, '❌ 消息内容不能为空\n💡 使用格式：dm+消息内容')
+        await reply(event, f'<@{event.user_id}>\n❌ 消息内容不能为空\n💡 使用格式：dm+消息内容')
         return
 
     # 处理转义字符
@@ -72,7 +72,7 @@ async def send_dm(event, match):
             buttons = build_keyboard(button_rows, event.appid)
         content = message_content
 
-    await reply(event, content, buttons=buttons)
+    await reply(event, f'<@{event.user_id}>\n{content}', buttons=buttons)
 
 
 # ==================== 重启 ====================
@@ -114,7 +114,7 @@ def _do_restart():
 @handler(r'^重启$', name='重启', desc='重启机器人进程', owner_only=True)
 async def restart_bot(event, match):
     await _save_restart_status(event)
-    await reply(event, '🔄 正在重启...')
+    await reply(event, f'<@{event.user_id}>\n🔄 正在重启...')
     await asyncio.sleep(0.5)
     _do_restart()
 
@@ -164,22 +164,23 @@ async def update_framework(event, match):
     try:
         updater = _get_framework_updater()
     except Exception as e:
-        return await reply(event, f'❌ 更新器不可用: {e}')
+        return await reply(event, f'<@{event.user_id}>\n❌ 更新器不可用: {e}')
 
     if updater.get_progress().get('is_updating'):
-        return await reply(event, '⏳ 已有更新任务在进行中，请稍后再试')
+        return await reply(event, f'<@{event.user_id}>\n⏳ 已有更新任务在进行中，请稍后再试', retry_notice=True)
 
-    await reply(event, '🔍 正在检查更新...')
+    await reply(event, f'<@{event.user_id}>\n🔍 正在检查更新...')
     check = await updater.check_for_updates()
     if check.get('error'):
-        return await reply(event, f'❌ 检查更新失败: {check["error"]}')
+        return await reply(event, f'<@{event.user_id}>\n❌ 检查更新失败: {check["error"]}')
     if not check.get('has_update'):
-        return await reply(event, f'✅ 已是最新版本 ({updater.current_version})')
+        return await reply(event, f'<@{event.user_id}>\n✅ 已是最新版本 ({updater.current_version})')
 
     commits = await updater.fetch_changelog() or check.get('changelog') or []
     new_commits = _slice_changelog(commits, updater.current_version)
     total = len(new_commits)
     lines = [
+        f'<@{event.user_id}>',
         f'🆕 发现新版本 {check.get("latest_version", "")} (当前 {updater.current_version})',
         '',
         f'📋 本次更新内容 ({total} 条):',
@@ -192,10 +193,10 @@ async def update_framework(event, match):
 
     result = await updater.update_to_version(check['latest_version'])
     if not result.get('success'):
-        return await reply(event, f'❌ 更新失败: {result.get("message", "未知错误")}')
+        return await reply(event, f'<@{event.user_id}>\n❌ 更新失败: {result.get("message", "未知错误")}')
 
     await _save_restart_status(event)
-    await reply(event, f'✅ {result.get("message", "更新成功")}\n🔄 正在重启...')
+    await reply(event, f'<@{event.user_id}>\n✅ {result.get("message", "更新成功")}\n🔄 正在重启...')
     await asyncio.sleep(0.5)
     _do_restart()
 
@@ -237,7 +238,7 @@ async def _send_restart_notice(data):
         payload = {
             'msg_type': 0,
             'msg_seq': random.randint(10000, 999999),
-            'content': f'✅ 重启完成！\n🕒 耗时: {duration_ms}ms',
+            'content': f'<@{user_id}>\n✅ 重启完成！\n🕒 耗时: {duration_ms}ms',
             'msg_id': msg_id,
         }
         bot = (app._bots.get(data.get('appid')) if hasattr(app, '_bots') else None) or bots[0]
@@ -278,7 +279,7 @@ def _bl_lines(lines, bl_map):
 
 @handler(r'^黑名单帮助$', name='黑名单帮助', desc='查看黑名单管理帮助', owner_only=True)
 async def show_blacklist_help(event, match):
-    lines = ['📖 黑名单管理']
+    lines = [f'<@{event.user_id}>', '📖 黑名单管理']
 
     # 用户黑名单
     lines.append('\n━━━ 🚫 用户黑名单 ━━━')
@@ -311,17 +312,17 @@ async def add_blacklist(event, match):
         bot_cfg = cfg.get_bot_config(event.appid)
         owner_ids = bot_cfg.get('owner_ids', []) if bot_cfg else []
         if user_id in owner_ids:
-            return await reply(event, '无法将主人添加到黑名单')
+            return await reply(event, f'<@{event.user_id}>\n无法将主人添加到黑名单')
     except Exception as e:
         log.debug(f'读取主人配置失败: {e}')
 
     bl = get_blacklist_map(event.appid, 'user')
     if user_id in bl:
-        return await reply(event, f'用户 {user_id} 已在黑名单中')
+        return await reply(event, f'<@{event.user_id}>\n用户 {user_id} 已在黑名单中')
     bl[user_id] = reason or None
     if not set_blacklist_map(event.appid, 'user', bl):
-        return await reply(event, '写入配置失败，无法操作黑名单')
-    await reply(event, f'已添加用户 {user_id} 到黑名单' + (f'，理由：{reason}' if reason else ''))
+        return await reply(event, f'<@{event.user_id}>\n写入配置失败，无法操作黑名单')
+    await reply(event, f'<@{event.user_id}>\n已添加用户 {user_id} 到黑名单' + (f'，理由：{reason}' if reason else ''))
 
 
 @handler(
@@ -334,11 +335,11 @@ async def remove_blacklist(event, match):
     user_id = match.group(1)
     bl = get_blacklist_map(event.appid, 'user')
     if user_id not in bl:
-        return await reply(event, f'用户 {user_id} 不在黑名单中')
+        return await reply(event, f'<@{event.user_id}>\n用户 {user_id} 不在黑名单中')
     del bl[user_id]
     if not set_blacklist_map(event.appid, 'user', bl):
-        return await reply(event, '写入配置失败，无法操作黑名单')
-    await reply(event, f'已移除用户 {user_id}')
+        return await reply(event, f'<@{event.user_id}>\n写入配置失败，无法操作黑名单')
+    await reply(event, f'<@{event.user_id}>\n已移除用户 {user_id}')
 
 
 # ==================== 群黑名单 ====================
@@ -355,11 +356,11 @@ async def add_group_blacklist(event, match):
     reason = (match.group(2) or '').strip()
     bl = get_blacklist_map(event.appid, 'group')
     if group_id in bl:
-        return await reply(event, f'群组 {group_id} 已在群黑名单中')
+        return await reply(event, f'<@{event.user_id}>\n群组 {group_id} 已在群黑名单中')
     bl[group_id] = reason or None
     if not set_blacklist_map(event.appid, 'group', bl):
-        return await reply(event, '写入配置失败，无法操作黑名单')
-    await reply(event, f'已添加群组 {group_id} 到群黑名单' + (f'，理由：{reason}' if reason else ''))
+        return await reply(event, f'<@{event.user_id}>\n写入配置失败，无法操作黑名单')
+    await reply(event, f'<@{event.user_id}>\n已添加群组 {group_id} 到群黑名单' + (f'，理由：{reason}' if reason else ''))
 
 
 @handler(
@@ -372,8 +373,8 @@ async def remove_group_blacklist(event, match):
     group_id = match.group(1)
     bl = get_blacklist_map(event.appid, 'group')
     if group_id not in bl:
-        return await reply(event, f'群组 {group_id} 不在群黑名单中')
+        return await reply(event, f'<@{event.user_id}>\n群组 {group_id} 不在群黑名单中')
     del bl[group_id]
     if not set_blacklist_map(event.appid, 'group', bl):
-        return await reply(event, '写入配置失败，无法操作黑名单')
-    await reply(event, f'已移除群组 {group_id}')
+        return await reply(event, f'<@{event.user_id}>\n写入配置失败，无法操作黑名单')
+    await reply(event, f'<@{event.user_id}>\n已移除群组 {group_id}')

@@ -92,12 +92,12 @@ async def _shutdown():
 async def login(event, match):
     api = _get_api()
     if not api:
-        await reply(event, 'bot_api 模块未加载，无法登录')
+        await reply(event, f'<@{event.user_id}>\nbot_api 模块未加载，无法登录')
         return
 
     use_md = _use_md(event)
     if not use_md and not event.is_direct:
-        await reply(event, '请私聊机器人发送「管理登录」，获取专用授权链接。')
+        await reply(event, f'<@{event.user_id}>\n请私聊机器人发送「管理登录」，获取专用授权链接。')
         return
 
     user_id = event.user_id
@@ -112,7 +112,7 @@ async def login(event, match):
         return
     active_login = _login_tasks.get(user_id)
     if active_login and (active_login[1] is None or not active_login[1].done()):
-        await reply(event, '登录请求正在处理中，请稍后重试。')
+        await reply(event, f'<@{event.user_id}>\n登录请求正在处理中，请稍后重试。', retry_notice=True)
         return
 
     _login_tasks[user_id] = (now, None)
@@ -122,7 +122,7 @@ async def login(event, match):
         result = await session.start()
         url = result.get('login_url')
         if result['status'] == 'failed' or not url:
-            await reply(event, result.get('error') or '获取手机 QQ 授权链接失败，请稍后重试')
+            await reply(event, f'<@{user_id}>\n{result.get("error") or "获取手机 QQ 授权链接失败，请稍后重试"}', retry_notice=True)
             return
 
         content = f'<@{user_id}>\n请在手机 QQ 中打开授权链接，选择开发者主体并确认。\n\n>当你选择登录，代表你已经同意将数据托管给伊蕾娜Bot。'
@@ -158,6 +158,7 @@ async def _poll_login(event, sender, user_id, session, use_md):
     loop = asyncio.get_running_loop()
     deadline = loop.time() + session.TTL
     message = '授权链接已失效，请重新发送「管理登录」。'
+    retry_notice = False
     try:
         while loop.time() < deadline:
             await asyncio.sleep(3)
@@ -191,9 +192,10 @@ async def _poll_login(event, sender, user_id, session, use_md):
             login_data = {'type': 'ok', 'uin': uin, 'developerId': developer_id, 'ticket': ticket, 'appId': app_id}
             if not openapi_store.save_legacy_user(user_id, login_data):
                 message = '保存授权凭证失败，请稍后重试。'
+                retry_notice = True
                 break
 
-            content = f'[{uin}]登录成功'
+            content = f'<@{user_id}>\n[{uin}]登录成功'
             if app_id:
                 content += f'\n\nAppID：{app_id}\n发送「切换appid 目标ID」可切换机器人。'
             else:
@@ -208,7 +210,7 @@ async def _poll_login(event, sender, user_id, session, use_md):
             return
 
         with contextlib.suppress(Exception):
-            await sender_reply(sender, event, f'<@{user_id}>{message}')
+            await sender_reply(sender, event, f'<@{user_id}>{message}', retry_notice=retry_notice)
     finally:
         _login_tasks.pop(user_id, None)
 
@@ -232,7 +234,7 @@ async def get_message(event, match):
         await _reply_login_required(event, '登录状态失效')
         return
 
-    msglist = [f'Uin:{ud.get("uin")}\nAppid:{ud.get("appId")}\n\n```python']
+    msglist = [f'<@{event.user_id}>\nUin:{ud.get("uin")}\nAppid:{ud.get("appId")}\n\n```python']
     messages = res.get('messages', [])
     for j, message in enumerate(messages[:8]):
         if j > 0:
@@ -269,7 +271,7 @@ async def get_botlist(event, match):
         await _reply_login_required(event, '登录状态失效')
         return
 
-    msglist = [f'Uin:{ud.get("uin")}']
+    msglist = [f'<@{event.user_id}>\nUin:{ud.get("uin")}']
     apps = res.get('data', {}).get('apps', [])
     for j, app in enumerate(apps):
         if j > 0:
@@ -361,7 +363,7 @@ async def get_botdata(event, match):
 
     day_list = [day_str(i) for i in range(actual_days)]
     msglist = [
-        f'Uid：{ud.get("uin")}\nappid：{ud.get("appId")}\n30天平均DAU: {avg_dau}\n\n```python',
+        f'<@{event.user_id}>\nUid：{ud.get("uin")}\nappid：{ud.get("appId")}\n30天平均DAU: {avg_dau}\n\n```python',
         *day_list,
         '\n```\n',
     ]
@@ -388,12 +390,12 @@ async def switch_appid(event, match):
 
     new_appid = match.group(1).strip()
     if not new_appid:
-        await reply(event, '请提供有效的AppID')
+        await reply(event, f'<@{event.user_id}>\n请提供有效的AppID')
         return
 
     current_appid = ud.get('appId')
     if current_appid == new_appid:
-        await reply(event, f'当前已经是使用AppID: {current_appid}')
+        await reply(event, f'<@{event.user_id}>\n当前已经是使用AppID: {current_appid}')
         return
 
     # 验证应用标识是否属于当前账号
@@ -414,18 +416,18 @@ async def switch_appid(event, match):
 
     if not valid:
         lines = [f'{i}. {a.get("app_name", "未命名")}: {a.get("app_id")}' for i, a in enumerate(apps, 1)]
-        await reply(event, f'提供的AppID无效，请从以下可用AppID中选择：\n\n```python\n{chr(10).join(lines)}\n```\n')
+        await reply(event, f'<@{event.user_id}>\n提供的AppID无效，请从以下可用AppID中选择：\n\n```python\n{chr(10).join(lines)}\n```\n')
         return
 
     if _get_ud(event.user_id) is not ud:
-        await reply(event, '登录信息已更新，请重新切换 AppID。')
+        await reply(event, f'<@{event.user_id}>\n登录信息已更新，请重新切换 AppID。')
         return
     old_appid = ud.get('appId')
     if not openapi_store.save_legacy_user(event.user_id, {**ud, 'appId': new_appid}):
-        await reply(event, '保存 AppID 失败，请稍后重试。')
+        await reply(event, f'<@{event.user_id}>\n保存 AppID 失败，请稍后重试。', retry_notice=True)
         return
 
-    content = f'AppID已切换成功\n\n```python\n原AppID: {old_appid}\n新AppID: {new_appid}\n机器人: {app_name}\n```\n'
+    content = f'<@{event.user_id}>\nAppID已切换成功\n\n```python\n原AppID: {old_appid}\n新AppID: {new_appid}\n机器人: {app_name}\n```\n'
 
     if _use_md(event):
         await reply(event, content, buttons=_nav_buttons())

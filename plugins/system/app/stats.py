@@ -241,7 +241,7 @@ def _build_dau_message(event, stats, date, elapsed_ms, y_stats=None, is_today=Fa
 async def get_stats(event, match):
     bot = _get_bot(event)
     if not bot:
-        return await reply(event, '❌ 无法获取机器人实例')
+        return await reply(event, f'<@{event.user_id}>\n❌ 无法获取机器人实例')
 
     started_at = perf_counter()
     ls = bot.log_service
@@ -290,7 +290,7 @@ async def get_stats(event, match):
 async def handle_dau(event, match):
     bot = _get_bot(event)
     if not bot:
-        return await reply(event, '❌ 无法获取机器人实例')
+        return await reply(event, f'<@{event.user_id}>\n❌ 无法获取机器人实例')
 
     date_str = match.group(1)
     if date_str:
@@ -309,7 +309,7 @@ async def _handle_today_dau(event, bot):
     if not stats:
         return await reply(event, f'<@{event.user_id}>\n❌ 今日暂无消息数据')
     if stats.get('pending'):
-        return await reply(event, '⏳ 统计数据准备中，请稍后再试')
+        return await reply(event, f'<@{event.user_id}>\n⏳ 统计数据准备中，请稍后再试', retry_notice=True)
 
     elapsed = round((perf_counter() - started_at) * 1000)
     await _reply_dau(event, bot, stats, datetime.now(), elapsed, y_stats=y_stats, is_today=True)
@@ -362,7 +362,7 @@ async def _handle_history_dau(event, bot, date_str):
         if target > datetime.now():
             target = datetime(year - 1, month, day)
     except ValueError:
-        return await reply(event, '❌ 日期格式错误 (MMDD)')
+        return await reply(event, f'<@{event.user_id}>\n❌ 日期格式错误 (MMDD)')
 
     target_date = target.strftime('%Y-%m-%d')
     now = datetime.now()
@@ -375,14 +375,14 @@ async def _handle_history_dau(event, bot, date_str):
         if not stats:
             return await reply(event, f'<@{event.user_id}>\n❌ {date_str[:2]}-{date_str[2:]} 无消息数据')
         if stats.get('pending'):
-            return await reply(event, '⏳ 统计数据准备中，请稍后再试')
+            return await reply(event, f'<@{event.user_id}>\n⏳ 统计数据准备中，请稍后再试', retry_notice=True)
     else:
         from core.application import get_app
 
         app = get_app()
         dau_svc = app.dau_service if app else None
         if not dau_svc:
-            return await reply(event, '❌ DAU 服务未启动')
+            return await reply(event, f'<@{event.user_id}>\n❌ DAU 服务未启动')
 
         data = await dau_svc.load(event.appid, target_date)
         if not data:
