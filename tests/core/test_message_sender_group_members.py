@@ -153,13 +153,15 @@ async def test_group_profile_survives_migration_and_is_available_locally():
         conn.executescript("""
             CREATE TABLE groups_users (
                 group_id TEXT PRIMARY KEY, group_name TEXT, group_member_num INTEGER,
-                is_admin INTEGER, is_full_access INTEGER, allow_proactive_msg INTEGER, in_group INTEGER
+                is_admin INTEGER, is_full_access INTEGER, allow_proactive_msg INTEGER, in_group INTEGER,
+                union_group_openid TEXT
             );
-            INSERT INTO groups_users VALUES ('group-1', '旧群名', 3, 1, 1, 1, 1);
+            INSERT INTO groups_users VALUES ('group-1', '旧群名', 3, 1, 1, 1, 1, 'old-union-group');
             PRAGMA user_version = 20002;
         """)
         conn.executescript(_SCHEMAS['data'])
         _migrate_data_tables(conn)
+        assert 'union_group_openid' not in {row['name'] for row in conn.execute('PRAGMA table_info(groups_users)')}
 
         class LogService:
             async def db_execute(self, sql, params):
@@ -171,14 +173,14 @@ async def test_group_profile_survives_migration_and_is_available_locally():
             async def group_member_entries(self, group_id):
                 return []
 
-        profile = {
+        local_profile = {
             'group_name': '新群名',
             'group_member_num': 8,
-            'union_group_openid': 'union-group',
             'group_finger_memo': '群简介',
             'group_class_text': '文化',
             'group_tags': ['学习', '读书'],
         }
+        profile = {**local_profile, 'union_group_openid': 'union-group'}
         sender = _RecordingSender(profile, LogService())
         old = await sender.get_group_record('group-1')
         assert old['group_name'] == '旧群名'
@@ -186,5 +188,6 @@ async def test_group_profile_survives_migration_and_is_available_locally():
 
         assert await sender.get_group_info('group-1') == profile
         record = await sender.get_group_record('group-1')
-        assert {key: record[key] for key in profile} == profile
+        assert 'union_group_openid' not in record
+        assert {key: record[key] for key in local_profile} == local_profile
         assert record['is_admin'] and record['is_full_access'] and record['allow_proactive_msg']
