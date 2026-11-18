@@ -16,7 +16,9 @@ export const BOT_SECTIONS = [
   ] },
   { id: 'message', title: '消息处理', description: '消息格式与指令回复策略', icon: 'chatbubbles', column: 0, fields: [
     toggle('message.use_markdown', '使用 Markdown', true), toggle('message.button_enter_to_send', '按钮自动发送转回调'),
+    toggle('message.interaction_explicit_only', '回调事件需显式订阅', false, { full: true, hint: '默认关闭，回调按原规则匹配；开启后仅交给显式声明 INTERACTION_CREATE 的处理器。' }),
     toggle('message.suppress_bot_system_reply', '抑制其他机器人导致的无指令回复', false, { full: true }),
+    toggle('message.send_error_response', '消息发送失败时回复模板', true, { full: true }),
     field('api_base', '第三方发信接口', 'text', '', { placeholder: '留空使用官方接口' }), field('message.markdown_suffix', 'Markdown 后缀'),
     field('message.default_response_excluded_regex', '排除无指令回复正则', 'list', [], { full: true, placeholder: '多个正则用英文逗号分隔' }),
   ] },
@@ -27,6 +29,7 @@ export const BOT_SECTIONS = [
     toggle('maintenance.reply', '维护时回复提示', true, { when: data => data.maintenance?.enabled === true, full: true }),
   ] },
   { id: 'blacklist', title: '黑名单', description: '每行填写一个 OpenID，可在空格后添加理由', icon: 'shield', column: 0, fields: [
+    toggle('blacklist.reply', '黑名单命中时回复模板', true, { full: true, hint: '同一用户或群每 60 秒最多触发一次。' }),
     field('blacklist.user_list', '用户黑名单', 'blacklist', {}, { placeholder: '用户 OpenID 理由（可选）' }),
     field('blacklist.group_list', '群黑名单', 'blacklist', {}, { placeholder: '群 OpenID 理由（可选）' }),
   ] },

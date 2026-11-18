@@ -70,10 +70,10 @@ function addBot() {
   data.bots.push({
     appid: '', secret: '', api_version: 'new', robot_qq: '', owner_ids: [],
     websocket: { enabled: true, subscribe_channel_events: false, custom_url: '', reconnect_interval: 5, max_reconnects: -1, identify: { name: 'ElainaBot' } },
-    message: { use_markdown: true, markdown_suffix: '', button_enter_to_send: false, send_default_response: false, default_response_excluded_regex: [] },
+    message: { use_markdown: true, markdown_suffix: '', button_enter_to_send: false, interaction_explicit_only: false, send_default_response: false, send_error_response: true, default_response_excluded_regex: [] },
     identity: { use_union_id_for_group: false, use_union_id_for_channel: false },
     welcome: { group_welcome: false, new_user_welcome: false, friend_add_message: false },
-    maintenance: { enabled: false, reply: true }, dedup: { enabled: false }, blacklist: { user_list: {}, group_list: {} },
+    maintenance: { enabled: false, reply: true }, dedup: { enabled: false }, blacklist: { reply: true, user_list: {}, group_list: {} },
     non_at_message: { enabled: true, group_whitelist: [], ignore_at_other_bot: true, ignore_at_other_user: true, ignore_bot_sender: true, quiet_at_self: false, strip_bot_name_at: false },
   })
   raw.bot = dump(data)
