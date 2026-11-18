@@ -5,12 +5,14 @@ from __future__ import annotations
 import asyncio
 import re
 import time
+from collections import OrderedDict
 from collections.abc import Callable, Iterator
 from typing import TYPE_CHECKING, Any
 
 from core.base.config import cfg
 from core.base.logger import FRAMEWORK, PLUGIN, get_logger, report_error
 from core.base.tasks import spawn
+from core.message.event import INTERACTION_CREATE
 from core.plugin.context import _make_reply_log_cb
 
 if TYPE_CHECKING:
@@ -19,6 +21,7 @@ if TYPE_CHECKING:
 log = get_logger(FRAMEWORK, '插件管理')
 
 _non_at_debug_ts: dict[str, float] = {}  # {appid: last_log_time}
+_BLACKLIST_REPLY_COOLDOWN = 60
 
 # ==================== 场景位掩码 ====================
 
@@ -70,6 +73,7 @@ class _DispatchMixin:
     _all_handlers: list[dict[str, Any]]
     _all_interceptors: list[dict[str, Any]]
     _check_blacklist: Callable[[Event], tuple[str, str] | None]
+    _blacklist_reply_until: OrderedDict[tuple[str, str, str], float]
     _is_owner: Callable[[Event], bool]
 
     # ---------- 索引构建 (由 _rebuild_handler_list 调用) ----------
@@ -100,14 +104,30 @@ class _DispatchMixin:
 
     # ---------- 分发 ----------
 
+    def _reserve_blacklist_reply(self, appid: str, kind: str, target_id: str) -> bool:
+        now = time.monotonic()
+        cooldowns = self._blacklist_reply_until
+        # 冷却时长固定，按到期顺序清理。
+        while cooldowns and next(iter(cooldowns.values())) <= now:
+            cooldowns.popitem(last=False)
+        key = (appid, kind, target_id)
+        if key in cooldowns:
+            return False
+        cooldowns[key] = now + _BLACKLIST_REPLY_COOLDOWN
+        return True
+
     async def dispatch(self, event: Event, sender: Any, *, explicit_only: bool = False) -> bool:
-        """分发事件；explicit_only 仅匹配显式声明了当前 event_types 的处理器。"""
+        """分发事件；explicit_only 或机器人回调设置可要求处理器显式声明 event_types。"""
         content: str = event.content or ''
         user_id: str = event.user_id or ''
         appid: str = event.appid or self._appid
         event.appid = appid
         et: str = event.event_type
         event._sender = sender
+
+        # 按机器人配置决定按钮回调是否仅交给显式订阅者，默认沿用通配分发。
+        if et == INTERACTION_CREATE and cfg.get_bot_setting(appid, 'message.interaction_explicit_only', False):
+            explicit_only = True
 
         # ── 非消息事件快速路径: 跳过黑名单/维护/权限检查 ──
         if et not in _FULL_CHECK_TYPES:
@@ -155,14 +175,16 @@ class _DispatchMixin:
             )
         )
 
-        # 黑名单 (始终拦截, 仅在非静默场景回复)
+        # 黑名单 (始终拦截，启用回复时按用户或群冷却)
         bl: tuple[str, str] | None = self._check_blacklist(event)
         if bl:
-            if not suppress_reply:
+            if not suppress_reply and _get(appid, 'blacklist.reply', True):
                 kind, reason = bl
-                tpl: str = 'blacklist' if kind == 'user' else 'group_blacklist'
-                tvars: dict[str, str] = {'user_id': user_id, 'reason': reason}
-                spawn(event.reply(template_name=tpl, template_vars=tvars))
+                target_id = user_id if kind == 'user' else event.group_id
+                if self._reserve_blacklist_reply(appid, kind, str(target_id)):
+                    tpl: str = 'blacklist' if kind == 'user' else 'group_blacklist'
+                    tvars: dict[str, str] = {'user_id': user_id, 'reason': reason}
+                    spawn(event.reply(template_name=tpl, template_vars=tvars))
             return True
 
         # 维护模式

@@ -1026,7 +1026,7 @@ function Test-CoreDependencies {
     $previousPreference = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        & $VenvPython -c "import aiohttp, cryptography, dotenv, httpx, psutil, qcloud_cos, websockets, yaml" *> $null
+        & $VenvPython -c "import aiohttp, cryptography, dotenv, httpx, psutil, websockets, yaml" *> $null
         $importExitCode = $LASTEXITCODE
     } catch {
         $importExitCode = 1

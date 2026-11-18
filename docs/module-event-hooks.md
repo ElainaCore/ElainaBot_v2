@@ -21,7 +21,7 @@ async def setup(ctx):
 
 ## 仅向显式订阅者分发
 
-`await app.plugin_manager.dispatch(event, sender, explicit_only=True)` 仅匹配 `event_types` 显式包含当前事件类型的处理器。未声明 `event_types` 的通配处理器不会收到事件。正则、优先级、机器人绑定、场景限制、block 及处理器执行规则沿用原分发流程。省略此参数时保持原行为。
+`await app.plugin_manager.dispatch(event, sender, explicit_only=True)` 仅匹配 `event_types` 显式包含当前事件类型的处理器。未声明 `event_types` 的通配处理器不会收到事件。正则、优先级、机器人绑定、场景限制、block 及处理器执行规则沿用原分发流程。省略此参数时，默认保持原行为；机器人开启 `message.interaction_explicit_only` 后，`INTERACTION_CREATE` 同样只交给显式订阅者。该配置默认关闭，且不能放宽调用方传入的 `explicit_only=True`。
 
 ```python
 from core.application import get_app

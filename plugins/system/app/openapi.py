@@ -6,6 +6,7 @@ from pathlib import Path
 
 from core.base.config import cfg
 from core.base.logger import PLUGIN, get_logger
+from core.message.event import INTERACTION_CREATE, MESSAGE_TYPES
 from core.plugin.decorators import handler, on_load, on_unload
 from web.tools._bot.scan_login import QQScanLogin
 from web.tools._openapi import handler as openapi_store
@@ -88,7 +89,7 @@ async def _shutdown():
 # ==================== 管理登录 ====================
 
 
-@handler(r'^管理登录$', name='管理登录', desc='在手机 QQ 中授权登录开放平台')
+@handler(r'^管理登录$', name='管理登录', desc='在手机 QQ 中授权登录开放平台', event_types=MESSAGE_TYPES | {INTERACTION_CREATE})
 async def login(event, match):
     api = _get_api()
     if not api:
@@ -218,7 +219,7 @@ async def _poll_login(event, sender, user_id, session, use_md):
 # ==================== 机器人通知 ====================
 
 
-@handler(r'^bot通知$', name='bot通知', desc='查看开放平台私信通知')
+@handler(r'^bot通知$', name='bot通知', desc='查看开放平台私信通知', event_types=MESSAGE_TYPES | {INTERACTION_CREATE})
 async def get_message(event, match):
     api = _get_api()
     if not api:
@@ -255,7 +256,7 @@ async def get_message(event, match):
 # ==================== 机器人列表 ====================
 
 
-@handler(r'^bot列表$', name='bot列表', desc='查看已绑定的机器人列表')
+@handler(r'^bot列表$', name='bot列表', desc='查看已绑定的机器人列表', event_types=MESSAGE_TYPES | {INTERACTION_CREATE})
 async def get_botlist(event, match):
     api = _get_api()
     if not api:

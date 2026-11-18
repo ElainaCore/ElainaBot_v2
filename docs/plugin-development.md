@@ -347,6 +347,8 @@ async def on_join_request(event, match):
 
 没有设置 `event_types` 的处理器会参与所有已分发事件的匹配。`MESSAGE_REACTION_ADD`、`MESSAGE_REACTION_REMOVE` 和 `GUILD_UPDATE` 只由框架记录，不会分发给插件处理器。
 
+每个机器人可在面板“机器人配置 → 消息处理”开启“回调事件需显式订阅”（`message.interaction_explicit_only`）。默认 `false`，回调无需显式声明，沿用上述匹配规则；开启后，`INTERACTION_CREATE` 仅交给当前处理器的 `event_types` 显式包含该事件的入口，同插件的其他处理器不会继承订阅。普通消息和其他事件的规则不变，保存配置后对后续事件生效。
+
 ### 4.3 Event 字段
 
 常用字段：
@@ -705,6 +707,8 @@ async def on_query_status(event, match):
 ~~~
 
 框架默认在 2 秒或分发结束时返回回调码 `0`。确需等待较长处理时，可先调用 `event.set_ack_timeout(seconds)`；通常不需要旧式 `await event.ack_interaction(...)` REST 应答。
+
+开启“回调事件需显式订阅”时，上述 `event_types=[INTERACTION_CREATE]` 仅接收回调。若同一入口还需处理普通消息，使用 `event_types=MESSAGE_TYPES | {INTERACTION_CREATE}`，并从 `core.message.event` 导入这两个常量。`button_enter_to_send` 转换得到的回调也遵循此开关；无人匹配时框架仍正常返回默认 ACK。
 
 ### 5.5 Ark 与卡片消息
 

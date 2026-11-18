@@ -435,7 +435,7 @@ PY
 }
 
 core_dependencies_work() {
-    "$VENV_PYTHON" -c 'import aiohttp, cryptography, dotenv, httpx, psutil, qcloud_cos, websockets, yaml' >/dev/null 2>&1
+    "$VENV_PYTHON" -c 'import aiohttp, cryptography, dotenv, httpx, psutil, websockets, yaml' >/dev/null 2>&1
 }
 
 pip_install() {

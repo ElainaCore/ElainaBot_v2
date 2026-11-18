@@ -29,7 +29,9 @@ bots:
       use_markdown: true               # 使用原生 Markdown 格式发送消息
       markdown_suffix: ""              # Markdown 消息全局后缀
       button_enter_to_send: false      # 按钮自动发送转换为回调
+      interaction_explicit_only: false # 回调事件需显式订阅 INTERACTION_CREATE，默认无需声明
       send_default_response: false     # 无匹配命令时发送默认回复
+      send_error_response: true        # 消息发送失败且未补救时是否回复错误模板
       default_response_excluded_regex: []  # 排除默认回复的正则列表
       suppress_bot_system_reply: true  # 抑制其他机器人导致的默认回复 (所有消息类型)
 
@@ -54,6 +56,7 @@ bots:
       enabled: false
     # 黑名单 (非空即生效, 格式 {ID: 理由}, 理由可为空)
     blacklist:
+      reply: true                      # 是否回复黑名单模板，同一用户或群每 60 秒最多触发一次
       user_list: {}                    # 用户黑名单 {OpenID: 理由}
       group_list: {}                   # 群黑名单 {群 OpenID: 理由}
 

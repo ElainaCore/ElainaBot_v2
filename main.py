@@ -28,13 +28,18 @@ def _no_verify(*a, **kw):
 
 ssl.create_default_context = _no_verify
 
-# 加载 .env
-_env = os.path.join(_ROOT, '.env')
-if os.path.isfile(_env):
-    with contextlib.suppress(ImportError):
-        from dotenv import load_dotenv
 
-        load_dotenv(_env, override=False)
+def _load_env():
+    path = os.path.join(_ROOT, '.env')
+    if not os.path.isfile(path):
+        return True
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        return False
+
+    load_dotenv(path, override=False)
+    return True
 
 
 def _is_debugger() -> bool:
@@ -61,6 +66,13 @@ def _resolve_env() -> str:
 
 
 def main():
+    from core.base.pip_helper import ensure_framework_dependencies
+
+    env_loaded = _load_env()
+    ensure_framework_dependencies()
+    if not env_loaded:
+        _load_env()
+
     _env = _resolve_env()
 
     # 清理废弃文件/目录 (仅生产环境执行)

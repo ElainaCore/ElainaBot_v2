@@ -45,5 +45,5 @@ logging:
 
 # 依赖管理
 pip:
-  auto_install: true                         # 自动安装模块/插件的 requirements.txt 依赖
+  auto_install: true                         # 自动安装框架、模块和插件清单里的 Python 依赖
   mirror: ""                                 # pip 镜像源 (留空用默认, 示例: https://pypi.tuna.tsinghua.edu.cn/simple)

@@ -24,6 +24,7 @@ class PluginManager(_LoaderMixin, _WatcherMixin, _DispatchMixin, _BlacklistMixin
         self._plugins = OrderedDict()
         self._all_handlers = []
         self._all_interceptors = []
+        self._blacklist_reply_until = OrderedDict()
         self._handlers_any_et = []
         self._et_merged = {}
         self._plugin_bots = {}

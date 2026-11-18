@@ -52,8 +52,8 @@ class Bed(BaseBed):
             return
         try:
             from qcloud_cos import CosConfig, CosS3Client
-        except ImportError:
-            log.error("qcloud-cos-v5 未安装 (pip install cos-python-sdk-v5)")
+        except ImportError as exc:
+            log.error(f'COS SDK (cos-python-sdk-v5) 导入失败: {exc}')
             return
         if not all([self._cfg.get('secret_id'), self._cfg.get('secret_key'),
                     self._cfg.get('bucket_name'), self._cfg.get('region')]):

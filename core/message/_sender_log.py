@@ -4,6 +4,7 @@ import contextlib
 import contextvars
 import json
 
+from core.base.config import cfg
 from core.base.logger import FRAMEWORK, report_error_raw
 from core.message._http import _IGNORE_ERROR_CODES, MSG_TYPE_MEDIA, _is_rate_limited, _is_violation
 from core.message.response import extract_message_id, extract_reference_id
@@ -21,7 +22,6 @@ class _SenderLogMixin:
 
     def _store_raw(self):
         """record_raw_message 关闭时不记录原始响应, 大幅减少日志体积"""
-        from core.base.config import cfg
         return cfg.get('settings', 'logging.record_raw_message', True)
 
     def _report_send_error(self, content, data=None, payload=None):
@@ -203,6 +203,8 @@ class _SenderLogMixin:
                 return False  # 限频错误不回发报错模板 (再发模板只会加剧限频)
             if str(code) == '-1':
                 return False  # 网络异常已在请求层自动重试, 不再回发报错模板
+            if not cfg.get_bot_setting(self._appid, 'message.send_error_response', True):
+                return False
             if tpl.get_raw('api_error', self._appid) is None:
                 return False
             content, buttons = tpl.render_error(
