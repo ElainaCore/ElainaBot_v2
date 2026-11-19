@@ -16,8 +16,8 @@ export default defineConfig({
     emptyOutDir: true,
     rollupOptions: {
       output: {
-        // 配置页随设置项更新更换 URL，避免旧 Config.js 缓存遮住新增开关。
-        chunkFileNames: chunk => chunk.name === 'Config' ? 'assets/[name]-[hash].js' : 'assets/[name].js',
+        // 资源使用固定文件名，禁止添加内容哈希；更新由服务器缓存控制处理。
+        chunkFileNames: 'assets/[name].js',
         entryFileNames: 'assets/[name].js',
         assetFileNames: 'assets/[name].[ext]',
         manualChunks(id) {

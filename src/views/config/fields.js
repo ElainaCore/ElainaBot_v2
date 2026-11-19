@@ -17,13 +17,12 @@ export const BOT_SECTIONS = [
   { id: 'message', title: '消息处理', description: '消息格式与指令回复策略', icon: 'chatbubbles', column: 0, fields: [
     toggle('message.use_markdown', '使用 Markdown', true), toggle('message.button_enter_to_send', '按钮自动发送转回调'),
     toggle('message.interaction_explicit_only', '回调事件需显式订阅', false, { full: true, hint: '默认关闭，回调按原规则匹配；开启后仅交给显式声明 INTERACTION_CREATE 的处理器。' }),
-    toggle('message.suppress_bot_system_reply', '抑制其他机器人导致的无指令回复', false, { full: true }),
-    toggle('message.send_error_response', '消息发送失败时回复模板', true, { full: true }),
     field('api_base', '第三方发信接口', 'text', '', { placeholder: '留空使用官方接口' }), field('message.markdown_suffix', 'Markdown 后缀'),
     field('message.default_response_excluded_regex', '排除无指令回复正则', 'list', [], { full: true, placeholder: '多个正则用英文逗号分隔' }),
   ] },
   { id: 'features', title: '功能开关', description: '欢迎消息、维护与事件去重', icon: 'grid', column: 1, fields: [
     toggle('message.send_default_response', '无指令回复'), toggle('welcome.group_welcome', '机器人入群回复'),
+    toggle('message.send_error_response', '消息发送失败时回复模板', true, { full: true }),
     toggle('welcome.new_user_welcome', '新用户首次交互'), toggle('welcome.friend_add_message', '添加好友消息'),
     toggle('maintenance.enabled', '机器人维护模式'), toggle('dedup.enabled', '消息事件去重'),
     toggle('maintenance.reply', '维护时回复提示', true, { when: data => data.maintenance?.enabled === true, full: true }),
@@ -33,12 +32,13 @@ export const BOT_SECTIONS = [
     field('blacklist.user_list', '用户黑名单', 'blacklist', {}, { placeholder: '用户 OpenID 理由（可选）' }),
     field('blacklist.group_list', '群黑名单', 'blacklist', {}, { placeholder: '群 OpenID 理由（可选）' }),
   ] },
-  { id: 'non-at', title: '全量环境', description: '未 @ 机器人时的消息响应规则', icon: 'globe', column: 1, fields: [
+  { id: 'non-at', title: '获取群内全部消息设置', description: '未 @ 机器人时的消息响应规则', icon: 'globe', column: 1, fields: [
     toggle('non_at_message.enabled', '未 @ 时正常响应指令', true, { full: true }),
     toggle('non_at_message.ignore_at_other_bot', '忽略仅 @ 其他机器人的消息', true, { full: true, when: data => data.non_at_message?.enabled !== false }),
     toggle('non_at_message.ignore_at_other_user', '忽略仅 @ 其他用户的消息', true, { full: true, when: data => data.non_at_message?.enabled !== false }),
     toggle('non_at_message.ignore_bot_sender', '屏蔽其他机器人发送的消息', true, { full: true }),
-    toggle('non_at_message.quiet_at_self', '@ 机器人时抑制无指令回复', false, { full: true }),
+    toggle('message.suppress_bot_system_reply', '抑制其他机器人导致的无指令回复', false, { full: true }),
+    toggle('non_at_message.quiet_at_self', '全量下@机器人抑制无指令回复', false, { full: true }),
     toggle('non_at_message.strip_bot_name_at', '匹配前剥离开头 @ 机器人名称', false, { full: true }),
     field('non_at_message.group_whitelist', '群白名单', 'list', [], { full: true, placeholder: '多个群 OpenID 用英文逗号分隔', when: data => data.non_at_message?.enabled === false }),
   ] },

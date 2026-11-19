@@ -4,11 +4,6 @@ import yaml from 'js-yaml'
 test('回调订阅开关默认关闭，按机器人保存并在重新加载后保持', async ({ context, page }) => {
   let bot = yaml.dump({ bots: [{ appid: '10001' }, { appid: '10002' }] })
   const errors = []
-  // 模拟旧浏览器缓存：生产页应使用带内容哈希的新配置分块 URL。
-  await context.route('**/assets/Config.js', route => route.fulfill({
-    contentType: 'application/javascript',
-    body: 'export default { render() { return null } }',
-  }))
   page.on('pageerror', error => errors.push(error.message))
   page.on('console', message => {
     if (message.type() === 'warning' && message.text().includes('Failed to resolve component')) errors.push(message.text())
