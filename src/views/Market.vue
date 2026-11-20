@@ -1,6 +1,6 @@
 <script setup>
 import { ref, reactive, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
-import { NModal, NPopover, useMessage } from 'naive-ui'
+import { NModal, NPopover, useDialog, useMessage } from 'naive-ui'
 import axios from '../utils/axios'
 import { formatFileSize, urlHost } from '../utils/format'
 import SvgIcon from '../components/SvgIcon.vue'
@@ -8,6 +8,7 @@ import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 
 const msg = useMessage()
+const dialog = useDialog()
 const items = ref([])
 const search = ref('')
 const category = ref('')
@@ -370,20 +371,28 @@ async function install(item) {
   }
 }
 
-async function uninstall(item) {
+function uninstall(item) {
   if (itemBusy(item)) return
-  item._uninstalling = true
-  try {
-    const res = await axios.post('/api/market/uninstall', { name: item.name, type: item._type })
-    if (res.data.success) {
-      msg.success(res.data.message || `${item.name} 已卸载`)
-      await fetchList()
-    } else msg.error(res.data.message || '卸载失败')
-  } catch {
-    msg.error('卸载请求失败')
-  } finally {
-    item._uninstalling = false
-  }
+  dialog.warning({
+    title: '卸载插件',
+    content: `确定要卸载插件 “${item.name}” 吗？卸载后插件目录会被删除，此操作不可恢复。`,
+    positiveText: '确定卸载',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      item._uninstalling = true
+      try {
+        const res = await axios.post('/api/market/uninstall', { name: item.name, type: item._type })
+        if (res.data.success) {
+          msg.success(res.data.message || `${item.name} 已卸载`)
+          await fetchList()
+        } else msg.error(res.data.message || '卸载失败')
+      } catch {
+        msg.error('卸载请求失败')
+      } finally {
+        item._uninstalling = false
+      }
+    },
+  })
 }
 
 onMounted(() => {
