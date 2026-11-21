@@ -1,0 +1,673 @@
+/**
+ * Elaina 面板 —— 开放平台「用户反馈」页
+ *
+ * 本仓库只包含前端编译产物（web/dist），没有前端源码，所以该页以独立 ES 模块的
+ * 形式挂在编译好的 OpenAPI 分块上。挂载点见 web/dist/assets/OpenAPI.js：
+ *   1) import FbPanel from "./FeedbackPanel.js";
+ *   2) 导航数组 Ht 追加 {key:"feedback",label:"用户反馈"}
+ *   3) 内容区分支追加 xe.value==="feedback" ? (s(),Ve(FbPanel,{...})) : ...
+ * 前端源码重新构建后需要重新应用这 3 处挂载（本文件与 FeedbackPanel.css 可原样复用）。
+ *
+ * 接口（与 q.qq.com 官方面板保持一致，经 /api/openapi/v2/proxy 转发到 bot.q.qq.com）：
+ *   POST /cgi-bin/v2/feedback/list
+ *        {bot_appid, start_time, end_time, feedback_types, issue_types, statuses, page, page_size}
+ *   POST /cgi-bin/v2/feedback/modify
+ *        {bot_appid, ids:[...], target_status}
+ * 字段映射：feedback_type 1=问题反馈 2=功能建议；status 0=未处理 1=已处理 2=暂不处理
+ */
+
+// vendor.js 中的别名: D = Vue 的 h()；aA = createVNode（不包装单个 vnode 子节点，不能直接用）
+import { D as h, q as computed, r as ref, w as watch } from './vendor.js';
+
+const PAGE_SIZE = 20;
+const RANGE_OPTIONS = [
+  { value: 7, label: '近 7 天' },
+  { value: 14, label: '近 14 天' },
+  { value: 30, label: '近 30 天' },
+];
+const TYPE_OPTIONS = [
+  { value: 0, label: '全部' },
+  { value: 1, label: '问题反馈' },
+  { value: 2, label: '功能建议' },
+];
+const STATUS_OPTIONS = [
+  { value: -1, label: '全部' },
+  { value: 0, label: '未处理' },
+  { value: 1, label: '已处理' },
+  { value: 2, label: '暂不处理' },
+];
+const TYPE_LABELS = { 1: '问题反馈', 2: '功能建议' };
+const STATUS_LABELS = { 0: '未处理', 1: '已处理', 2: '暂不处理' };
+const STATUS_CLASS = { 0: 'is-pending', 1: 'is-done', 2: 'is-deferred' };
+const STATUS_ORDER = [0, 1, 2];
+const STATUS_ICONS = {
+  0: ['M12 7v5l3 2', 'M21 12a9 9 0 1 1-9-9 9 9 0 0 1 9 9z'],
+  1: ['M22 11.1V12a10 10 0 1 1-5.93-9.14', 'M22 4 12 14l-3-3'],
+  2: ['M8 12h8', 'M21 12a9 9 0 1 1-9-9 9 9 0 0 1 9 9z'],
+};
+
+/* ==================== 样式注入 ==================== */
+
+(function installStyle() {
+  try {
+    if (typeof document === 'undefined' || document.querySelector('link[data-elaina-feedback]')) return;
+    const link = document.createElement('link');
+    link.rel = 'stylesheet';
+    link.href = new URL('./FeedbackPanel.css', import.meta.url).href;
+    link.setAttribute('data-elaina-feedback', '');
+    document.head.appendChild(link);
+  } catch (e) {
+    /* 样式缺失时仅影响外观，不阻断功能 */
+  }
+})();
+
+/* ==================== 工具函数 ==================== */
+
+const pad2 = (value) => (value < 10 ? `0${value}` : String(value));
+
+function formatTime(seconds, withSeconds) {
+  const value = Number(seconds) || 0;
+  if (!value) return '时间未知';
+  const date = new Date(value * 1000);
+  const base = `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
+  if (!withSeconds) return base;
+  return `${base} ${pad2(date.getHours())}:${pad2(date.getMinutes())}:${pad2(date.getSeconds())}`;
+}
+
+function clockLabel() {
+  const date = new Date();
+  return `${pad2(date.getHours())}:${pad2(date.getMinutes())}:${pad2(date.getSeconds())}`;
+}
+
+/** 近 N 天（含今天）的 0 点时间戳（秒） */
+function rangeStart(days) {
+  const date = new Date();
+  date.setHours(0, 0, 0, 0);
+  date.setDate(date.getDate() - (Math.max(1, Number(days) || 1) - 1));
+  return Math.floor(date.getTime() / 1000);
+}
+
+/** 今天 23:59:59 的时间戳（秒） */
+function rangeEnd() {
+  const date = new Date();
+  date.setHours(23, 59, 59, 0);
+  return Math.floor(date.getTime() / 1000);
+}
+
+function monthDay(seconds) {
+  const date = new Date(seconds * 1000);
+  return `${pad2(date.getMonth() + 1)}/${pad2(date.getDate())}`;
+}
+
+/** 收集反馈截图：images[] 与 chat_record_image 都可能是图片来源 */
+function collectImages(raw) {
+  const urls = [];
+  const push = (candidate) => {
+    if (typeof candidate === 'string') {
+      if (candidate.trim()) urls.push(candidate.trim());
+      return;
+    }
+    if (candidate && typeof candidate === 'object') {
+      const url = candidate.url || candidate.image || candidate.src || candidate.uri;
+      if (typeof url === 'string' && url.trim()) urls.push(url.trim());
+    }
+  };
+  if (Array.isArray(raw && raw.images)) raw.images.forEach(push);
+  push(raw && raw.chat_record_image);
+  return [...new Set(urls)];
+}
+
+function normalizeItem(raw) {
+  const item = raw && typeof raw === 'object' ? raw : {};
+  const status = Number(item.status);
+  return {
+    id: String(item.id || ''),
+    type: Number(item.feedback_type) || 1,
+    issueTypes: Array.isArray(item.issue_types) ? item.issue_types.filter(Boolean).map(String) : [],
+    description: String(item.description || '').replaceAll('\\n', '\n').trim(),
+    images: collectImages(item),
+    status: Number.isFinite(status) ? status : 0,
+    createTime: Number(item.create_time) || 0,
+    openid: String(item.user_openid || ''),
+  };
+}
+
+/** 反馈类型列：优先展示问题分类，无分类时回退到反馈类型 */
+function typeText(item) {
+  if (item.issueTypes.length) return item.issueTypes.join('、');
+  return TYPE_LABELS[item.type] || '用户反馈';
+}
+
+function icon(paths, size, extra) {
+  return h(
+    'svg',
+    Object.assign(
+      {
+        width: size || 14,
+        height: size || 14,
+        viewBox: '0 0 24 24',
+        fill: 'none',
+        stroke: 'currentColor',
+        'stroke-width': 1.8,
+        'stroke-linecap': 'round',
+        'stroke-linejoin': 'round',
+        'aria-hidden': 'true',
+      },
+      extra || {},
+    ),
+    paths.map((d) => h('path', { d })),
+  );
+}
+
+/* ==================== 组件 ==================== */
+
+export default {
+  name: 'FeedbackPanel',
+  props: {
+    appid: { type: [String, Number], default: '' },
+    request: { type: Function, required: true },
+  },
+  emits: ['toast'],
+  setup(props, { emit }) {
+    const loading = ref(false);
+    const error = ref('');
+    const items = ref([]);
+    const total = ref(0);
+    const page = ref(1);
+    const range = ref(30);
+    const typeFilter = ref(0);
+    const statusFilter = ref(-1);
+    const selected = ref([]);
+    const pending = ref({});
+    const busy = ref(false);
+    const refreshedAt = ref('');
+    const modalId = ref('');
+
+    let seq = 0;
+
+    const pages = computed(() => Math.max(1, Math.ceil((Number(total.value) || 0) / PAGE_SIZE)));
+    const selectedSet = computed(() => new Set(selected.value));
+    const allSelected = computed(
+      () => items.value.length > 0 && items.value.every((item) => selectedSet.value.has(item.id)),
+    );
+    const modalItem = computed(() => items.value.find((item) => item.id === modalId.value) || null);
+    const rangeLabel = computed(() => `${monthDay(rangeStart(range.value))}-${monthDay(rangeEnd())}`);
+
+    const toast = (message) => emit('toast', message);
+
+    async function load(resetPage) {
+      if (resetPage) {
+        page.value = 1;
+        selected.value = [];
+      }
+      const appid = Number(props.appid);
+      if (!appid) {
+        items.value = [];
+        total.value = 0;
+        error.value = '缺少机器人 AppID';
+        return;
+      }
+      const mine = ++seq;
+      loading.value = true;
+      error.value = '';
+      try {
+        const payload = {
+          bot_appid: appid,
+          start_time: rangeStart(range.value),
+          end_time: rangeEnd(),
+          page: page.value,
+          page_size: PAGE_SIZE,
+        };
+        if (typeFilter.value) payload.feedback_types = [typeFilter.value];
+        if (statusFilter.value >= 0) payload.statuses = [statusFilter.value];
+        const res = await props.request('/cgi-bin/v2/feedback/list', payload);
+        if (mine !== seq) return;
+        items.value = (Array.isArray(res && res.list) ? res.list : []).map(normalizeItem);
+        total.value = Number((res && res.total) || 0);
+        refreshedAt.value = clockLabel();
+      } catch (e) {
+        if (mine !== seq) return;
+        items.value = [];
+        total.value = 0;
+        error.value = (e && e.message) || '加载用户反馈失败';
+      } finally {
+        if (mine === seq) loading.value = false;
+      }
+    }
+
+    async function applyStatus(ids, status) {
+      const targets = (Array.isArray(ids) ? ids : []).filter(Boolean);
+      if (!targets.length || busy.value) return;
+      if (targets.length > 1 && !window.confirm(`确认将选中的 ${targets.length} 条反馈标记为「${STATUS_LABELS[status]}」？`)) {
+        return;
+      }
+      const appid = Number(props.appid);
+      if (!appid) {
+        toast('缺少机器人 AppID');
+        return;
+      }
+      const touched = new Set(targets);
+      busy.value = true;
+      pending.value = Object.fromEntries(targets.map((id) => [id, true]));
+      try {
+        const res = await props.request('/cgi-bin/v2/feedback/modify', {
+          bot_appid: appid,
+          ids: targets,
+          target_status: status,
+        });
+        const raw = res ? Number(res.success_count) : NaN;
+        const count = Number.isFinite(raw) ? raw : targets.length;
+        items.value = items.value.map((item) => (touched.has(item.id) ? { ...item, status } : item));
+        selected.value = selected.value.filter((id) => !touched.has(id));
+        toast(
+          count > 0
+            ? `已将 ${count} 条反馈标记为「${STATUS_LABELS[status]}」`
+            : '处理状态未发生变化，请刷新后重试',
+        );
+        if (statusFilter.value >= 0 && statusFilter.value !== status) {
+          await load(false);
+          if (!modalItem.value) modalId.value = '';
+        }
+      } catch (e) {
+        toast((e && e.message) || '修改处理状态失败，请重试');
+      } finally {
+        busy.value = false;
+        pending.value = {};
+      }
+    }
+
+    function go(target) {
+      const next = Math.min(Math.max(1, Number(target) || 1), pages.value);
+      if (next === page.value) return;
+      page.value = next;
+      selected.value = [];
+      load(false);
+    }
+
+    function toggleSelect(id, checked) {
+      const set = new Set(selected.value);
+      if (checked) set.add(id);
+      else set.delete(id);
+      selected.value = [...set];
+    }
+
+    const selectPage = () => {
+      selected.value = items.value.map((item) => item.id);
+    };
+    const clearSelected = () => {
+      selected.value = [];
+    };
+    const openDetail = (item) => {
+      modalId.value = item.id;
+    };
+    const closeDetail = () => {
+      modalId.value = '';
+    };
+
+    /* ---------- 通用渲染片段 ---------- */
+
+    function renderSelect(options, current, onChange, label) {
+      return h('div', { class: 'fbp-select-wrap' }, [
+        h(
+          'select',
+          { class: 'fbp-select', 'aria-label': label, onChange },
+          options.map((option) =>
+            h('option', { value: option.value, selected: option.value === current }, option.label),
+          ),
+        ),
+        icon(['M6 9l6 6 6-6'], 14, { class: 'fbp-select-chevron' }),
+      ]);
+    }
+
+    function renderStatusPill(status, withIcon) {
+      const label = STATUS_LABELS[status] || `状态 ${status}`;
+      return h(
+        'span',
+        { class: ['fbp-pill', STATUS_CLASS[status] || 'is-deferred'] },
+        [
+          withIcon === false ? null : icon(STATUS_ICONS[status] || STATUS_ICONS[2], 13),
+          h('span', null, label),
+        ],
+      );
+    }
+
+    /* ---------- 头部 / 筛选 ---------- */
+
+    function renderHead() {
+      return h('header', { class: 'fbp-head' }, [
+        h('div', { class: 'fbp-head-text' }, [
+          h('h2', { class: 'fbp-title' }, '用户反馈'),
+          h('p', { class: 'fbp-sub' }, '用户通过机器人提交的问题与建议，点击单条反馈可查看详情并更新处理状态。'),
+        ]),
+        h('div', { class: 'fbp-head-actions' }, [
+          refreshedAt.value ? h('span', { class: 'fbp-updated' }, `更新于 ${refreshedAt.value}`) : null,
+          h(
+            'button',
+            { type: 'button', class: 'btn ghost small', disabled: loading.value, onClick: () => load(false) },
+            loading.value ? '刷新中…' : '刷新',
+          ),
+        ]),
+      ]);
+    }
+
+    function renderFilters() {
+      const ranges = h(
+        'div',
+        { class: 'fbp-range', tabindex: '0' },
+        [
+          h('span', { class: 'fbp-range-text' }, rangeLabel.value),
+          icon(['M8 2v4', 'M16 2v4', 'M3 9h18', 'M5 4h14a2 2 0 0 1 2 2v13a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z'], 15, { class: 'fbp-range-icon' }),
+          h(
+            'div',
+            { class: 'fbp-range-menu', role: 'menu' },
+            RANGE_OPTIONS.map((option) =>
+              h(
+                'button',
+                {
+                  type: 'button',
+                  role: 'menuitem',
+                  class: ['fbp-range-item', { 'is-active': option.value === range.value }],
+                  onClick: (e) => {
+                    e.currentTarget.blur();
+                    if (option.value !== range.value) {
+                      range.value = option.value;
+                      load(true);
+                    }
+                  },
+                },
+                option.label,
+              ),
+            ),
+          ),
+        ],
+      );
+
+      return h('div', { class: 'fbp-filters' }, [
+        h('div', { class: 'fbp-filter' }, [h('span', { class: 'fbp-filter-label' }, '时间'), ranges]),
+        h('div', { class: 'fbp-filter' }, [
+          h('span', { class: 'fbp-filter-label' }, '类型'),
+          renderSelect(TYPE_OPTIONS, typeFilter.value, (e) => {
+            typeFilter.value = Number(e.target.value);
+            load(true);
+          }, '反馈类型'),
+        ]),
+        h('div', { class: 'fbp-filter' }, [
+          h('span', { class: 'fbp-filter-label' }, '状态'),
+          renderSelect(STATUS_OPTIONS, statusFilter.value, (e) => {
+            statusFilter.value = Number(e.target.value);
+            load(true);
+          }, '处理状态'),
+        ]),
+        loading.value ? h('span', { class: 'fbp-loading-hint' }, '加载中…') : null,
+      ]);
+    }
+
+    /* ---------- 批量操作 ---------- */
+
+    function renderBatchBar() {
+      const count = selected.value.length;
+      if (!count) return null;
+      return h('div', { class: 'fbp-batch' }, [
+        h('span', { class: 'fbp-batch-count' }, `已选择 ${count} 条`),
+        h('div', { class: 'fbp-batch-actions', role: 'group', 'aria-label': '批量修改处理状态' }, [
+          h('span', { class: 'fbp-batch-label' }, '标记为'),
+          ...STATUS_ORDER.map((status) =>
+            h(
+              'button',
+              { type: 'button', class: 'fbp-act', disabled: busy.value, onClick: () => applyStatus(selected.value.slice(), status) },
+              STATUS_LABELS[status],
+            ),
+          ),
+          h('button', { type: 'button', class: 'btn ghost small', disabled: busy.value, onClick: clearSelected }, '取消选择'),
+        ]),
+      ]);
+    }
+
+    /* ---------- 列表 ---------- */
+
+    function renderThead() {
+      return h('div', { class: 'fbp-thead', role: 'row' }, [
+        h(
+          'label',
+          { class: 'fbp-cell-check' },
+          h('input', {
+            type: 'checkbox',
+            class: 'fbp-check',
+            'aria-label': '全选本页',
+            checked: allSelected.value,
+            disabled: !items.value.length || loading.value || busy.value,
+            onChange: (e) => (e.target.checked ? selectPage() : clearSelected()),
+          }),
+        ),
+        h('span', { class: 'fbp-cell-content', role: 'columnheader' }, '反馈内容'),
+        h('span', { class: 'fbp-cell-type', role: 'columnheader' }, '反馈类型'),
+        h('span', { class: 'fbp-cell-status', role: 'columnheader' }, '处理状态'),
+        h('span', { class: 'fbp-cell-time', role: 'columnheader' }, '反馈时间'),
+      ]);
+    }
+
+    function renderRow(item) {
+      const hasShots = item.images.length > 0;
+      return h(
+        'div',
+        {
+          class: ['fbp-row', { 'is-active': modalId.value === item.id }],
+          role: 'row',
+          tabindex: '0',
+          'aria-label': `查看反馈详情：${item.description || typeText(item)}`,
+          onClick: () => openDetail(item),
+          onKeydown: (e) => {
+            if (e.target !== e.currentTarget) return;
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              openDetail(item);
+            }
+          },
+        },
+        [
+          h(
+            'label',
+            { class: 'fbp-cell-check', onClick: (e) => e.stopPropagation() },
+            h('input', {
+              type: 'checkbox',
+              class: 'fbp-check',
+              'aria-label': '选择该反馈',
+              checked: selectedSet.value.has(item.id),
+              disabled: busy.value,
+              onChange: (e) => toggleSelect(item.id, e.target.checked),
+            }),
+          ),
+          h('div', { class: 'fbp-cell-content', role: 'cell' }, [
+            h('span', { class: 'fbp-row-text' }, item.description || typeText(item)),
+            hasShots
+              ? icon(['M21 11.5a8.4 8.4 0 0 1-9 8.4 8.9 8.9 0 0 1-3.8-.9L3 21l1.9-3.7A8.4 8.4 0 0 1 3 11.5a8.4 8.4 0 0 1 9-8.4 8.4 8.4 0 0 1 9 8.4z'], 13, { class: 'fbp-row-flag' })
+              : null,
+          ]),
+          h('span', { class: 'fbp-cell-type', role: 'cell' }, typeText(item)),
+          h('div', { class: 'fbp-cell-status', role: 'cell' }, [renderStatusPill(item.status)]),
+          h('span', { class: 'fbp-cell-time', role: 'cell' }, formatTime(item.createTime)),
+        ],
+      );
+    }
+
+    function renderList() {
+      if (error.value) {
+        return h('div', { class: 'fbp-state is-error' }, [
+          h('span', { class: 'fbp-state-title' }, error.value),
+          h(
+            'button',
+            { type: 'button', class: 'btn ghost small', disabled: loading.value, onClick: () => load(false) },
+            '重新加载',
+          ),
+        ]);
+      }
+      if (loading.value && !items.value.length) {
+        return h('div', { class: 'fbp-state' }, [h('span', { class: 'fbp-state-title' }, '加载中…')]);
+      }
+      if (!items.value.length) {
+        return h('div', { class: 'fbp-state is-empty' }, [
+          h('span', { class: 'fbp-state-title' }, '暂无用户反馈'),
+          h('span', { class: 'fbp-state-sub' }, '用户可在机器人资料页提交问题反馈与功能建议，收到后会展示在这里。'),
+        ]);
+      }
+      return h('div', { class: ['fbp-table', { 'is-loading': loading.value }], role: 'table', 'aria-label': '用户反馈列表' }, [
+        renderThead(),
+        ...items.value.map(renderRow),
+      ]);
+    }
+
+    /* ---------- 分页 ---------- */
+
+    function renderPager() {
+      const numbers = [];
+      const last = pages.value;
+      const start = Math.max(1, Math.min(page.value - 2, last - 4));
+      for (let index = start; index <= Math.min(last, start + 4); index += 1) numbers.push(index);
+      return h('div', { class: 'fbp-foot' }, [
+        h('span', { class: 'fbp-foot-total' }, `共 ${total.value} 条反馈`),
+        h('div', { class: 'fbp-pager', role: 'navigation', 'aria-label': '分页' }, [
+          h(
+            'button',
+            {
+              type: 'button',
+              class: 'fbp-page-arrow',
+              'aria-label': '上一页',
+              disabled: page.value <= 1 || loading.value || busy.value,
+              onClick: () => go(page.value - 1),
+            },
+            icon(['M15 18l-6-6 6-6'], 15),
+          ),
+          ...numbers.map((number) =>
+            h(
+              'button',
+              {
+                type: 'button',
+                class: ['fbp-page-num', { 'is-active': number === page.value }],
+                'aria-current': number === page.value ? 'page' : undefined,
+                disabled: loading.value || busy.value,
+                onClick: () => go(number),
+              },
+              String(number),
+            ),
+          ),
+          h(
+            'button',
+            {
+              type: 'button',
+              class: 'fbp-page-arrow',
+              'aria-label': '下一页',
+              disabled: page.value >= pages.value || loading.value || busy.value,
+              onClick: () => go(page.value + 1),
+            },
+            icon(['M9 18l6-6-6-6'], 15),
+          ),
+        ]),
+      ]);
+    }
+
+    /* ---------- 详情弹窗 ---------- */
+
+    function renderDetailField(label, value) {
+      return h('div', { class: 'fbp-detail-field' }, [
+        h('span', { class: 'fbp-detail-label' }, label),
+        h('span', { class: 'fbp-detail-value' }, value || '—'),
+      ]);
+    }
+
+    function renderDetail() {
+      const item = modalItem.value;
+      if (!item) return null;
+      const shots = item.images.map((url, index) =>
+        h(
+          'a',
+          { class: 'fbp-detail-shot', href: url, target: '_blank', rel: 'noopener noreferrer', title: '在新窗口查看原图' },
+          h('img', { src: url, alt: `对话信息截图 ${index + 1}`, loading: 'lazy' }),
+        ),
+      );
+
+      return h(
+        'div',
+        {
+          class: 'fbp-modal-mask',
+          onClick: (e) => {
+            if (e.target === e.currentTarget) closeDetail();
+          },
+        },
+        [
+          h('section', { class: 'fbp-modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': '反馈详情' }, [
+            h('header', { class: 'fbp-modal-head' }, [
+              h('h3', { class: 'fbp-modal-title' }, '反馈详情'),
+              h(
+                'button',
+                { type: 'button', class: 'fbp-modal-close', 'aria-label': '关闭', onClick: closeDetail },
+                icon(['M18 6 6 18', 'M6 6l12 12'], 18),
+              ),
+            ]),
+            h('div', { class: 'fbp-detail' }, [
+              h('div', { class: 'fbp-detail-grid' }, [
+                renderDetailField('用户 OpenID', item.openid),
+                renderDetailField('反馈类型', typeText(item)),
+                renderDetailField('反馈时间', formatTime(item.createTime, true)),
+                renderDetailField('处理状态', STATUS_LABELS[item.status] || `状态 ${item.status}`),
+              ]),
+              h('div', { class: 'fbp-detail-block' }, [
+                h('h4', { class: 'fbp-detail-title' }, '反馈内容'),
+                h('p', { class: 'fbp-detail-text' }, item.description || '用户未填写文字描述'),
+              ]),
+              item.images.length
+                ? h('div', { class: 'fbp-detail-block' }, [
+                    h('h4', { class: 'fbp-detail-title' }, '对话信息'),
+                    h('div', { class: 'fbp-detail-shots' }, shots),
+                  ])
+                : null,
+            ]),
+            h('footer', { class: 'fbp-modal-foot' }, [
+              h('span', { class: 'fbp-modal-foot-label' }, '修改处理状态'),
+              h(
+                'div',
+                { class: 'fbp-modal-actions', role: 'group', 'aria-label': '修改处理状态' },
+                STATUS_ORDER.map((status) => {
+                  const current = item.status === status;
+                  return h(
+                    'button',
+                    {
+                      type: 'button',
+                      class: ['fbp-act', { 'is-current': current }],
+                      disabled: current || busy.value || Boolean(pending.value[item.id]),
+                      title: current ? '当前处理状态' : `将处理状态修改为「${STATUS_LABELS[status]}」`,
+                      onClick: () => applyStatus([item.id], status),
+                    },
+                    STATUS_LABELS[status],
+                  );
+                }),
+              ),
+            ]),
+          ]),
+        ],
+      );
+    }
+
+    watch(
+      () => props.appid,
+      () => {
+        selected.value = [];
+        modalId.value = '';
+        load(true);
+      },
+      { immediate: true },
+    );
+
+    return () =>
+      h('section', { class: 'fbp', 'aria-label': '用户反馈' }, [
+        renderHead(),
+        h('div', { class: 'fbp-card' }, [
+          h('h3', { class: 'fbp-card-title' }, '用户反馈列表'),
+          renderFilters(),
+          renderBatchBar(),
+          renderList(),
+          error.value || (!items.value.length && !loading.value) ? null : renderPager(),
+        ]),
+        renderDetail(),
+      ]);
+  },
+};
