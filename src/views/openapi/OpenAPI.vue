@@ -6,6 +6,7 @@ import { useThemeStore } from '../../stores/theme'
 import AppIcon from './AppIcon.vue'
 import OpenAPILoginDialog from './OpenAPILoginDialog.vue'
 import OperationsDashboard from './OperationsDashboard.vue'
+import FeedbackPanel from './FeedbackPanel.vue'
 import QrCodeImage from './QrCodeImage.vue'
 import ReportLineChart from './ReportLineChart.vue'
 import './qqdash.css'
@@ -360,6 +361,7 @@ const SECS = [
   { key: 'account-info', label: '账号信息' },
   { key: 'usage-scope', label: '服务范围' },
   { key: 'data', label: '运营数据' },
+  { key: 'feedback', label: '用户反馈' },
   { key: 'advanced', label: '高级设置' },
   { key: 'dev-settings', label: '开发设置' },
 ]
@@ -2344,6 +2346,8 @@ defineExpose({ reload: loadStatus })
                   </Transition>
                 </div>
               </template>
+
+              <FeedbackPanel v-else-if="activeSec === 'feedback'" :appid="cur.appid" :request="v2" @toast="pushToast" />
 
               <!-- 高级设置 -->
               <template v-else-if="activeSec === 'advanced'">
