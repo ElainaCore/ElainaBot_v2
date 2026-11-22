@@ -1,5 +1,5 @@
 <script>
-import { computed, h, onUnmounted, ref, watch } from 'vue'
+import { Transition, computed, h, onMounted, onUnmounted, ref, watch } from 'vue'
 
 const PAGE_SIZE = 20;
 const RANGE_OPTIONS = [
@@ -22,6 +22,13 @@ const TYPE_LABELS = { 1: '问题反馈', 2: '功能建议' };
 const STATUS_LABELS = { 0: '未处理', 1: '已处理', 2: '暂不处理' };
 const STATUS_CLASS = { 0: 'is-pending', 1: 'is-done', 2: 'is-deferred' };
 const STATUS_ORDER = [0, 1, 2];
+// 平台 modify 接口不接受 target_status=0（实测返回 retcode=-999 系统异常），
+// 「已处理 / 暂不处理」无法退回「未处理」，对应入口置灰并给出说明。
+const LOCKED_STATUSES = new Set([0]);
+const LOCKED_STATUS_HINT = '平台不支持将处理状态改回「未处理」';
+const LOCKED_ICON = ['M12 8v5', 'M12 16h.01', 'M21 12a9 9 0 1 1-9-9 9 9 0 0 1 9 9z'];
+const CHECK_ICON = ['M20 6 9 17l-5-5'];
+const CARET_ICON = ['M6 9l6 6 6-6'];
 const STATUS_ICONS = {
   0: ['M12 7v5l3 2', 'M21 12a9 9 0 1 1-9-9 9 9 0 0 1 9 9z'],
   1: ['M22 11.1V12a10 10 0 1 1-5.93-9.14', 'M22 4 12 14l-3-3'],
@@ -149,6 +156,7 @@ export default {
     const busy = ref(false);
     const refreshedAt = ref('');
     const modalId = ref('');
+    const statusMenuId = ref('');
 
     let seq = 0;
 
@@ -168,6 +176,7 @@ export default {
         page.value = 1;
       }
       selected.value = [];
+      statusMenuId.value = '';
       const appid = Number(props.appid);
       if (!appid) {
         items.value = [];
@@ -211,6 +220,10 @@ export default {
     async function applyStatus(ids, status) {
       const targets = (Array.isArray(ids) ? ids : []).filter(Boolean);
       if (!targets.length || busy.value || loading.value) return;
+      if (LOCKED_STATUSES.has(status)) {
+        toast(LOCKED_STATUS_HINT);
+        return;
+      }
       if (targets.length > 1 && !window.confirm(`确认将选中的 ${targets.length} 条反馈标记为「${STATUS_LABELS[status]}」？`)) {
         return;
       }
@@ -293,14 +306,90 @@ export default {
       ]);
     }
 
-    function renderStatusPill(status, withIcon) {
-      const label = STATUS_LABELS[status] || `状态 ${status}`;
+    const toggleStatusMenu = (id) => {
+      statusMenuId.value = statusMenuId.value === id ? '' : id;
+    };
+    const closeStatusMenu = () => {
+      statusMenuId.value = '';
+    };
+
+    function renderStatusMenu(item, placement) {
       return h(
-        'span',
-        { class: ['fbp-pill', STATUS_CLASS[status] || 'is-deferred'] },
+        'div',
+        {
+          class: ['fbp-menu', placement === 'up' ? 'is-up' : 'is-down'],
+          role: 'menu',
+          'aria-label': '处理状态',
+        },
+        STATUS_ORDER.map((status) => {
+          const locked = LOCKED_STATUSES.has(status);
+          const current = item.status === status;
+          return h(
+            'button',
+            {
+              type: 'button',
+              role: 'menuitemradio',
+              'aria-checked': current ? 'true' : 'false',
+              class: ['fbp-menu-item', { 'is-current': current, 'is-locked': locked }],
+              disabled: locked || busy.value || loading.value,
+              title: locked ? LOCKED_STATUS_HINT : `将处理状态修改为「${STATUS_LABELS[status]}」`,
+              onClick: (e) => {
+                e.stopPropagation();
+                closeStatusMenu();
+                if (current || locked) return;
+                applyStatus([item.id], status);
+              },
+            },
+            [
+              icon(locked ? LOCKED_ICON : STATUS_ICONS[status] || STATUS_ICONS[2], 14, { class: 'fbp-menu-icon' }),
+              h('span', { class: 'fbp-menu-label' }, STATUS_LABELS[status]),
+              current ? icon(CHECK_ICON, 14, { class: 'fbp-menu-check' }) : null,
+            ],
+          );
+        }),
+      );
+    }
+
+    function renderStatusCell(item, index) {
+      const open = statusMenuId.value === item.id;
+      // 靠底部的行向上展开，避免菜单被容器裁掉
+      const placement = index >= items.value.length - 2 ? 'up' : 'down';
+      return h(
+        'div',
+        { class: 'fbp-cell-status', role: 'cell', onClick: (e) => e.stopPropagation() },
         [
-          withIcon === false ? null : icon(STATUS_ICONS[status] || STATUS_ICONS[2], 13),
-          h('span', null, label),
+          h('div', { class: ['fbp-status-wrap', { 'is-open': open }] }, [
+          h(
+            'button',
+            {
+              type: 'button',
+              class: ['fbp-pill', STATUS_CLASS[item.status] || 'is-deferred', { 'is-open': open }],
+              'aria-haspopup': 'menu',
+              'aria-expanded': open ? 'true' : 'false',
+              title: '点击修改处理状态',
+              onClick: (e) => {
+                e.stopPropagation();
+                toggleStatusMenu(item.id);
+              },
+              onKeydown: (e) => {
+                if (e.key === 'Escape' && open) {
+                  e.stopPropagation();
+                  closeStatusMenu();
+                }
+              },
+            },
+            [
+              icon(STATUS_ICONS[item.status] || STATUS_ICONS[2], 13),
+              h('span', null, STATUS_LABELS[item.status] || `状态 ${item.status}`),
+              icon(CARET_ICON, 11, { class: 'fbp-pill-caret' }),
+            ],
+          ),
+          h(
+            Transition,
+            { name: 'fbp-pop' },
+            { default: () => (open ? renderStatusMenu(item, placement) : null) },
+          ),
+          ]),
         ],
       );
     }
@@ -385,13 +474,20 @@ export default {
         h('span', { class: 'fbp-batch-count' }, `已选择 ${count} 条`),
         h('div', { class: 'fbp-batch-actions', role: 'group', 'aria-label': '批量修改处理状态' }, [
           h('span', { class: 'fbp-batch-label' }, '标记为'),
-          ...STATUS_ORDER.map((status) =>
-            h(
+          ...STATUS_ORDER.map((status) => {
+            const locked = LOCKED_STATUSES.has(status);
+            return h(
               'button',
-                { type: 'button', class: 'fbp-act', disabled: loading.value || busy.value, onClick: () => applyStatus(selected.value.slice(), status) },
+              {
+                type: 'button',
+                class: ['fbp-act', { 'is-locked': locked }],
+                disabled: locked || loading.value || busy.value,
+                title: locked ? LOCKED_STATUS_HINT : `将选中的反馈标记为「${STATUS_LABELS[status]}」`,
+                onClick: () => applyStatus(selected.value.slice(), status),
+              },
               STATUS_LABELS[status],
-            ),
-          ),
+            );
+          }),
           h('button', { type: 'button', class: 'btn ghost small', disabled: busy.value, onClick: clearSelected }, '取消选择'),
         ]),
       ]);
@@ -420,7 +516,7 @@ export default {
       ]);
     }
 
-    function renderRow(item) {
+    function renderRow(item, index) {
       const hasShots = item.images.length > 0;
       return h(
         'div',
@@ -459,7 +555,7 @@ export default {
               : null,
           ]),
           h('span', { class: 'fbp-cell-type', role: 'cell' }, typeText(item)),
-          h('div', { class: 'fbp-cell-status', role: 'cell' }, [renderStatusPill(item.status)]),
+          renderStatusCell(item, index),
           h('span', { class: 'fbp-cell-time', role: 'cell' }, formatTime(item.createTime)),
         ],
       );
@@ -487,7 +583,7 @@ export default {
       }
       return h('div', { class: ['fbp-table', { 'is-loading': loading.value }], role: 'table', 'aria-label': '用户反馈列表' }, [
         renderThead(),
-        ...items.value.map(renderRow),
+        ...items.value.map((item, index) => renderRow(item, index)),
       ]);
     }
 
@@ -602,14 +698,19 @@ export default {
                 'div',
                 { class: 'fbp-modal-actions', role: 'group', 'aria-label': '修改处理状态' },
                 STATUS_ORDER.map((status) => {
+                  const locked = LOCKED_STATUSES.has(status);
                   const current = item.status === status;
                   return h(
                     'button',
                     {
                       type: 'button',
-                      class: ['fbp-act', { 'is-current': current }],
-                      disabled: current || loading.value || busy.value || Boolean(pending.value[item.id]),
-                      title: current ? '当前处理状态' : `将处理状态修改为「${STATUS_LABELS[status]}」`,
+                      class: ['fbp-act', { 'is-current': current, 'is-locked': locked }],
+                      disabled: current || locked || loading.value || busy.value || Boolean(pending.value[item.id]),
+                      title: locked
+                        ? LOCKED_STATUS_HINT
+                        : current
+                          ? '当前处理状态'
+                          : `将处理状态修改为「${STATUS_LABELS[status]}」`,
                       onClick: () => applyStatus([item.id], status),
                     },
                     STATUS_LABELS[status],
@@ -622,7 +723,26 @@ export default {
       );
     }
 
-    onUnmounted(() => { seq += 1; });
+    const onDocumentPointerDown = (event) => {
+      if (!statusMenuId.value) return;
+      const target = event.target;
+      if (target instanceof Element && target.closest('.fbp-status-wrap')) return;
+      closeStatusMenu();
+    };
+    const onDocumentKeydown = (event) => {
+      if (event.key === 'Escape' && statusMenuId.value) closeStatusMenu();
+    };
+
+    onMounted(() => {
+      document.addEventListener('pointerdown', onDocumentPointerDown, true);
+      document.addEventListener('keydown', onDocumentKeydown);
+    });
+
+    onUnmounted(() => {
+      seq += 1;
+      document.removeEventListener('pointerdown', onDocumentPointerDown, true);
+      document.removeEventListener('keydown', onDocumentKeydown);
+    });
 
     watch(
       () => props.appid,
