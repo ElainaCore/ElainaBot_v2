@@ -157,6 +157,8 @@ export default {
     const refreshedAt = ref('');
     const modalId = ref('');
     const statusMenuId = ref('');
+    const previewUrl = ref('');
+    const previewZoom = ref(1);
 
     let seq = 0;
 
@@ -169,6 +171,43 @@ export default {
     const rangeLabel = computed(() => `${monthDay(rangeStart(range.value))}-${monthDay(rangeEnd())}`);
 
     const toast = (message) => emit('toast', message);
+
+    /* ---------- 图片预览 ---------- */
+
+    // 100% 为最大缩放，此时图片宽度与展示区域宽度一致；只能继续缩小
+    const PREVIEW_MIN_ZOOM = 0.2;
+    const PREVIEW_MAX_ZOOM = 1;
+    const ZOOM_ICON_PLUS = ['M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16z', 'M21 21l-4.3-4.3', 'M11 8v6', 'M8 11h6'];
+    const ZOOM_ICON_MINUS = ['M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16z', 'M21 21l-4.3-4.3', 'M8 11h6'];
+
+    const clampZoom = (value) => Math.min(PREVIEW_MAX_ZOOM, Math.max(PREVIEW_MIN_ZOOM, value));
+
+    function openPreview(url) {
+      previewUrl.value = url;
+      previewZoom.value = 1;
+    }
+
+    function closePreview() {
+      previewUrl.value = '';
+      previewZoom.value = 1;
+    }
+
+    function applyZoom(next) {
+      previewZoom.value = clampZoom(next);
+    }
+
+    const zoomIn = () => applyZoom(previewZoom.value * 1.25);
+    const zoomOut = () => applyZoom(previewZoom.value / 1.25);
+    const resetZoom = () => {
+      previewZoom.value = 1;
+    };
+    const toggleZoom = () => (previewZoom.value < PREVIEW_MAX_ZOOM ? resetZoom() : applyZoom(0.5));
+
+    function onPreviewWheel(event) {
+      if (!previewUrl.value) return;
+      event.preventDefault();
+      applyZoom(previewZoom.value * (event.deltaY < 0 ? 1.1 : 1 / 1.1));
+    }
 
     async function load(resetPage) {
       const mine = ++seq;
@@ -289,6 +328,7 @@ export default {
     };
     const closeDetail = () => {
       modalId.value = '';
+      closePreview();
     };
 
     /* ---------- 通用渲染片段 ---------- */
@@ -650,8 +690,17 @@ export default {
       if (!item) return null;
       const shots = item.images.map((url, index) =>
         h(
-          'a',
-          { class: 'fbp-detail-shot', href: url, target: '_blank', rel: 'noopener noreferrer', title: '在新窗口查看原图' },
+          'button',
+          {
+            type: 'button',
+            class: 'fbp-detail-shot',
+            title: '查看大图',
+            'aria-label': `查看第 ${index + 1} 张对话截图`,
+            onClick: (e) => {
+              e.stopPropagation();
+              openPreview(url);
+            },
+          },
           h('img', { src: url, alt: `对话信息截图 ${index + 1}`, loading: 'lazy' }),
         ),
       );
@@ -723,6 +772,75 @@ export default {
       );
     }
 
+    function renderPreview() {
+      if (!previewUrl.value) return null;
+      const percent = `${Math.round(previewZoom.value * 100)}%`;
+      return h(
+        'div',
+        {
+          class: 'fbp-preview',
+          role: 'dialog',
+          'aria-modal': 'true',
+          'aria-label': '图片预览',
+          onClick: (e) => {
+            if (e.target === e.currentTarget) closePreview();
+          },
+          onWheel: onPreviewWheel,
+        },
+        [
+          h('section', { class: 'fbp-preview-panel', onClick: (e) => e.stopPropagation() }, [
+            h('header', { class: 'fbp-preview-head' }, [
+              h('h3', { class: 'fbp-preview-title' }, '图片预览'),
+              h('div', { class: 'fbp-preview-zoom', role: 'group', 'aria-label': '缩放' }, [
+                h(
+                  'button',
+                  {
+                    type: 'button',
+                    class: 'fbp-preview-zoom-btn',
+                    'aria-label': '缩小',
+                    disabled: previewZoom.value <= PREVIEW_MIN_ZOOM,
+                    onClick: zoomOut,
+                  },
+                  icon(ZOOM_ICON_MINUS, 16),
+                ),
+                h(
+                  'button',
+                  { type: 'button', class: 'fbp-preview-percent', title: '恢复 100%', onClick: resetZoom },
+                  percent,
+                ),
+                h(
+                  'button',
+                  {
+                    type: 'button',
+                    class: 'fbp-preview-zoom-btn',
+                    'aria-label': '放大',
+                    disabled: previewZoom.value >= PREVIEW_MAX_ZOOM,
+                    onClick: zoomIn,
+                  },
+                  icon(ZOOM_ICON_PLUS, 16),
+                ),
+              ]),
+              h(
+                'button',
+                { type: 'button', class: 'fbp-preview-close', 'aria-label': '关闭预览', onClick: closePreview },
+                icon(['M18 6 6 18', 'M6 6l12 12'], 18),
+              ),
+            ]),
+            h('div', { class: 'fbp-preview-body' }, [
+              h('img', {
+                class: 'fbp-preview-img',
+                src: previewUrl.value,
+                alt: '反馈截图预览',
+                draggable: 'false',
+                style: { width: `${Math.round(previewZoom.value * 100)}%` },
+                onDblclick: toggleZoom,
+              }),
+            ]),
+          ]),
+        ],
+      );
+    }
+
     const onDocumentPointerDown = (event) => {
       if (!statusMenuId.value) return;
       const target = event.target;
@@ -730,7 +848,12 @@ export default {
       closeStatusMenu();
     };
     const onDocumentKeydown = (event) => {
-      if (event.key === 'Escape' && statusMenuId.value) closeStatusMenu();
+      if (event.key !== 'Escape') return;
+      if (previewUrl.value) {
+        closePreview();
+        return;
+      }
+      if (statusMenuId.value) closeStatusMenu();
     };
 
     onMounted(() => {
@@ -765,6 +888,7 @@ export default {
           error.value || (!items.value.length && !loading.value) ? null : renderPager(),
         ]),
         renderDetail(),
+        renderPreview(),
       ]);
   },
 };
