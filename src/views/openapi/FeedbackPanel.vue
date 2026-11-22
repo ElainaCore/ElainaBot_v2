@@ -159,9 +159,6 @@ export default {
     const statusMenuId = ref('');
     const previewUrl = ref('');
     const previewZoom = ref(1);
-    const previewOffset = ref({ x: 0, y: 0 });
-    const previewDragging = ref(false);
-    let previewDragStart = null;
 
     let seq = 0;
 
@@ -177,8 +174,9 @@ export default {
 
     /* ---------- 图片预览 ---------- */
 
-    const PREVIEW_MIN_ZOOM = 0.5;
-    const PREVIEW_MAX_ZOOM = 4;
+    // 100% 为最大缩放，此时图片宽度与展示区域宽度一致；只能继续缩小
+    const PREVIEW_MIN_ZOOM = 0.2;
+    const PREVIEW_MAX_ZOOM = 1;
     const ZOOM_ICON_PLUS = ['M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16z', 'M21 21l-4.3-4.3', 'M11 8v6', 'M8 11h6'];
     const ZOOM_ICON_MINUS = ['M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16z', 'M21 21l-4.3-4.3', 'M8 11h6'];
 
@@ -187,63 +185,28 @@ export default {
     function openPreview(url) {
       previewUrl.value = url;
       previewZoom.value = 1;
-      previewOffset.value = { x: 0, y: 0 };
-      previewDragging.value = false;
-      previewDragStart = null;
     }
 
     function closePreview() {
       previewUrl.value = '';
       previewZoom.value = 1;
-      previewOffset.value = { x: 0, y: 0 };
-      previewDragging.value = false;
-      previewDragStart = null;
     }
 
     function applyZoom(next) {
       previewZoom.value = clampZoom(next);
-      if (previewZoom.value <= 1) previewOffset.value = { x: 0, y: 0 };
     }
 
     const zoomIn = () => applyZoom(previewZoom.value * 1.25);
     const zoomOut = () => applyZoom(previewZoom.value / 1.25);
     const resetZoom = () => {
       previewZoom.value = 1;
-      previewOffset.value = { x: 0, y: 0 };
     };
-    const toggleZoom = () => (previewZoom.value > 1 ? resetZoom() : applyZoom(2));
+    const toggleZoom = () => (previewZoom.value < PREVIEW_MAX_ZOOM ? resetZoom() : applyZoom(0.5));
 
     function onPreviewWheel(event) {
       if (!previewUrl.value) return;
       event.preventDefault();
       applyZoom(previewZoom.value * (event.deltaY < 0 ? 1.1 : 1 / 1.1));
-    }
-
-    function onPreviewPointerDown(event) {
-      if (previewZoom.value <= 1) return;
-      event.currentTarget.setPointerCapture?.(event.pointerId);
-      previewDragging.value = true;
-      previewDragStart = {
-        x: event.clientX,
-        y: event.clientY,
-        ox: previewOffset.value.x,
-        oy: previewOffset.value.y,
-      };
-    }
-
-    function onPreviewPointerMove(event) {
-      if (!previewDragging.value || !previewDragStart) return;
-      previewOffset.value = {
-        x: previewDragStart.ox + (event.clientX - previewDragStart.x),
-        y: previewDragStart.oy + (event.clientY - previewDragStart.y),
-      };
-    }
-
-    function onPreviewPointerUp(event) {
-      if (!previewDragging.value) return;
-      previewDragging.value = false;
-      previewDragStart = null;
-      event.currentTarget.releasePointerCapture?.(event.pointerId);
     }
 
     async function load(resetPage) {
@@ -865,21 +828,12 @@ export default {
             ]),
             h('div', { class: 'fbp-preview-body' }, [
               h('img', {
-                class: [
-                  'fbp-preview-img',
-                  { 'is-zoomed': previewZoom.value > 1, 'is-dragging': previewDragging.value },
-                ],
+                class: 'fbp-preview-img',
                 src: previewUrl.value,
                 alt: '反馈截图预览',
                 draggable: 'false',
-                style: {
-                  transform: `translate(${previewOffset.value.x}px, ${previewOffset.value.y}px) scale(${previewZoom.value})`,
-                },
+                style: { width: `${Math.round(previewZoom.value * 100)}%` },
                 onDblclick: toggleZoom,
-                onPointerdown: onPreviewPointerDown,
-                onPointermove: onPreviewPointerMove,
-                onPointerup: onPreviewPointerUp,
-                onPointercancel: onPreviewPointerUp,
               }),
             ]),
           ]),
