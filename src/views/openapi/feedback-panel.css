@@ -241,12 +241,6 @@
   color: var(--ink-3);
 }
 
-.fbp-batch-hint {
-  font-size: 11.5px;
-  line-height: 1.5;
-  color: var(--ink-4);
-}
-
 .fbp-act {
   appearance: none;
   -webkit-appearance: none;
@@ -277,9 +271,13 @@
   cursor: default;
 }
 
-/* 平台不支持的状态变更（未处理）：置灰并保留可读性 */
-.fbp-act.is-locked {
-  border-style: dashed;
+/* 平台不支持的状态变更（未处理）：仅保留灰色文字，不描边、不填充 */
+.fbp-act.is-locked,
+.fbp-act.is-locked:disabled {
+  border-color: transparent;
+  background: transparent;
+  color: var(--ink-4);
+  opacity: 1;
 }
 
 .fbp-act:disabled {
@@ -808,14 +806,6 @@
   color: var(--ink-3);
 }
 
-.fbp-modal-foot-hint {
-  flex: 1 1 100%;
-  margin: 0;
-  font-size: 12px;
-  line-height: 1.5;
-  color: var(--ink-4);
-}
-
 .fbp-modal-actions {
   display: flex;
   align-items: center;
@@ -935,10 +925,6 @@
     left: 0;
     right: auto;
     max-width: calc(100vw - 24px);
-  }
-
-  .fbp-batch-hint {
-    flex: 1 1 100%;
   }
 
   .fbp-modal-mask {

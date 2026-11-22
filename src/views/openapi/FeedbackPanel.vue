@@ -488,7 +488,6 @@ export default {
               STATUS_LABELS[status],
             );
           }),
-          h('span', { class: 'fbp-batch-hint' }, LOCKED_STATUS_HINT),
           h('button', { type: 'button', class: 'btn ghost small', disabled: busy.value, onClick: clearSelected }, '取消选择'),
         ]),
       ]);
@@ -718,7 +717,6 @@ export default {
                   );
                 }),
               ),
-              item.status === 0 ? null : h('p', { class: 'fbp-modal-foot-hint' }, LOCKED_STATUS_HINT),
             ]),
           ]),
         ],
