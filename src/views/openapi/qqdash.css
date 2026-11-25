@@ -307,8 +307,6 @@
 .qqdash .noti-time{font-size:11px;color:var(--ink-4)}
 .qqdash .webhook-input-row{display:flex;gap:8px;align-items:center}
 .qqdash .webhook-input-row input{flex:1;min-width:0}
-.qqdash .webhook-check-msg.ok{color:#149665!important}
-.qqdash .webhook-check-msg.fail{color:var(--danger)!important}
 
 /* ── 共享：登录门/弹窗/机器人切换 ── */
 .qqdash .v2-gate{max-width:820px;margin:36px auto 0;padding:38px;border:1px solid var(--line);border-radius:26px;background:var(--bg-elev);box-shadow:var(--shadow)}

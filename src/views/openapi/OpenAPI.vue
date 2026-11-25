@@ -1398,7 +1398,7 @@ function resetEvents() {
 function resetConnection() {
   connectionDraft.mode = dev.mode
   connectionDraft.webhook = dev.webhook
-  webhookCheck.msg = ''
+  webhookError.value = ''
 }
 const showAddTester = ref(false)
 const testerInput = ref('')
@@ -1569,16 +1569,15 @@ async function removeIp(ip) {
 function openConnectionSettings() {
   connectionDraft.mode = dev.mode
   connectionDraft.webhook = dev.webhook
-  webhookCheck.ok = null
-  webhookCheck.msg = ''
+  webhookError.value = ''
   resetEvents()
   activeSub.value = 'event-callback'
   loadWebhookSuggest()
 }
 
 const webhookSuggest = reactive({ available: false, url: '' })
-const webhookCheck = reactive({ checking: false, ok: null, msg: '' })
-const connectionBusy = computed(() => connectionDraft.saving || eventsSaving.value || webhookCheck.checking)
+const webhookError = ref('')
+const connectionBusy = computed(() => connectionDraft.saving || eventsSaving.value)
 
 async function loadWebhookSuggest() {
   const appid = cur.appid
@@ -1596,7 +1595,7 @@ async function loadWebhookSuggest() {
 function fillSuggestedWebhook() {
   if (!webhookSuggest.url) return
   connectionDraft.webhook = webhookSuggest.url
-  webhookCheck.msg = ''
+  webhookError.value = ''
 }
 
 function webhookUrlError(url) {
@@ -1619,41 +1618,16 @@ function webhookFailureMessage(error, fallback) {
   return error.response?.data?.message || error.response?.data?.msg || error.message || fallback
 }
 
-async function checkWebhookUrl() {
-  if (connectionBusy.value) return
-  const appid = cur.appid
-  const url = connectionDraft.webhook.trim()
-  const inputError = webhookUrlError(url)
-  if (inputError) {
-    Object.assign(webhookCheck, { ok: false, msg: inputError })
-    return
-  }
-  Object.assign(webhookCheck, { checking: true, ok: null, msg: '' })
-  let ok = false
-  let msg = '地址校验未通过'
-  try {
-    await v2('/cgi-bin/callback/check_webhook', { bot_appid: String(appid), webhook_url: url })
-    ok = true
-    msg = '地址校验通过'
-  } catch (e) {
-    msg = webhookFailureMessage(e, msg)
-  } finally {
-    webhookCheck.checking = false
-    if (cur.appid === appid && connectionDraft.mode === 'Webhook' && connectionDraft.webhook.trim() === url) {
-      Object.assign(webhookCheck, { ok, msg })
-    }
-  }
-}
-
 async function saveConnection() {
   if (connectionBusy.value || !connectionChanged.value) return false
   if (connectionDraft.mode === 'Webhook') {
     const url = connectionDraft.webhook.trim()
     const inputError = webhookUrlError(url)
     if (inputError) {
-      Object.assign(webhookCheck, { ok: false, msg: inputError })
+      webhookError.value = inputError
       return false
     }
+    webhookError.value = ''
     connectionDraft.saving = true
     try {
       await v2('/cgi-bin/v2/bot_dev_setting/connect_info/modify', {
@@ -1663,11 +1637,10 @@ async function saveConnection() {
       })
       dev.webhook = url
       dev.mode = 'Webhook'
-      webhookCheck.msg = ''
       pushToast('Webhook 接入配置已保存')
       return true
     } catch (e) {
-      Object.assign(webhookCheck, { ok: false, msg: webhookFailureMessage(e, '回调地址保存失败') })
+      webhookError.value = webhookFailureMessage(e, '回调地址保存失败')
       return false
     }
     finally { connectionDraft.saving = false }
@@ -1690,7 +1663,7 @@ async function saveEvents() {
   const url = connectionDraft.webhook.trim()
   const inputError = webhookUrlError(url)
   if (inputError) {
-    Object.assign(webhookCheck, { ok: false, msg: inputError })
+    webhookError.value = inputError
     return
   }
   eventsSaving.value = true
@@ -2519,22 +2492,19 @@ defineExpose({ reload: loadStatus })
                         <label class="ec-field-label" for="webhook-url">回调地址</label>
                         <div class="ec-field-value-row">
                           <input id="webhook-url" v-model="connectionDraft.webhook" class="ec-field-mono ec-editable" type="url"
-                            placeholder="https://your-domain.com/qq/callback" :disabled="connectionDraft.saving || eventsSaving"
-                            @input="webhookCheck.msg = ''" />
+                            placeholder="https://your-domain.com/qq/callback" :disabled="connectionBusy"
+                            @input="webhookError = ''" />
                           <button class="ec-icon-btn" type="button" aria-label="复制回调地址" :disabled="!connectionDraft.webhook" @click="copyText(connectionDraft.webhook)">
                             <AppIcon name="copy" :size="14" />
                           </button>
                         </div>
-                        <div class="ec-field-tip">回调地址需能从公网访问，支持 HTTP、HTTPS 和 IP 地址。QQ 平台会校验返回签名。</div>
-                        <div class="webhook-editor-tools">
-                          <button v-if="webhookSuggest.available" class="btn ghost sm" type="button" :disabled="connectionBusy" @click="fillSuggestedWebhook">
+                        <div class="ec-field-tip">回调地址需能从公网访问，支持 HTTP、HTTPS 和 IP 地址。保存时 QQ 会校验回调签名。</div>
+                        <div v-if="webhookSuggest.available" class="webhook-suggest">
+                          <button class="btn ghost sm" type="button" :disabled="connectionBusy" @click="fillSuggestedWebhook">
                             自动填写本机地址
                           </button>
-                          <button class="btn ghost sm" type="button" :disabled="connectionBusy" @click="checkWebhookUrl">
-                            {{ webhookCheck.checking ? '校验中…' : '校验地址' }}
-                          </button>
                         </div>
-                        <p v-if="webhookCheck.msg" role="status" :class="['webhook-check-msg', webhookCheck.ok ? 'ok' : 'fail']">{{ webhookCheck.msg }}</p>
+                        <p v-if="webhookError" role="status" class="webhook-error">{{ webhookError }}</p>
                       </div>
                     </div>
                     <div v-if="connectionChanged" class="ec-channel-foot"><button class="btn" type="button" :disabled="connectionBusy" @click="resetConnection">撤销修改</button><button class="btn primary" type="button" :disabled="connectionBusy" @click="saveConnection">{{ connectionDraft.saving ? '保存中…' : '保存' }}</button></div>

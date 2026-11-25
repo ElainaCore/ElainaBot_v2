@@ -99,8 +99,8 @@
 .qqdash .notify-detail-modal .html-body img { max-width: 100%; height: auto; }
 .qqdash .notify-detail-modal .html-body a, .qqdash .nd-body > a { color: var(--accent); }
 .qqdash label.ec-field-label { display: block; }
-.qqdash .webhook-editor-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }
-.qqdash .ec-field-card .webhook-check-msg { overflow-wrap: anywhere; }
+.qqdash .webhook-suggest { margin-top: 12px; }
+.qqdash .ec-field-card .webhook-error { color: var(--danger); overflow-wrap: anywhere; }
 .qqdash.qqdash .avatar-picker-modal .avatar-picker-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); max-height: 55vh; margin: 0; padding: 0; gap: 10px; }
 .qqdash.qqdash .avatar-picker-modal .avatar-option { width: auto; height: auto; border-radius: 18px; padding: 10px 8px 12px; }
 .qqdash.qqdash .avatar-picker-modal .avatar-option img { width: 72px; height: 72px; max-width: 100%; border: 0; }
