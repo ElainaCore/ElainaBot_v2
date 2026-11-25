@@ -9,16 +9,16 @@ import web.tools._openapi.handler as h
 from web.tools._bot.api import extract_login_creds, parse_login_developers
 from web.tools._bot.qq_http import dashboard_credentials_ready
 
+_WEBHOOK_CHECK_PATH = '/cgi-bin/callback/check_webhook'
 _V2_ALLOWED_PREFIXES = (
     '/cgi-bin/v2/',
     '/bopen/v2/',
     '/api/v3/login/',
     '/api/v1/logout',
-    '/cgi-bin/callback/check_webhook',
 )
-# Notification APIs use /pb/ on q.qq.com rather than /cgi-bin/v2/.
-# Allow these exact endpoints without opening up the whole /pb/ namespace.
+# Individual legacy callback and notification endpoints.
 _V2_ALLOWED_PATHS = frozenset((
+    _WEBHOOK_CHECK_PATH,
     '/pb/AppFetchPrivateMsg',
     '/pb/AppOperatePrivateMsg',
 ))
@@ -230,6 +230,11 @@ async def handle_v2_proxy(request: web.Request):
         data=body.get('payload'),
         params=body.get('params'),
     )
+    if isinstance(result, dict) and isinstance((status := result.get('upstream_http_status')), int):
+        message = result.get('msg') or f'QQ 开放平台响应异常（HTTP {status}）'
+        if path == _WEBHOOK_CHECK_PATH:
+            message += '。QQ 会在保存回调地址时校验签名。'
+        return h._err(message, upstream_http_status=status)
     if path == '/cgi-bin/v2/datareport/export' and isinstance(result, dict):
         content = result.get('data')
         if result.get('retcode') == 0 and isinstance(content, str):

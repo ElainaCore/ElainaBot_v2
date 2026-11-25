@@ -125,20 +125,33 @@ class QQBotAPI:
             if cookie:
                 headers['Cookie'] = cookie
             conn = aiohttp.TCPConnector(family=socket.AF_INET)
-            async with aiohttp.ClientSession(timeout=_TIMEOUT, connector=conn) as session:
-                if method.upper() == 'GET':
-                    async with session.get(url, headers=headers) as resp:
-                        raw = await resp.read()
-                        ctype = resp.headers.get('Content-Type', '')
-                        disp = resp.headers.get('Content-Disposition', '')
-                else:
-                    async with session.post(url, json=data, headers=headers) as resp:
-                        raw = await resp.read()
-                        ctype = resp.headers.get('Content-Type', '')
-                        disp = resp.headers.get('Content-Disposition', '')
-            if 'application/json' not in ctype and ('text/csv' in ctype or 'octet-stream' in ctype or 'spreadsheet' in ctype or disp):
+            request_method = 'GET' if method.upper() == 'GET' else 'POST'
+            async with (
+                aiohttp.ClientSession(timeout=_TIMEOUT, connector=conn) as session,
+                session.request(request_method, url, headers=headers, json=data if request_method == 'POST' else None) as resp,
+            ):
+                raw = await resp.read()
+                status = resp.status
+                ctype = resp.headers.get('Content-Type', '')
+                disp = resp.headers.get('Content-Disposition', '')
+            mime = ctype.lower()
+            if 200 <= status < 300 and 'application/json' not in mime and ('text/csv' in mime or 'octet-stream' in mime or 'spreadsheet' in mime or disp):
                 return {'_binary': True, 'content': raw, 'content_type': ctype or 'application/octet-stream', 'disposition': disp}
-            return json.loads(self._decode(raw))
+            body = self._decode(raw).lstrip('\ufeff')
+            try:
+                return json.loads(body)
+            except json.JSONDecodeError:
+                if not body.strip():
+                    response_type = '空响应'
+                elif 'text/html' in mime or body.lstrip().lower().startswith(('<html', '<!doctype html')):
+                    response_type = 'HTML 页面'
+                else:
+                    response_type = '非 JSON 响应'
+                return {
+                    'retcode': status if status >= 400 else 502,
+                    'msg': f'QQ 开放平台响应异常（HTTP {status}，{response_type}）',
+                    'upstream_http_status': status,
+                }
         except Exception as e:
             return {'retcode': 500, 'msg': f'请求失败: {e}'}
 
