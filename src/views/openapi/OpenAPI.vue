@@ -1197,26 +1197,6 @@ async function toggleScope(which) {
   } catch (e) { pushToast(e.message) }
 }
 
-async function saveFriendRange(range = scope.friendRange) {
-  try {
-    await v2('/cgi-bin/v2/bot_scope_manager/usage_scope/modify', {
-      bot_appid: Number(cur.appid),
-      set_scope_filter: { set_friend_scope: 1, set_group_scope: 0, set_channel_scope: 0 },
-      friend_scope_config: {
-        allow_others_add_friend: scope.allowFriend ? 2 : 1,
-        friend_add_scope: range === 'all' ? 2 : 1,
-      },
-    })
-    scope.friendRange = range
-    pushToast('好友添加范围已更新')
-    return true
-  } catch (e) {
-    pushToast(e.message)
-    await loadScope()
-    return false
-  }
-}
-
 function decodeNickname(value) {
   if (!value) return ''
   try {
@@ -1761,13 +1741,47 @@ async function loadFeaturePreview() {
   } catch (e) { pushToast(e.message) }
 }
 const showAdminGroups = ref(false)
-const friendRangeDialog = reactive({ visible: false, value: 'all', saving: false })
-function openFriendRange() { friendRangeDialog.value = scope.friendRange; friendRangeDialog.visible = true }
+const friendRangeModal = ref(null)
+const friendRangeDialog = reactive({ value: 'all', saving: false, error: '' })
+const FRIEND_RANGE_OPTIONS = [
+  { value: 'all', title: '所有人可添加' },
+  { value: 'friend', title: '仅 QQ 好友可添加' },
+]
+
+async function openFriendRange() {
+  friendRangeDialog.value = scope.friendRange
+  friendRangeDialog.error = ''
+  await nextTick()
+  friendRangeModal.value?.showModal()
+}
+
+function closeFriendRange() {
+  if (!friendRangeDialog.saving) friendRangeModal.value?.close()
+}
+
 async function applyFriendRange() {
+  const range = friendRangeDialog.value
+  if (friendRangeDialog.saving || range === scope.friendRange) return
   friendRangeDialog.saving = true
+  friendRangeDialog.error = ''
   try {
-    if (await saveFriendRange(friendRangeDialog.value)) friendRangeDialog.visible = false
-  } finally { friendRangeDialog.saving = false }
+    await v2('/cgi-bin/v2/bot_scope_manager/usage_scope/modify', {
+      bot_appid: Number(cur.appid),
+      set_scope_filter: { set_friend_scope: 1, set_group_scope: 0, set_channel_scope: 0 },
+      friend_scope_config: {
+        allow_others_add_friend: scope.allowFriend ? 2 : 1,
+        friend_add_scope: range === 'all' ? 2 : 1,
+      },
+    })
+    scope.friendRange = range
+    friendRangeModal.value?.close()
+    pushToast('好友添加范围已更新')
+  } catch (e) {
+    friendRangeDialog.error = e.message || '保存失败，请重试'
+    await loadScope()
+  } finally {
+    friendRangeDialog.saving = false
+  }
 }
 
 /* ── 高级设置入口 ── */
@@ -2235,7 +2249,11 @@ defineExpose({ reload: loadStatus })
                     </div>
                     <div class="switch" :class="{ on: scope.allowFriend, 'is-disabled': !isCertified }" @click="toggleScope('friend')"></div>
                   </div>
-                  <div v-if="scope.allowFriend" class="row" @click="openFriendRange"><div class="row-main"><div class="row-label">可添加范围</div></div><div class="row-value">{{ scope.friendRange === 'all' ? '所有人可添加' : '仅 QQ 好友可添加' }}</div><AppIcon name="chevron" :size="16" class="row-chev" /></div>
+                  <button v-if="scope.allowFriend" class="row friend-range-trigger" type="button" aria-haspopup="dialog" @click="openFriendRange">
+                    <span class="row-main"><span class="row-label">可添加范围</span></span>
+                    <span class="row-value">{{ scope.friendRange === 'all' ? '所有人可添加' : '仅 QQ 好友可添加' }}</span>
+                    <AppIcon name="chevron" :size="16" class="row-chev" aria-hidden="true" />
+                  </button>
                 </div>
                 <div class="sec-group scope-card">
                   <div class="sec-group-title group-title">
@@ -2542,7 +2560,32 @@ defineExpose({ reload: loadStatus })
 
     <FeatureImages v-if="showFeatureImages" :appid="cur.appid" :info="featurePreview" :request="v2" @close="showFeatureImages = false" @saved="loadFeaturePreview" @toast="pushToast" />
     <div v-if="featurePreviewUrl" class="fi-lightbox" @click="featurePreviewUrl = ''"><img :src="featurePreviewUrl" alt="功能介绍图预览" /></div>
-    <div v-if="friendRangeDialog.visible" class="modal-root"><div class="modal-mask" @click="!friendRangeDialog.saving && (friendRangeDialog.visible = false)"></div><section class="modal friend-range-modal" role="dialog" aria-modal="true" aria-label="可添加范围"><button class="support-close" aria-label="关闭" @click="friendRangeDialog.visible = false"><AppIcon name="close" :size="16" /></button><div class="am-head"><h3>可添加范围</h3><p>选择允许添加机器人为好友的用户范围</p></div><div class="ai-body"><label v-for="item in [{ value: 'all', title: '所有人可添加' }, { value: 'friend', title: '仅 QQ 好友可添加' }]" :key="item.value" :class="['friend-range-option', { active: friendRangeDialog.value === item.value }]"><input v-model="friendRangeDialog.value" type="radio" :value="item.value" />{{ item.title }}</label></div><div class="am-foot"><button class="btn" :disabled="friendRangeDialog.saving" @click="friendRangeDialog.visible = false">取消</button><button class="btn primary" :disabled="friendRangeDialog.saving" @click="applyFriendRange">保存</button></div></section></div>
+    <dialog ref="friendRangeModal" class="modal friend-range-modal" aria-labelledby="friend-range-title" aria-describedby="friend-range-description"
+      @click.self="closeFriendRange" @cancel.prevent="closeFriendRange">
+      <form @submit.prevent="applyFriendRange">
+        <header class="friend-range-head">
+          <h3 id="friend-range-title">可添加范围</h3>
+          <p id="friend-range-description">选择谁可以添加机器人为好友。</p>
+          <button class="support-close" type="button" aria-label="关闭" :disabled="friendRangeDialog.saving" @click="closeFriendRange">
+            <AppIcon name="close" :size="16" aria-hidden="true" />
+          </button>
+        </header>
+        <fieldset class="friend-range-options" aria-labelledby="friend-range-title" :disabled="friendRangeDialog.saving">
+          <label v-for="item in FRIEND_RANGE_OPTIONS" :key="item.value" :class="['friend-range-option', { active: friendRangeDialog.value === item.value }]">
+            <input v-model="friendRangeDialog.value" type="radio" name="friend-add-scope" :value="item.value"
+              :autofocus="scope.friendRange === item.value" @change="friendRangeDialog.error = ''" />
+            <span>{{ item.title }}</span>
+          </label>
+        </fieldset>
+        <p v-if="friendRangeDialog.error" class="friend-range-error" role="alert">{{ friendRangeDialog.error }}</p>
+        <footer class="friend-range-foot">
+          <button class="btn" type="button" :disabled="friendRangeDialog.saving" @click="closeFriendRange">取消</button>
+          <button class="btn primary" type="submit" :disabled="friendRangeDialog.saving || friendRangeDialog.value === scope.friendRange">
+            {{ friendRangeDialog.saving ? '保存中…' : '保存' }}
+          </button>
+        </footer>
+      </form>
+    </dialog>
     <div v-if="showAdminGroups" class="modal-root"><div class="modal-mask" @click="showAdminGroups = false"></div><section class="modal group-admin-card__modal" role="dialog" aria-modal="true" aria-label="管理白名单群"><div class="group-admin-card__modal-head"><div><h3 class="group-admin-card__modal-title">管理白名单群</h3><p class="group-admin-card__modal-sub">为白名单群聊单独设置机器人管理能力</p></div><button class="group-admin-card__close" aria-label="关闭" @click="showAdminGroups = false"><AppIcon name="close" :size="16" /></button></div><div class="group-admin-card__modal-body"><div class="group-admin-card__whitelist-head"><span>已添加 {{ scope.adminGroups.length }} / 20 个群</span><button class="group-admin-card__add-button" :disabled="scope.adminGroups.length >= 20" @click="openGroupPicker('admin')"><AppIcon name="plus" :size="14" />添加群聊</button></div><div v-if="!scope.adminGroups.length" class="group-admin-card__whitelist-empty">暂无白名单群聊</div><div v-else class="group-admin-card__whitelist-list"><div v-for="group in scope.adminGroups" :key="group.id" class="group-admin-card__whitelist-item"><div class="group-admin-card__whitelist-info"><strong>{{ group.name }}</strong><small>{{ group.id }}</small></div><button class="group-admin-card__remove-button" @click="removeAdminGroup(group)">移除</button></div></div></div><div class="group-admin-card__modal-foot"><button class="btn" @click="showAdminGroups = false">关闭</button></div></section></div>
     <div v-if="showAssistantManager" class="modal-root"><div class="modal-mask" @click="showAssistantManager = false"></div><section class="modal assistant-manager-modal" role="dialog" aria-modal="true" aria-label="协作者成员"><button class="support-close" aria-label="关闭" @click="showAssistantManager = false"><AppIcon name="close" :size="16" /></button><div class="am-head"><h3>协作者成员</h3><p>添加协作者协助管理该机器人；对方确认接受后才正式加入。可分配「开发」「运营」权限。</p></div><div class="am-body"><div v-if="assistantState.loading" class="am-empty">加载中…</div><div v-else-if="assistantState.error" class="am-empty">{{ assistantState.error }}<button class="btn ghost" @click="loadAssistantMembers">重试</button></div><div v-else-if="!assistantMembers.length" class="am-empty">暂无协作者</div><div v-for="member in assistantMembers" :key="member.uin" class="am-card"><img v-if="member.avatar" class="am-avatar" :src="member.avatar" alt="" /><div v-else class="am-avatar-letter">{{ firstCharacter(member.name) }}</div><div class="am-main"><div class="am-name-row"><span class="am-name">{{ member.name }}</span></div><div class="am-qq">QQ号：{{ member.uin }}</div><div class="am-role-row"><span v-for="role in member.roles" :key="role" class="am-role-tag">{{ role === 'dev' ? '开发' : '运营' }}</span></div></div><div v-if="!isMember" class="am-actions"><button class="btn small" @click="openAssistantRoleDialog(member)">修改权限</button><button class="btn small" @click="removeAssistant(member)">移除</button></div></div></div><div class="am-foot"><button class="btn" @click="showAssistantManager = false">关闭</button><button v-if="!isMember" class="btn primary" @click="openAssistantDialog">添加协作者</button></div></section></div>
 

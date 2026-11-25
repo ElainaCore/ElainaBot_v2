@@ -122,11 +122,84 @@
 .qqdash .group-admin-card__whitelist-info { display: flex; flex-direction: column; gap: 4px; }
 .qqdash .group-admin-card__whitelist-info small { color: var(--ink-4); }
 .qqdash .group-admin-card__add-button { display: inline-flex; align-items: center; gap: 5px; }
-.qqdash .friend-range-modal { width: min(460px, calc(100vw - 32px)); }
-.qqdash .friend-range-option { display: flex; align-items: center; gap: 10px; padding: 16px; border: 1px solid var(--line); border-radius: 12px; font-size: 13px; cursor: pointer; }
-.qqdash .friend-range-option + .friend-range-option { margin-top: 10px; }
-.qqdash .friend-range-option.active { border-color: var(--accent); background: var(--accent-soft); }
-.qqdash .friend-range-option input { accent-color: var(--accent); }
+.qqdash .friend-range-trigger {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+.qqdash .friend-range-modal {
+  --friend-range-padding: clamp(16px, 5vw, 24px);
+  position: fixed;
+  inset: 0;
+  box-sizing: border-box;
+  width: min(424px, calc(100% - 32px));
+  max-width: none;
+  max-height: calc(100vh - 32px);
+  max-height: calc(100dvh - 32px);
+  margin: auto;
+  padding: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  color: var(--ink);
+}
+.qqdash .friend-range-modal::backdrop { background: rgba(15, 23, 42, .44); backdrop-filter: blur(3px); }
+.qqdash .friend-range-head { padding: 22px calc(var(--friend-range-padding) + 36px) 0 var(--friend-range-padding); }
+.qqdash .friend-range-head h3 { margin: 0; font-size: 18px; font-weight: 700; line-height: 1.4; }
+.qqdash .friend-range-head p { margin: 4px 0 0; color: var(--ink-3); font-size: 13px; line-height: 1.6; }
+.qqdash .friend-range-modal .support-close { top: 14px; right: 14px; width: 36px; height: 36px; }
+.qqdash .friend-range-options {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  padding: 18px var(--friend-range-padding);
+  border: 0;
+}
+.qqdash .friend-range-option {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 48px;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.4;
+  cursor: pointer;
+}
+.qqdash .friend-range-options:not(:disabled) .friend-range-option:hover { background: var(--op-hover, var(--bg-sunken)); }
+.qqdash .friend-range-option.active,
+.qqdash .friend-range-options:not(:disabled) .friend-range-option.active:hover { border-color: var(--accent); background: var(--accent-soft); }
+.qqdash .friend-range-options:disabled .friend-range-option { cursor: default; }
+.qqdash .friend-range-option input { flex: none; width: 17px; height: 17px; margin: 0; accent-color: var(--accent); }
+.qqdash .friend-range-error {
+  margin: 0 var(--friend-range-padding) 14px;
+  color: var(--danger);
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.qqdash .friend-range-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 14px var(--friend-range-padding) 16px;
+  border-top: 1px solid var(--line);
+}
+.qqdash .friend-range-foot .btn { justify-content: center; min-width: 80px; min-height: 40px; }
+@media (max-width: 480px) {
+  .qqdash .friend-range-foot .btn { flex: 1; min-height: 44px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .qqdash .friend-range-modal { animation: none; }
+}
 .qqdash .am-name-row { display: flex; align-items: center; gap: 8px; }
 .qqdash .fi-lightbox { position: fixed; z-index: 1600; inset: 0; display: grid; place-items: center; padding: 28px; background: rgba(15, 23, 42, .8); cursor: zoom-out; }
 .qqdash .fi-lightbox img { display: block; max-width: 100%; max-height: calc(100vh - 56px); object-fit: contain; border-radius: 10px; }
