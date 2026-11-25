@@ -248,12 +248,13 @@ async function v2(path, payload, method = 'POST', params) {
     status.ready = false
     await loadStatus()
   }
-  if (data.success === false) throw new Error(data.message || '请求失败')
   const r = data || {}
   const code = [r.code, r.ret, r.retcode, r.common?.code, r.common?.retcode, r.res?.ret]
     .find(v => typeof v === 'number')
-  if (typeof code === 'number' && code !== 0) {
-    throw new Error(r.message || r.msg || r.common?.msg || r.res?.msg || `code=${code}`)
+  if (r.success === false || code) {
+    const error = new Error(r.message || r.msg || r.common?.msg || r.res?.msg || (code ? `code=${code}` : '请求失败'))
+    if (code) error.platformCode = code
+    throw error
   }
   return r.data && typeof r.data === 'object' ? { ...r, ...r.data } : r
 }
@@ -1597,13 +1598,15 @@ function openConnectionSettings() {
 
 const webhookSuggest = reactive({ available: false, url: '' })
 const webhookCheck = reactive({ checking: false, ok: null, msg: '' })
+const connectionBusy = computed(() => connectionDraft.saving || eventsSaving.value || webhookCheck.checking)
 
 async function loadWebhookSuggest() {
+  const appid = cur.appid
   webhookSuggest.available = false
   webhookSuggest.url = ''
   try {
-    const { data } = await axios.post('/api/openapi/v2/webhook-suggest', { user_id: UID, appid: cur.appid })
-    if (data.success) {
+    const { data } = await axios.post('/api/openapi/v2/webhook-suggest', { user_id: UID, appid })
+    if (data.success && cur.appid === appid) {
       webhookSuggest.available = !!data.available
       webhookSuggest.url = data.url || ''
     }
@@ -1611,39 +1614,64 @@ async function loadWebhookSuggest() {
 }
 
 function fillSuggestedWebhook() {
-  if (webhookSuggest.url) connectionDraft.webhook = webhookSuggest.url
+  if (!webhookSuggest.url) return
+  connectionDraft.webhook = webhookSuggest.url
+  webhookCheck.msg = ''
 }
 
-function isValidWebhookUrl(url) {
-  try { const parsed = new URL(url); return parsed.protocol === 'https:' && !!parsed.hostname } catch { return false }
+function webhookUrlError(url) {
+  if (!url) return '请输入回调地址'
+  if (/^https?:\/\/[^/\\\s]/i.test(url)) {
+    try {
+      if (new URL(url).hostname) return ''
+    } catch { /* 地址格式无效 */ }
+  }
+  return '请输入有效的 HTTP 或 HTTPS 回调地址，支持直接使用 IP'
 }
 
-async function checkWebhookUrl(value = connectionDraft.webhook) {
-  const url = value.trim()
-  if (!isValidWebhookUrl(url)) {
-    pushToast('请输入有效的 HTTPS 回调地址')
+function webhookFailureMessage(error, fallback) {
+  if (error.platformCode) {
+    const message = error.message === `code=${error.platformCode}` ? fallback : error.message
+    return `${message}（错误码 ${error.platformCode}）`
+  }
+  if (error.code === 'ECONNABORTED') return '请求超时，请稍后重试'
+  if (error.code === 'ERR_NETWORK') return '无法连接 Web 面板后端，请检查网络连接'
+  return error.response?.data?.message || error.response?.data?.msg || error.message || fallback
+}
+
+async function checkWebhookUrl() {
+  if (connectionBusy.value) return
+  const appid = cur.appid
+  const url = connectionDraft.webhook.trim()
+  const inputError = webhookUrlError(url)
+  if (inputError) {
+    Object.assign(webhookCheck, { ok: false, msg: inputError })
     return
   }
-  webhookCheck.checking = true
-  webhookCheck.ok = null
-  webhookCheck.msg = ''
+  Object.assign(webhookCheck, { checking: true, ok: null, msg: '' })
+  let ok = false
+  let msg = '地址校验未通过'
   try {
-    await v2('/cgi-bin/callback/check_webhook', { bot_appid: String(cur.appid), webhook_url: url })
-    webhookCheck.ok = true
-    webhookCheck.msg = '地址校验通过'
+    await v2('/cgi-bin/callback/check_webhook', { bot_appid: String(appid), webhook_url: url })
+    ok = true
+    msg = '地址校验通过'
   } catch (e) {
-    webhookCheck.ok = false
-    webhookCheck.msg = e.message || '地址校验未通过'
+    msg = webhookFailureMessage(e, msg)
+  } finally {
+    webhookCheck.checking = false
+    if (cur.appid === appid && connectionDraft.mode === 'Webhook' && connectionDraft.webhook.trim() === url) {
+      Object.assign(webhookCheck, { ok, msg })
+    }
   }
-  webhookCheck.checking = false
 }
 
 async function saveConnection() {
-  if (connectionDraft.saving || eventsSaving.value || !connectionChanged.value) return false
+  if (connectionBusy.value || !connectionChanged.value) return false
   if (connectionDraft.mode === 'Webhook') {
-    if (!isValidWebhookUrl(connectionDraft.webhook.trim())) {
-      webhookCheck.msg = '请输入有效的 HTTPS 回调地址'
-      webhookCheck.ok = false
+    const url = connectionDraft.webhook.trim()
+    const inputError = webhookUrlError(url)
+    if (inputError) {
+      Object.assign(webhookCheck, { ok: false, msg: inputError })
       return false
     }
     connectionDraft.saving = true
@@ -1651,14 +1679,17 @@ async function saveConnection() {
       await v2('/cgi-bin/v2/bot_dev_setting/connect_info/modify', {
         bot_appid: Number(cur.appid),
         action: 1,
-        webhook_url: connectionDraft.webhook.trim(),
+        webhook_url: url,
       })
-      dev.webhook = connectionDraft.webhook.trim()
+      dev.webhook = url
       dev.mode = 'Webhook'
       webhookCheck.msg = ''
       pushToast('Webhook 接入配置已保存')
       return true
-    } catch (e) { webhookCheck.ok = false; webhookCheck.msg = e.message; pushToast(e.message); return false }
+    } catch (e) {
+      Object.assign(webhookCheck, { ok: false, msg: webhookFailureMessage(e, '回调地址保存失败') })
+      return false
+    }
     finally { connectionDraft.saving = false }
   }
   connectionDraft.saving = true
@@ -1675,9 +1706,11 @@ async function saveConnection() {
 }
 
 async function saveEvents() {
-  if (eventsSaving.value || connectionDraft.saving || connectionChanged.value || dev.mode !== 'Webhook' || !eventsChanged.value) return
-  if (connectionDraft.mode === 'Webhook' && !isValidWebhookUrl(connectionDraft.webhook.trim())) {
-    pushToast('请先保存有效的 HTTPS 回调地址')
+  if (connectionBusy.value || connectionChanged.value || dev.mode !== 'Webhook' || !eventsChanged.value) return
+  const url = connectionDraft.webhook.trim()
+  const inputError = webhookUrlError(url)
+  if (inputError) {
+    Object.assign(webhookCheck, { ok: false, msg: inputError })
     return
   }
   eventsSaving.value = true
@@ -1686,7 +1719,7 @@ async function saveEvents() {
     await v2('/cgi-bin/v2/bot_dev_setting/connect_info/modify', {
       bot_appid: Number(cur.appid),
       action,
-      ...(action === 1 ? { webhook_url: connectionDraft.webhook.trim() } : {}),
+      ...(action === 1 ? { webhook_url: url } : {}),
       filter: { event: 1 },
       event: {
         all_subscription: dev.allSubscriptions,
@@ -1694,7 +1727,7 @@ async function saveEvents() {
       },
     })
     dev.mode = connectionDraft.mode
-    dev.webhook = connectionDraft.webhook.trim()
+    dev.webhook = url
     snapshotEvents()
     pushToast(dev.allSubscriptions ? '已设置接收全部事件' : `接收事件配置已保存（共 ${dev.events.filter(event => event.selected).length} 个）`)
   } catch (e) { pushToast(e.message) }
@@ -2459,12 +2492,34 @@ defineExpose({ reload: loadStatus })
                     <div class="sec-group-head"><div class="sec-group-title">接入方式 <span class="ec-channel-current">(当前为：{{ dev.mode }})</span></div></div>
                     <p class="sec-group-desc">提示：切换后立刻生效，请谨慎操作，避免影响在线服务。原创机器人开发者请阅读开发者文档：<a class="panel-sub-link" href="https://bot.q.qq.com/wiki/develop/api-v2/dev-prepare/interface-framework/event-emit.html" target="_blank" rel="noopener noreferrer">事件订阅与通知</a></p>
                     <div class="ec-channel-cards">
-                      <button :class="['ec-channel-card', { active: connectionDraft.mode === 'WebSocket' }]" type="button" :disabled="connectionDraft.saving || eventsSaving" @click="connectionDraft.mode = 'WebSocket'"><span class="ec-channel-icon"><AppIcon name="computer" :size="22" /></span><span class="ec-channel-text"><b class="ec-channel-title">WebSocket</b><small class="ec-channel-desc">不依赖公网服务器部署，适合个人单机使用，需维护长连接状态</small></span><span class="ec-channel-check">✓</span></button>
-                      <button :class="['ec-channel-card', { active: connectionDraft.mode === 'Webhook' }]" type="button" :disabled="connectionDraft.saving || eventsSaving" @click="connectionDraft.mode = 'Webhook'"><span class="ec-channel-icon"><AppIcon name="cloud" :size="22" /></span><span class="ec-channel-text"><b class="ec-channel-title">Webhook</b><small class="ec-channel-desc">事件推送至你配置的 HTTP/HTTPS 服务上，适合提供公开服务的机器人使用，运维更可靠</small></span><span class="ec-channel-check">✓</span></button>
+                      <button :class="['ec-channel-card', { active: connectionDraft.mode === 'WebSocket' }]" type="button" :disabled="connectionBusy" @click="connectionDraft.mode = 'WebSocket'"><span class="ec-channel-icon"><AppIcon name="computer" :size="22" /></span><span class="ec-channel-text"><b class="ec-channel-title">WebSocket</b><small class="ec-channel-desc">不依赖公网服务器部署，适合个人单机使用，需维护长连接状态</small></span><span class="ec-channel-check">✓</span></button>
+                      <button :class="['ec-channel-card', { active: connectionDraft.mode === 'Webhook' }]" type="button" :disabled="connectionBusy" @click="connectionDraft.mode = 'Webhook'"><span class="ec-channel-icon"><AppIcon name="cloud" :size="22" /></span><span class="ec-channel-text"><b class="ec-channel-title">Webhook</b><small class="ec-channel-desc">事件推送至你配置的 HTTP/HTTPS 服务上，适合提供公开服务的机器人使用，运维更可靠</small></span><span class="ec-channel-check">✓</span></button>
                     </div>
                     <div v-if="connectionDraft.mode === 'WebSocket'" class="ec-tip-block"><AppIcon name="info" :size="14" /><span>如果你是想用于连接 OpenClaw 等类似的 AI Agent 服务，在 AI 服务提供方没有明确说明和指引的前提下，选用 WebSocket 即可。</span></div>
-                    <div v-else class="ec-channel-extra"><label class="ec-field-card"><div class="ec-field-label">回调地址（HTTPS 地址）</div><div class="ec-field-value-row"><input v-model="connectionDraft.webhook" class="ec-field-mono ec-editable" aria-label="回调地址" placeholder="https://your-domain.com/qq/callback" /><button class="ec-icon-btn" type="button" aria-label="复制回调地址" :disabled="!connectionDraft.webhook" @click="copyText(connectionDraft.webhook)"><AppIcon name="copy" :size="14" /></button></div><div class="ec-field-tip">回调地址需公开可访问，保存时平台会校验返回签名。</div><p v-if="webhookCheck.msg" :class="['webhook-check-msg', webhookCheck.ok ? 'ok' : 'fail']">{{ webhookCheck.msg }}</p></label></div>
-                    <div v-if="connectionChanged" class="ec-channel-foot"><button class="btn" type="button" :disabled="connectionDraft.saving || eventsSaving" @click="resetConnection">撤销修改</button><button class="btn primary" type="button" :disabled="connectionDraft.saving || eventsSaving" @click="saveConnection">{{ connectionDraft.saving ? '保存中…' : '保存' }}</button></div>
+                    <div v-else class="ec-channel-extra">
+                      <div class="ec-field-card">
+                        <label class="ec-field-label" for="webhook-url">回调地址</label>
+                        <div class="ec-field-value-row">
+                          <input id="webhook-url" v-model="connectionDraft.webhook" class="ec-field-mono ec-editable" type="url"
+                            placeholder="https://your-domain.com/qq/callback" :disabled="connectionDraft.saving || eventsSaving"
+                            @input="webhookCheck.msg = ''" />
+                          <button class="ec-icon-btn" type="button" aria-label="复制回调地址" :disabled="!connectionDraft.webhook" @click="copyText(connectionDraft.webhook)">
+                            <AppIcon name="copy" :size="14" />
+                          </button>
+                        </div>
+                        <div class="ec-field-tip">回调地址需能从公网访问，支持 HTTP、HTTPS 和 IP 地址。QQ 平台会校验返回签名。</div>
+                        <div class="webhook-editor-tools">
+                          <button v-if="webhookSuggest.available" class="btn ghost sm" type="button" :disabled="connectionBusy" @click="fillSuggestedWebhook">
+                            自动填写本机地址
+                          </button>
+                          <button class="btn ghost sm" type="button" :disabled="connectionBusy" @click="checkWebhookUrl">
+                            {{ webhookCheck.checking ? '校验中…' : '校验地址' }}
+                          </button>
+                        </div>
+                        <p v-if="webhookCheck.msg" role="status" :class="['webhook-check-msg', webhookCheck.ok ? 'ok' : 'fail']">{{ webhookCheck.msg }}</p>
+                      </div>
+                    </div>
+                    <div v-if="connectionChanged" class="ec-channel-foot"><button class="btn" type="button" :disabled="connectionBusy" @click="resetConnection">撤销修改</button><button class="btn primary" type="button" :disabled="connectionBusy" @click="saveConnection">{{ connectionDraft.saving ? '保存中…' : '保存' }}</button></div>
                   </div>
                   <div v-if="connectionDraft.mode === 'Webhook'" class="sec-group">
                     <div class="sec-group-head"><div class="sec-group-title">接收事件配置</div></div>
@@ -2475,7 +2530,7 @@ defineExpose({ reload: loadStatus })
                       <div v-if="eventGroups.length" class="ec-events-tabs"><section v-for="group in eventGroups" :key="group.name" class="ec-event-section"><div class="ec-event-section-title">{{ group.name }}</div><div class="ec-event-list"><label v-for="event in group.items" :key="event.id" class="ec-event-item"><input v-model="event.selected" type="checkbox" :disabled="eventsSaving" /><span class="ec-event-text"><b class="ec-event-name">{{ event.name }}</b><small class="ec-event-desc">{{ event.description }}</small></span><code class="ec-event-key">{{ event.id }}</code></label></div></section></div>
                       <div v-else class="ec-events-empty">暂无可订阅事件</div>
                     </template>
-                    <div v-if="eventsChanged" class="ec-events-foot"><button class="btn" type="button" :disabled="eventsSaving || connectionDraft.saving" @click="resetEvents">撤销修改</button><button class="btn primary" type="button" :disabled="eventsSaving || connectionDraft.saving || dev.mode !== 'Webhook'" @click="saveEvents">{{ eventsSaving ? '保存中…' : '保存' }}</button></div>
+                    <div v-if="eventsChanged" class="ec-events-foot"><button class="btn" type="button" :disabled="eventsSaving || connectionDraft.saving" @click="resetEvents">撤销修改</button><button class="btn primary" type="button" :disabled="connectionBusy || dev.mode !== 'Webhook'" @click="saveEvents">{{ eventsSaving ? '保存中…' : '保存' }}</button></div>
                   </div>
                 </template>
               </template>
